@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Trigger server inspection after workflow installation
 set -euo pipefail
 
 ARCHIVE="${1:-/srv/migration/backup-Oct-07-2026-2.tar.gz}"
