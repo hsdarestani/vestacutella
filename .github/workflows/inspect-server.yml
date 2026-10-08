@@ -1,0 +1,49 @@
+name: Inspect Hetzner migration backup
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/inspect-directadmin-backup.sh"
+      - ".github/workflows/inspect-server.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vestacutella-server-inspection
+  cancel-in-progress: true
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install SSH client helper
+        run: sudo apt-get update && sudo apt-get install -y sshpass
+
+      - name: Copy inspection script
+        env:
+          SSHPASS: ${{ secrets.PASS }}
+          HOST: ${{ secrets.HOST }}
+        run: |
+          test -n "$HOST"
+          test -n "$SSHPASS"
+          sshpass -e scp             -o StrictHostKeyChecking=no             -o UserKnownHostsFile=/dev/null             scripts/inspect-directadmin-backup.sh             "root@$HOST:/tmp/inspect-directadmin-backup.sh"
+
+      - name: Inspect uploaded DirectAdmin backup
+        env:
+          SSHPASS: ${{ secrets.PASS }}
+          HOST: ${{ secrets.HOST }}
+        run: |
+          sshpass -e ssh             -o StrictHostKeyChecking=no             -o UserKnownHostsFile=/dev/null             "root@$HOST" '
+              set -e
+              mkdir -p /srv/migration /srv/vestacutella /srv/backups
+              chmod 700 /srv/migration /srv/backups
+              chmod +x /tmp/inspect-directadmin-backup.sh
+              /tmp/inspect-directadmin-backup.sh /srv/migration/backup-Oct-07-2026-2.tar.gz
+            '
