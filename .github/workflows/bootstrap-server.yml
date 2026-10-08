@@ -1,0 +1,46 @@
+name: Bootstrap Hetzner server
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/bootstrap-server.sh"
+      - ".github/workflows/bootstrap-server.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vestacutella-server-bootstrap
+  cancel-in-progress: true
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install SSH helper
+        run: sudo apt-get update && sudo apt-get install -y sshpass
+
+      - name: Copy bootstrap script
+        env:
+          SSHPASS: ${{ secrets.PASS }}
+          HOST: ${{ secrets.HOST }}
+        run: |
+          test -n "$HOST"
+          test -n "$SSHPASS"
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/bootstrap-server.sh "root@$HOST:/tmp/bootstrap-vestacutella.sh"
+
+      - name: Bootstrap server
+        env:
+          SSHPASS: ${{ secrets.PASS }}
+          HOST: ${{ secrets.HOST }}
+        run: |
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" '
+            chmod +x /tmp/bootstrap-vestacutella.sh
+            /tmp/bootstrap-vestacutella.sh
+          '
