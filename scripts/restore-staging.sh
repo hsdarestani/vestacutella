@@ -53,11 +53,6 @@ set -a
 source "$ENVFILE"
 set +a
 
-echo "=== syncing WordPress files ==="
-mkdir -p "$RUNTIME/cutella" "$RUNTIME/vesta"
-rsync -a --delete "$STAGING/domains/cutellashop.ir/public_html/" "$RUNTIME/cutella/"
-rsync -a --delete "$STAGING/domains/vesta-cosmetics.ir/public_html/" "$RUNTIME/vesta/"
-
 patch_wp_config() {
   local file="$1" dbname="$2" dbuser="$3" dbpass="$4" dbhost="$5"
   WP_FILE="$file" WP_DBNAME="$dbname" WP_DBUSER="$dbuser" WP_DBPASS="$dbpass" WP_DBHOST="$dbhost" python3 <<'PY'
@@ -90,6 +85,11 @@ open(p,"w",encoding="utf-8",errors="surrogateescape").write(s)
 PY
 }
 
+echo "=== syncing WordPress files ==="
+mkdir -p "$RUNTIME/cutella" "$RUNTIME/vesta"
+rsync -a --delete "$STAGING/domains/cutellashop.ir/public_html/" "$RUNTIME/cutella/"
+rsync -a --delete "$STAGING/domains/vesta-cosmetics.ir/public_html/" "$RUNTIME/vesta/"
+
 patch_wp_config "$RUNTIME/cutella/wp-config.php" vestacos_cutella vestacos_cutella "$CUTELLA_DB_PASSWORD" db-cutella
 patch_wp_config "$RUNTIME/vesta/wp-config.php" vestacos_m vestacos_m "$VESTA_DB_PASSWORD" db-vesta
 
@@ -112,7 +112,6 @@ cat "$STAGING/backup/cutellashop.ir/domain.cert" "$STAGING/backup/cutellashop.ir
 cp "$STAGING/backup/vesta-cosmetics.ir/domain.key" "$RUNTIME/certs/vesta/privkey.pem"
 cat "$STAGING/backup/vesta-cosmetics.ir/domain.cert" "$STAGING/backup/vesta-cosmetics.ir/domain.cacert" > "$RUNTIME/certs/vesta/fullchain.pem"
 chmod 600 "$RUNTIME/certs/"*/privkey.pem
-
 chown -R 33:33 "$RUNTIME/cutella" "$RUNTIME/vesta"
 
 cd "$REPO"
@@ -131,22 +130,92 @@ wait_db() {
 wait_db vc-db-cutella
 wait_db vc-db-vesta
 
+install_root_client_file() {
+  local container="$1" rootpass="$2"
+  local tmp
+  tmp=$(mktemp)
+  chmod 600 "$tmp"
+  {
+    echo "[client]"
+    echo "user=root"
+    echo "password=$rootpass"
+  } > "$tmp"
+  docker cp "$tmp" "$container:/tmp/root-client.cnf" >/dev/null
+  rm -f "$tmp"
+  docker exec "$container" chmod 600 /tmp/root-client.cnf
+}
+
+install_root_client_file vc-db-cutella "$CUTELLA_DB_ROOT_PASSWORD"
+install_root_client_file vc-db-vesta "$VESTA_DB_ROOT_PASSWORD"
+
 if [[ ! -f "$RUNTIME/db-cutella/.imported" ]]; then
   echo "=== importing Cutella database ==="
-  docker exec -i vc-db-cutella mariadb -uvestacos_cutella -p"$CUTELLA_DB_PASSWORD" vestacos_cutella < "$STAGING/backup/vestacos_cutella.sql"
+  docker exec vc-db-cutella mariadb --defaults-extra-file=/tmp/root-client.cnf -e \
+    "DROP DATABASE IF EXISTS vestacos_cutella; CREATE DATABASE vestacos_cutella CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+  sed -E 's/DEFINER=`[^`]+`@`[^`]+`//g' "$STAGING/backup/vestacos_cutella.sql" \
+    | docker exec -i vc-db-cutella mariadb --defaults-extra-file=/tmp/root-client.cnf vestacos_cutella
   touch "$RUNTIME/db-cutella/.imported"
 fi
 
 if [[ ! -f "$RUNTIME/db-vesta/.imported" ]]; then
   echo "=== importing Vesta database ==="
-  docker exec -i vc-db-vesta mariadb -uvestacos_m -p"$VESTA_DB_PASSWORD" vestacos_m < "$STAGING/backup/vestacos_m.sql"
+  docker exec vc-db-vesta mariadb --defaults-extra-file=/tmp/root-client.cnf -e \
+    "DROP DATABASE IF EXISTS vestacos_m; CREATE DATABASE vestacos_m CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+  sed -E 's/DEFINER=`[^`]+`@`[^`]+`//g' "$STAGING/backup/vestacos_m.sql" \
+    | docker exec -i vc-db-vesta mariadb --defaults-extra-file=/tmp/root-client.cnf vestacos_m
   touch "$RUNTIME/db-vesta/.imported"
 fi
 
+if [[ ! -f "$RUNTIME/.app-passwords-rotated" ]]; then
+  echo "=== rotating application database passwords ==="
+  NEW_CUTELLA_DB_PASSWORD=$(openssl rand -hex 24)
+  NEW_VESTA_DB_PASSWORD=$(openssl rand -hex 24)
+
+  CUTELLA_SQL=$(mktemp)
+  VESTA_SQL=$(mktemp)
+  chmod 600 "$CUTELLA_SQL" "$VESTA_SQL"
+  printf "ALTER USER 'vestacos_cutella'@'%%' IDENTIFIED BY '%s'; FLUSH PRIVILEGES;\n" "$NEW_CUTELLA_DB_PASSWORD" > "$CUTELLA_SQL"
+  printf "ALTER USER 'vestacos_m'@'%%' IDENTIFIED BY '%s'; FLUSH PRIVILEGES;\n" "$NEW_VESTA_DB_PASSWORD" > "$VESTA_SQL"
+  docker cp "$CUTELLA_SQL" vc-db-cutella:/tmp/rotate-app.sql >/dev/null
+  docker cp "$VESTA_SQL" vc-db-vesta:/tmp/rotate-app.sql >/dev/null
+  rm -f "$CUTELLA_SQL" "$VESTA_SQL"
+
+  docker exec vc-db-cutella sh -c 'mariadb --defaults-extra-file=/tmp/root-client.cnf < /tmp/rotate-app.sql && rm -f /tmp/rotate-app.sql'
+  docker exec vc-db-vesta sh -c 'mariadb --defaults-extra-file=/tmp/root-client.cnf < /tmp/rotate-app.sql && rm -f /tmp/rotate-app.sql'
+
+  NEW_CUTELLA_DB_PASSWORD="$NEW_CUTELLA_DB_PASSWORD" NEW_VESTA_DB_PASSWORD="$NEW_VESTA_DB_PASSWORD" ENVFILE="$ENVFILE" python3 <<'PY'
+import os
+p=os.environ["ENVFILE"]
+vals={}
+for line in open(p):
+    line=line.rstrip("\n")
+    if "=" in line:
+        k,v=line.split("=",1)
+        vals[k]=v
+vals["CUTELLA_DB_PASSWORD"]=os.environ["NEW_CUTELLA_DB_PASSWORD"]
+vals["VESTA_DB_PASSWORD"]=os.environ["NEW_VESTA_DB_PASSWORD"]
+order=["CUTELLA_DB_PASSWORD","CUTELLA_DB_ROOT_PASSWORD","VESTA_DB_PASSWORD","VESTA_DB_ROOT_PASSWORD"]
+with open(p,"w") as f:
+    for k in order:
+        f.write(k+"="+vals[k]+"\n")
+PY
+  CUTELLA_DB_PASSWORD="$NEW_CUTELLA_DB_PASSWORD"
+  VESTA_DB_PASSWORD="$NEW_VESTA_DB_PASSWORD"
+  patch_wp_config "$RUNTIME/cutella/wp-config.php" vestacos_cutella vestacos_cutella "$CUTELLA_DB_PASSWORD" db-cutella
+  patch_wp_config "$RUNTIME/vesta/wp-config.php" vestacos_m vestacos_m "$VESTA_DB_PASSWORD" db-vesta
+  touch "$RUNTIME/.app-passwords-rotated"
+fi
+
+docker exec vc-db-cutella rm -f /tmp/root-client.cnf
+docker exec vc-db-vesta rm -f /tmp/root-client.cnf
+
+set -a
+source "$ENVFILE"
+set +a
+
 echo "=== starting WordPress and reverse proxy ==="
 docker compose --env-file "$ENVFILE" -f "$COMPOSE" up -d
-
-sleep 8
+sleep 10
 
 echo "=== containers ==="
 docker compose --env-file "$ENVFILE" -f "$COMPOSE" ps
