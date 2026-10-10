@@ -223,6 +223,9 @@ set +a
 
 echo "=== starting WordPress and reverse proxy ==="
 docker compose --env-file "$ENVFILE" -f "$COMPOSE" up -d --build
+# Nginx resolves Docker service names when its configuration is loaded. Recreate it
+# after WordPress containers so stale container IPs cannot be cached after a deploy.
+docker compose --env-file "$ENVFILE" -f "$COMPOSE" up -d --force-recreate nginx
 sleep 10
 
 echo "=== containers ==="
