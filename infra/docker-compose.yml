@@ -1,0 +1,75 @@
+services:
+  db-cutella:
+    image: mariadb:10.11
+    container_name: vc-db-cutella
+    restart: unless-stopped
+    environment:
+      MARIADB_DATABASE: vestacos_cutella
+      MARIADB_USER: vestacos_cutella
+      MARIADB_PASSWORD: ${CUTELLA_DB_PASSWORD}
+      MARIADB_ROOT_PASSWORD: ${CUTELLA_DB_ROOT_PASSWORD}
+    volumes:
+      - /srv/vestacutella/runtime/db-cutella:/var/lib/mysql
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "mariadb-admin ping -h localhost -uroot -p$$MARIADB_ROOT_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  db-vesta:
+    image: mariadb:10.11
+    container_name: vc-db-vesta
+    restart: unless-stopped
+    environment:
+      MARIADB_DATABASE: vestacos_m
+      MARIADB_USER: vestacos_m
+      MARIADB_PASSWORD: ${VESTA_DB_PASSWORD}
+      MARIADB_ROOT_PASSWORD: ${VESTA_DB_ROOT_PASSWORD}
+    volumes:
+      - /srv/vestacutella/runtime/db-vesta:/var/lib/mysql
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "mariadb-admin ping -h localhost -uroot -p$$MARIADB_ROOT_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  cutella:
+    image: wordpress:php8.2-apache
+    container_name: vc-cutella
+    restart: unless-stopped
+    depends_on:
+      db-cutella:
+        condition: service_healthy
+    volumes:
+      - /srv/vestacutella/runtime/cutella:/var/www/html
+    networks: [backend]
+
+  vesta:
+    image: wordpress:php8.2-apache
+    container_name: vc-vesta
+    restart: unless-stopped
+    depends_on:
+      db-vesta:
+        condition: service_healthy
+    volumes:
+      - /srv/vestacutella/runtime/vesta:/var/www/html
+    networks: [backend]
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: vc-nginx
+    restart: unless-stopped
+    depends_on: [cutella, vesta]
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /srv/vestacutella/repo/infra/nginx.conf:/etc/nginx/nginx.conf:ro
+      - /srv/vestacutella/runtime/certs:/etc/nginx/certs:ro
+    networks: [backend]
+
+networks:
+  backend:
+    name: vestacutella-backend
