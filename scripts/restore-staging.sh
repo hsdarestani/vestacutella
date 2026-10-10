@@ -214,7 +214,7 @@ source "$ENVFILE"
 set +a
 
 echo "=== starting WordPress and reverse proxy ==="
-docker compose --env-file "$ENVFILE" -f "$COMPOSE" up -d
+docker compose --env-file "$ENVFILE" -f "$COMPOSE" up -d --build
 sleep 10
 
 echo "=== containers ==="
