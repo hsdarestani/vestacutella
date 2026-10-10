@@ -6,6 +6,7 @@ on:
     paths:
       - "scripts/restore-staging.sh"
       - "infra/**"
+      - ".github/workflows/restore-staging.yml"
   workflow_dispatch:
 
 permissions:
