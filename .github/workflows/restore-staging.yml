@@ -12,6 +12,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: vestacutella-wordpress-restore
+  cancel-in-progress: true
+
 jobs:
   restore:
     runs-on: ubuntu-latest
@@ -19,9 +23,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y sshpass
+      - name: Upload current deployment files
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          tar -czf /tmp/vestacutella-deploy.tar.gz infra scripts
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null /tmp/vestacutella-deploy.tar.gz "root@$HOST:/tmp/vestacutella-deploy.tar.gz"
       - name: Run restore
         env:
           HOST: ${{ secrets.HOST }}
           SSHPASS: ${{ secrets.PASS }}
         run: |
-          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'rm -rf /srv/vestacutella/repo && git clone --depth 1 https://github.com/hsdarestani/vestacutella.git /srv/vestacutella/repo && chmod +x /srv/vestacutella/repo/scripts/restore-staging.sh && /srv/vestacutella/repo/scripts/restore-staging.sh'
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" '
+            set -e
+            rm -rf /srv/vestacutella/repo.new
+            mkdir -p /srv/vestacutella/repo.new
+            tar -xzf /tmp/vestacutella-deploy.tar.gz -C /srv/vestacutella/repo.new
+            rm -rf /srv/vestacutella/repo
+            mv /srv/vestacutella/repo.new /srv/vestacutella/repo
+            chmod +x /srv/vestacutella/repo/scripts/restore-staging.sh
+            /srv/vestacutella/repo/scripts/restore-staging.sh
+          '
