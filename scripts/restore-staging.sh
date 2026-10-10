@@ -95,7 +95,7 @@ patch_wp_config "$RUNTIME/vesta/wp-config.php" vestacos_m vestacos_m "$VESTA_DB_
 
 echo "=== disabling staging-only plugins blocked by the current ionCube loader ==="
 for site in "$RUNTIME/cutella" "$RUNTIME/vesta"; do
-  for plugin in zhaket-updater xcart; do
+  for plugin in zhaket-updater xcart smsir; do
     if [[ -d "$site/wp-content/plugins/$plugin" ]]; then
       rm -rf "$site/wp-content/plugins/$plugin.disabled-for-migration"
       mv "$site/wp-content/plugins/$plugin" "$site/wp-content/plugins/$plugin.disabled-for-migration"
