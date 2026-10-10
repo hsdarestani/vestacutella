@@ -38,7 +38,7 @@ services:
   cutella:
     build:
       context: ./wordpress
-    image: vestacutella-wordpress:php8.2-ioncube
+    image: vestacutella-wordpress:php8.1-ioncube
     container_name: vc-cutella
     restart: unless-stopped
     depends_on:
@@ -51,7 +51,7 @@ services:
   vesta:
     build:
       context: ./wordpress
-    image: vestacutella-wordpress:php8.2-ioncube
+    image: vestacutella-wordpress:php8.1-ioncube
     container_name: vc-vesta
     restart: unless-stopped
     depends_on:
