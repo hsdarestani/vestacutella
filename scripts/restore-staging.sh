@@ -93,6 +93,14 @@ rsync -a --delete "$STAGING/domains/vesta-cosmetics.ir/public_html/" "$RUNTIME/v
 patch_wp_config "$RUNTIME/cutella/wp-config.php" vestacos_cutella vestacos_cutella "$CUTELLA_DB_PASSWORD" db-cutella
 patch_wp_config "$RUNTIME/vesta/wp-config.php" vestacos_m vestacos_m "$VESTA_DB_PASSWORD" db-vesta
 
+echo "=== disabling nonessential updater plugin that is incompatible with current ionCube ==="
+for site in "$RUNTIME/cutella" "$RUNTIME/vesta"; do
+  if [[ -d "$site/wp-content/plugins/zhaket-updater" ]]; then
+    rm -rf "$site/wp-content/plugins/zhaket-updater.disabled-for-migration"
+    mv "$site/wp-content/plugins/zhaket-updater" "$site/wp-content/plugins/zhaket-updater.disabled-for-migration"
+  fi
+done
+
 echo "=== installing migration safety MU plugin ==="
 for site in "$RUNTIME/cutella" "$RUNTIME/vesta"; do
   mkdir -p "$site/wp-content/mu-plugins"
