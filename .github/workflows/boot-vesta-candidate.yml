@@ -1,0 +1,27 @@
+name: Boot Vesta candidate DB
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/boot-vesta-candidate.sh"
+      - ".github/workflows/boot-vesta-candidate.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  boot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y sshpass
+      - name: Boot Vesta candidate DB
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/boot-vesta-candidate.sh "root@$HOST:/tmp/boot-vesta-candidate.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/boot-vesta-candidate.sh'
