@@ -1,0 +1,27 @@
+name: Migration progress
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/migration-progress.sh"
+      - ".github/workflows/migration-progress.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  progress:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y sshpass
+      - name: Check migration progress
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/migration-progress.sh "root@$HOST:/tmp/migration-progress.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/migration-progress.sh'
