@@ -5,7 +5,7 @@ on:
   push:
     branches: [main]
     paths:
-      - ".ops/refresh-current-data-trigger"
+      - ".github/workflows/refresh-current-data.yml"
 
 permissions:
   contents: read
@@ -24,3 +24,5 @@ jobs:
         run: |
           sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/refresh-current-data.sh "root@$HOST:/tmp/refresh-current-data.sh"
           sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'chmod +x /tmp/refresh-current-data.sh && /tmp/refresh-current-data.sh'
+
+# trigger: current DirectAdmin refresh 2026-10-11
