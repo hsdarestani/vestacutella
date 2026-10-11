@@ -1,0 +1,28 @@
+name: Route Cutella safely during final sync
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/route-cutella-old-origin.sh"
+      - ".github/workflows/route-cutella-old-origin.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  route:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y sshpass
+      - name: Route Cutella to current old origin
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null infra/nginx.conf "root@$HOST:/tmp/nginx.conf"
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/route-cutella-old-origin.sh "root@$HOST:/tmp/route-cutella-old-origin.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/route-cutella-old-origin.sh'
