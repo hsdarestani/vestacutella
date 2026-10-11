@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# progress check 2
 set -u
 echo "=== time ==="; date
 echo "=== migration files ==="; ls -lh /srv/migration 2>/dev/null || true
