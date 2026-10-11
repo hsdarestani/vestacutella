@@ -1,0 +1,30 @@
+name: Check store MX records
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/check-store-mx.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dns:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - run: sudo apt-get update && sudo apt-get install -y dnsutils
+      - name: Check MX records
+        run: |
+          echo "=== cutellashop.ir MX ==="
+          dig +short MX cutellashop.ir
+          echo "=== vesta-cosmetics.ir MX ==="
+          dig +short MX vesta-cosmetics.ir
+          echo "=== mail host address resolution ==="
+          for h in $(dig +short MX cutellashop.ir vesta-cosmetics.ir | awk '{print $2}' | sed 's/\.$//' | sort -u); do
+            echo "--- $h ---"
+            dig +short A "$h"
+            dig +short AAAA "$h"
+          done
