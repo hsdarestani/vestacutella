@@ -1,0 +1,27 @@
+name: Repair and import latest Vesta DB
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/repair-import-vesta.sh"
+      - ".github/workflows/repair-import-vesta.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  repair_import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y sshpass
+      - name: Repair and import Vesta DB
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/repair-import-vesta.sh "root@$HOST:/tmp/repair-import-vesta.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'chmod +x /tmp/repair-import-vesta.sh && /tmp/repair-import-vesta.sh'
