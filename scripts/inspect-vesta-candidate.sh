@@ -9,7 +9,7 @@ set +a
 extract_plugins() {
   local db="$1"
   val="$(docker exec vc-db-vesta mariadb -uroot -p"$VESTA_DB_ROOT_PASSWORD" "$db" -N -B -e "SELECT option_value FROM wp_options WHERE option_name='active_plugins' LIMIT 1;")"
-  DBLABEL="$db" RAW="$val" php -r '
+  docker exec -e DBLABEL="$db" -e RAW="$val" vc-vesta php -r '
     $a=@unserialize(getenv("RAW"));
     if(!is_array($a)){fwrite(STDERR,"UNSERIALIZE_FAILED ".getenv("DBLABEL")."\n"); exit(2);}
     foreach($a as $p) echo $p.PHP_EOL;
