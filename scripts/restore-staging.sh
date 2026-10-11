@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# RESTORE_STAGING_EXPLICIT_GUARD
+# This repository now serves production traffic. Never restore the old DirectAdmin
+# archive automatically on a normal push. A destructive staging restore requires
+# an explicit --force-restore-staging argument.
+if [[ "${1:-}" != "--force-restore-staging" ]]; then
+  echo "Restore staging skipped: production safety guard is active."
+  exit 0
+fi
+shift
+
+
 if [[ -n "${1:-}" ]]; then
   ARCHIVE="$1"
 else
