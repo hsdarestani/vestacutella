@@ -1,0 +1,27 @@
+name: Inspect Vesta candidate plugins
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/inspect-vesta-candidate.sh"
+      - ".github/workflows/inspect-vesta-candidate.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y sshpass
+      - name: Inspect Vesta candidate
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/inspect-vesta-candidate.sh "root@$HOST:/tmp/inspect-vesta-candidate.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/inspect-vesta-candidate.sh'
