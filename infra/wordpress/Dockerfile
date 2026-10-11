@@ -18,3 +18,5 @@ RUN set -eux; \
     rm -rf /tmp/ioncube /tmp/ioncube.tar.gz; \
     php -v; \
     php -m | grep -i ionCube
+
+COPY zz-performance.ini /usr/local/etc/php/conf.d/zz-performance.ini
