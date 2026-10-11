@@ -1,12 +1,6 @@
 name: Restore staging
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "scripts/restore-staging.sh"
-      - "infra/**"
-      - ".github/workflows/restore-staging.yml"
   workflow_dispatch:
 
 permissions:
@@ -42,6 +36,6 @@ jobs:
             tar -xzf /tmp/vestacutella-deploy.tar.gz -C /srv/vestacutella/repo.new
             rm -rf /srv/vestacutella/repo
             mv /srv/vestacutella/repo.new /srv/vestacutella/repo
-            chmod +x /srv/vestacutella/repo/scripts/restore-staging.sh
+            chmod +x /srv/vestacutella/repo/scripts/restore-staging.sh --force-restore-staging
             /srv/vestacutella/repo/scripts/restore-staging.sh
           '
