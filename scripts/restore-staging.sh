@@ -146,61 +146,78 @@ chown -R 33:33 "$RUNTIME/cutella" "$RUNTIME/vesta"
 
 cd "$REPO"
 echo "=== preparing MariaDB init imports ==="
-mkdir -p "$RUNTIME/markers" "$RUNTIME/init-cutella" "$RUNTIME/init-vesta"
+mkdir -p "$RUNTIME/markers"
 
-if [[ ! -f "$RUNTIME/markers/db-cutella.imported" ]]; then
-  docker rm -f vc-db-cutella >/dev/null 2>&1 || true
-  rm -rf "$RUNTIME/db-cutella" "$RUNTIME/init-cutella"
-  mkdir -p "$RUNTIME/init-cutella"
-  sed -E 's/DEFINER=`[^`]+`@`[^`]+`//g' "$STAGING/backup/vestacos_cutella.sql" > "$RUNTIME/init-cutella/001-import.sql"
-fi
+prepare_db_init() {
+  local container="$1"
+  local dbdir="$2"
+  local initdir="$3"
+  local sqlsrc="$4"
+  local label="$5"
 
-if [[ ! -f "$RUNTIME/markers/db-vesta.imported" ]]; then
-  docker rm -f vc-db-vesta >/dev/null 2>&1 || true
-  rm -rf "$RUNTIME/db-vesta" "$RUNTIME/init-vesta"
-  mkdir -p "$RUNTIME/init-vesta"
-  sed -E 's/DEFINER=`[^`]+`@`[^`]+`//g' "$STAGING/backup/vestacos_m.sql" > "$RUNTIME/init-vesta/001-import.sql"
-fi
+  if [[ -f "$dbdir/.vc-import-complete" ]]; then
+    echo "$label database import marker already present"
+    return 0
+  fi
+
+  echo "Resetting incomplete $label database"
+  docker rm -f "$container" >/dev/null 2>&1 || true
+  rm -rf "$dbdir" "$initdir"
+  mkdir -p "$initdir"
+
+  sed -E 's/DEFINER=`[^`]+`@`[^`]+`//g' "$sqlsrc" > "$initdir/001-import.sql"
+  cat > "$initdir/999-import-complete.sh" <<'SH'
+#!/usr/bin/env bash
+set -e
+touch /var/lib/mysql/.vc-import-complete
+SH
+  chmod +x "$initdir/999-import-complete.sh"
+}
+
+prepare_db_init vc-db-cutella "$RUNTIME/db-cutella" "$RUNTIME/init-cutella" "$STAGING/backup/vestacos_cutella.sql" Cutella
+prepare_db_init vc-db-vesta "$RUNTIME/db-vesta" "$RUNTIME/init-vesta" "$STAGING/backup/vestacos_m.sql" Vesta
 
 cd "$REPO"
-echo "=== starting databases and importing through container entrypoint ==="
+echo "=== starting databases and importing through MariaDB entrypoint ==="
 docker compose --env-file "$ENVFILE" -f "$COMPOSE" up -d db-cutella db-vesta
 
-wait_db() {
+wait_import() {
   local container="$1"
-  local label="$2"
-  for i in $(seq 1 300); do
-    state="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container" 2>/dev/null || true)"
-    if [[ "$state" == "healthy" ]]; then
-      echo "$label database is healthy"
+  local dbdir="$2"
+  local label="$3"
+
+  for i in $(seq 1 450); do
+    state="$(docker inspect -f '{{.State.Status}}' "$container" 2>/dev/null || true)"
+    health="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container" 2>/dev/null || true)"
+
+    if [[ -f "$dbdir/.vc-import-complete" && "$state" == "running" && "$health" == "healthy" ]]; then
+      echo "$label database import completed and is healthy"
       return 0
     fi
-    if ! docker inspect "$container" >/dev/null 2>&1; then
-      echo "$label database container disappeared"
+
+    if [[ "$state" == "exited" || "$state" == "dead" ]]; then
+      echo "$label database stopped during import"
+      docker logs --tail 200 "$container" 2>&1 || true
       return 1
     fi
+
     if [[ $((i % 30)) -eq 0 ]]; then
-      echo "Waiting for $label database import... state=$state"
-      docker logs --tail 20 "$container" 2>&1 || true
+      echo "Waiting for $label import... state=$state health=$health marker=$(test -f "$dbdir/.vc-import-complete" && echo yes || echo no)"
+      docker logs --tail 30 "$container" 2>&1 || true
     fi
     sleep 2
   done
-  echo "$label database did not become healthy in time"
-  docker logs --tail 150 "$container" 2>&1 || true
+
+  echo "$label database import timed out"
+  docker logs --tail 250 "$container" 2>&1 || true
   return 1
 }
 
-if [[ ! -f "$RUNTIME/markers/db-cutella.imported" ]]; then
-  wait_db vc-db-cutella Cutella
-  touch "$RUNTIME/markers/db-cutella.imported"
-  rm -rf "$RUNTIME/init-cutella"
-fi
+wait_import vc-db-cutella "$RUNTIME/db-cutella" Cutella
+wait_import vc-db-vesta "$RUNTIME/db-vesta" Vesta
 
-if [[ ! -f "$RUNTIME/markers/db-vesta.imported" ]]; then
-  wait_db vc-db-vesta Vesta
-  touch "$RUNTIME/markers/db-vesta.imported"
-  rm -rf "$RUNTIME/init-vesta"
-fi
+touch "$RUNTIME/markers/db-cutella.imported" "$RUNTIME/markers/db-vesta.imported"
+rm -rf "$RUNTIME/init-cutella" "$RUNTIME/init-vesta"
 
 echo "=== starting WordPress and reverse proxy ==="
 docker compose --env-file "$ENVFILE" -f "$COMPOSE" up -d --build
