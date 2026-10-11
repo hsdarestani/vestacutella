@@ -1,0 +1,27 @@
+name: Diagnose Vesta uploaded DB
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/diagnose-vesta-upload.sh"
+      - ".github/workflows/diagnose-vesta-upload.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y sshpass
+      - name: Diagnose uploaded Vesta DB
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/diagnose-vesta-upload.sh "root@$HOST:/tmp/diagnose-vesta-upload.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/diagnose-vesta-upload.sh'
