@@ -6,6 +6,7 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/refresh-current-data.yml"
+      - "scripts/refresh-current-data.sh"
 
 permissions:
   contents: read
@@ -26,3 +27,5 @@ jobs:
           sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'chmod +x /tmp/refresh-current-data.sh && /tmp/refresh-current-data.sh'
 
 # trigger: current DirectAdmin refresh 2026-10-11
+
+# retry: accept vestacos_m.sql.gz
