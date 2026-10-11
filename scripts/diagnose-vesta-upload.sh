@@ -16,3 +16,12 @@ gzip -cd "$D" | awk '
 echo "option INSERT bytes=$(wc -c < "$tmp")"
 grep -oE '^\([0-9]+' "$tmp" | sed 's/^(//' | sort -n | uniq -c | sort -nr | head -20 || true
 rm -f "$tmp"
+
+echo "around failing ALTER:"
+gzip -cd "$D" | sed -n '5441468,5441525p' | cut -c1-500
+echo "zero option ids in option inserts:"
+gzip -cd "$D" | awk '
+  /^INSERT INTO \x60wp_options\x60/ {p=1}
+  p {print}
+  p && /;$/ {p=0}
+' | grep -oE '\(0,' | wc -l || true
