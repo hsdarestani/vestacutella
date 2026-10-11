@@ -1,0 +1,27 @@
+name: Move WordPress cron off requests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/install-host-wp-cron.sh"
+      - ".github/workflows/install-host-wp-cron.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tune:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y sshpass
+      - name: Install host cron
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/install-host-wp-cron.sh "root@$HOST:/tmp/install-host-wp-cron.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/install-host-wp-cron.sh'
