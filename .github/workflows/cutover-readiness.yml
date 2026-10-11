@@ -1,0 +1,27 @@
+name: Cutover readiness
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/cutover-readiness.sh"
+      - ".github/workflows/cutover-readiness.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y sshpass
+      - name: Check cutover readiness
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/cutover-readiness.sh "root@$HOST:/tmp/cutover-readiness.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/cutover-readiness.sh'
