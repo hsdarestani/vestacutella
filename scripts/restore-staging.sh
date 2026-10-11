@@ -175,14 +175,14 @@ wait_db vc-db-vesta
 if [[ ! -f "$RUNTIME/markers/db-cutella.imported" ]]; then
   echo "=== importing Cutella database ==="
   sed -E 's/DEFINER=`[^`]+`@`[^`]+`//g' "$STAGING/backup/vestacos_cutella.sql" \
-    | docker exec -i vc-db-cutella mariadb -uvestacos_cutella -p"$CUTELLA_DB_PASSWORD" vestacos_cutella
+    | docker exec -i vc-db-cutella mariadb -h127.0.0.1 -uvestacos_cutella -p"$CUTELLA_DB_PASSWORD" vestacos_cutella
   touch "$RUNTIME/markers/db-cutella.imported"
 fi
 
 if [[ ! -f "$RUNTIME/markers/db-vesta.imported" ]]; then
   echo "=== importing Vesta database ==="
   sed -E 's/DEFINER=`[^`]+`@`[^`]+`//g' "$STAGING/backup/vestacos_m.sql" \
-    | docker exec -i vc-db-vesta mariadb -uvestacos_m -p"$VESTA_DB_PASSWORD" vestacos_m
+    | docker exec -i vc-db-vesta mariadb -h127.0.0.1 -uvestacos_m -p"$VESTA_DB_PASSWORD" vestacos_m
   touch "$RUNTIME/markers/db-vesta.imported"
 fi
 
