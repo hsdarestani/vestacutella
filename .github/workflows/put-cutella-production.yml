@@ -1,0 +1,33 @@
+name: Put Cutella on Hetzner production
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/put-cutella-production.sh"
+      - ".github/workflows/put-cutella-production.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y sshpass
+      - name: Upload Cutella production files
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null infra/nginx.conf "root@$HOST:/tmp/nginx.conf"
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/put-cutella-production.sh "root@$HOST:/tmp/put-cutella-production.sh"
+      - name: Put Cutella live on Hetzner
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/put-cutella-production.sh'
