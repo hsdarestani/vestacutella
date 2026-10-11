@@ -1,0 +1,27 @@
+name: Cutella live status
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/cutella-live-status.sh"
+      - ".github/workflows/cutella-live-status.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  status:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y sshpass
+      - name: Check Cutella live status
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/cutella-live-status.sh "root@$HOST:/tmp/cutella-live-status.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/cutella-live-status.sh'
