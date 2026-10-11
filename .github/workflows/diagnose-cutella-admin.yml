@@ -1,0 +1,27 @@
+name: Diagnose Cutella admin
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/diagnose-cutella-admin.sh"
+      - ".github/workflows/diagnose-cutella-admin.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y sshpass
+      - name: Diagnose Cutella wp-admin
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/diagnose-cutella-admin.sh "root@$HOST:/tmp/diagnose-cutella-admin.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/diagnose-cutella-admin.sh'
