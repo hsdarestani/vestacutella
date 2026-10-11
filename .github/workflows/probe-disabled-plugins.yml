@@ -1,0 +1,27 @@
+name: Probe disabled plugins
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/probe-disabled-plugins.sh"
+      - ".github/workflows/probe-disabled-plugins.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y sshpass
+      - name: Probe disabled plugins on staging
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/probe-disabled-plugins.sh "root@$HOST:/tmp/probe-disabled-plugins.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/probe-disabled-plugins.sh'
