@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Re-bootstrap safe for replacement servers; idempotent by design.
 set -euo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
