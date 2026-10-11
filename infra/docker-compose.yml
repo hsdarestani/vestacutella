@@ -74,6 +74,8 @@ services:
     volumes:
       - /srv/vestacutella/repo/infra/nginx.conf:/etc/nginx/nginx.conf:ro
       - /srv/vestacutella/runtime/certs:/etc/nginx/certs:ro
+      - /srv/vestacutella/runtime/cutella:/var/www/cutella:ro
+      - /srv/vestacutella/runtime/vesta:/var/www/vesta:ro
     networks: [backend]
 
 networks:
