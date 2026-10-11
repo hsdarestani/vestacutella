@@ -9,6 +9,7 @@ ENVFILE=$BASE/.env
 
 CUT_DB="$INCOMING/cutella-db.sql.gz"
 VESTA_DB="$INCOMING/vesta-db.sql.gz"
+[[ -s "$VESTA_DB" ]] || VESTA_DB="$INCOMING/vestacos_m.sql.gz"
 CUT_UPLOADS="$INCOMING/cutella-uploads-2026-10.zip"
 VESTA_UPLOADS="$INCOMING/vesta-uploads-2026-10.zip"
 
