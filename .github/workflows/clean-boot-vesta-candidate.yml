@@ -1,0 +1,27 @@
+name: Clean boot Vesta candidate DB
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/clean-boot-vesta-candidate.sh"
+      - ".github/workflows/clean-boot-vesta-candidate.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  boot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y sshpass
+      - name: Clean boot Vesta candidate
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/clean-boot-vesta-candidate.sh "root@$HOST:/tmp/clean-boot-vesta-candidate.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/clean-boot-vesta-candidate.sh'
