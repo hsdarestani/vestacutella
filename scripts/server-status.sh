@@ -88,3 +88,41 @@ echo "=== Vesta Apache tail ==="
 docker logs --tail 120 vc-vesta 2>&1 || true
 
 echo "=== disk ==="; df -h /
+
+
+echo "=== WordPress DB mapping (non-secret) ==="
+for site in cutella vesta; do
+  echo "--- $site wp-config ---"
+  SITE_PATH="$BASE/runtime/$site/wp-config.php" python3 <<'PY'
+import os,re
+p=os.environ["SITE_PATH"]
+s=open(p,encoding="utf-8",errors="ignore").read()
+for k in ("DB_NAME","DB_USER","DB_HOST"):
+    m=re.search(r"define\(\s*['\"]"+k+r"['\"]\s*,\s*['\"]([^'\"]+)",s)
+    print(k+"="+(m.group(1) if m else "<missing>"))
+m=re.search(r"\$table_prefix\s*=\s*['\"]([^'\"]+)",s)
+print("TABLE_PREFIX="+(m.group(1) if m else "<missing>"))
+PY
+done
+
+echo "=== database visibility from WordPress containers ==="
+for c in vc-cutella vc-vesta; do
+  echo "--- $c ---"
+  docker exec "$c" php -r '
+    require "/var/www/html/wp-config.php";
+    $m = @new mysqli(DB_HOST, DB_USER, DB_PASSWORD, DB_NAME);
+    if ($m->connect_errno) { echo "CONNECT_ERROR=".$m->connect_error.PHP_EOL; exit; }
+    echo "CONNECTED db=".DB_NAME.PHP_EOL;
+    $r=$m->query("SHOW TABLES");
+    echo "TABLE_COUNT=".($r ? $r->num_rows : 0).PHP_EOL;
+    $prefix=$table_prefix ?? "wp_";
+    $q=$m->query("SELECT option_name, option_value FROM `".$prefix."options` WHERE option_name IN (\"home\",\"siteurl\")");
+    if ($q) while($row=$q->fetch_assoc()) echo $row["option_name"]."=".$row["option_value"].PHP_EOL;
+  ' || true
+done
+
+echo "=== SQL dump table samples ==="
+for sql in "$BASE/staging/backup/vestacos_cutella.sql" "$BASE/staging/backup/vestacos_m.sql"; do
+  echo "--- $sql ---"
+  grep -m 15 -E '^CREATE TABLE' "$sql" 2>/dev/null || true
+done
