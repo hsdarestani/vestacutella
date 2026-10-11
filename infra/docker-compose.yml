@@ -10,6 +10,7 @@ services:
       MARIADB_ROOT_PASSWORD: ${CUTELLA_DB_ROOT_PASSWORD}
     volumes:
       - /srv/vestacutella/runtime/db-cutella:/var/lib/mysql
+      - /srv/vestacutella/runtime/init-cutella:/docker-entrypoint-initdb.d:ro
     networks: [backend]
     healthcheck:
       test: ["CMD-SHELL", "mariadb-admin ping -h localhost -uroot -p$$MARIADB_ROOT_PASSWORD --silent"]
@@ -28,6 +29,7 @@ services:
       MARIADB_ROOT_PASSWORD: ${VESTA_DB_ROOT_PASSWORD}
     volumes:
       - /srv/vestacutella/runtime/db-vesta:/var/lib/mysql
+      - /srv/vestacutella/runtime/init-vesta:/docker-entrypoint-initdb.d:ro
     networks: [backend]
     healthcheck:
       test: ["CMD-SHELL", "mariadb-admin ping -h localhost -uroot -p$$MARIADB_ROOT_PASSWORD --silent"]
