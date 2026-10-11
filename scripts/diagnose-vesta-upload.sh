@@ -25,3 +25,8 @@ gzip -cd "$D" | awk '
   p {print}
   p && /;$/ {p=0}
 ' | grep -oE '\(0,' | wc -l || true
+
+echo "=== recent Vesta WordPress errors ==="
+tail -n 120 /srv/vestacutella/runtime/vesta/wp-content/debug.log 2>/dev/null | grep -E -i 'fatal|uncaught|error|allowed memory|ioncube|deprecated' | tail -80 || true
+echo "=== Vesta container recent logs ==="
+docker logs --tail 120 vc-vesta 2>&1 | tail -120 || true
