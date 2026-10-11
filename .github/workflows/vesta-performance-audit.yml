@@ -1,0 +1,27 @@
+name: Vesta performance audit
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/vesta-performance-audit.sh"
+      - ".github/workflows/vesta-performance-audit.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y sshpass
+      - name: Audit Vesta performance
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/vesta-performance-audit.sh "root@$HOST:/tmp/vesta-performance-audit.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/vesta-performance-audit.sh'
