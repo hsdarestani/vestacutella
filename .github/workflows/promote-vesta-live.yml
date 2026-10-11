@@ -1,0 +1,27 @@
+name: Promote Vesta live now
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/promote-vesta-live.sh"
+      - ".github/workflows/promote-vesta-live.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y sshpass
+      - name: Promote current Vesta DB and productionize
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/promote-vesta-live.sh "root@$HOST:/tmp/promote-vesta-live.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'chmod +x /tmp/promote-vesta-live.sh && /tmp/promote-vesta-live.sh'
