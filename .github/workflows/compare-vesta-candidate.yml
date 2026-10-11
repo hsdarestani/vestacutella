@@ -1,0 +1,27 @@
+name: Compare latest Vesta DB candidate
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/compare-vesta-candidate.sh"
+      - ".github/workflows/compare-vesta-candidate.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y sshpass
+      - name: Compare Vesta candidate DB
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/compare-vesta-candidate.sh "root@$HOST:/tmp/compare-vesta-candidate.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'chmod +x /tmp/compare-vesta-candidate.sh && /tmp/compare-vesta-candidate.sh'
