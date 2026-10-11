@@ -1,0 +1,27 @@
+name: Live capacity audit
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/live-capacity-audit.sh"
+      - ".github/workflows/live-capacity-audit.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y sshpass
+      - name: Measure live server capacity
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/live-capacity-audit.sh "root@$HOST:/tmp/live-capacity-audit.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/live-capacity-audit.sh'
