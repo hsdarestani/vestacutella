@@ -1,0 +1,27 @@
+name: Refresh Cutella current DB
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/refresh-cutella-current-db.sh"
+      - ".github/workflows/refresh-cutella-current-db.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y sshpass
+      - name: Refresh Cutella DB on Hetzner staging
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/refresh-cutella-current-db.sh "root@$HOST:/tmp/refresh-cutella-current-db.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'chmod +x /tmp/refresh-cutella-current-db.sh && /tmp/refresh-cutella-current-db.sh'
