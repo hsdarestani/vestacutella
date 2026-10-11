@@ -2,6 +2,10 @@ name: Refresh staging from current DirectAdmin data
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".ops/refresh-current-data-trigger"
 
 permissions:
   contents: read
