@@ -1,0 +1,35 @@
+name: Deploy Vesta performance tuning
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/deploy-vesta-performance.sh"
+      - ".github/workflows/deploy-vesta-performance.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y sshpass
+      - name: Upload performance configs
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null infra/nginx.conf "root@$HOST:/tmp/perf-nginx.conf"
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null infra/wordpress/Dockerfile "root@$HOST:/tmp/perf-Dockerfile"
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null infra/wordpress/zz-performance.ini "root@$HOST:/tmp/perf-zz-performance.ini"
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/deploy-vesta-performance.sh "root@$HOST:/tmp/deploy-vesta-performance.sh"
+      - name: Apply performance tuning
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'chmod +x /tmp/deploy-vesta-performance.sh && /tmp/deploy-vesta-performance.sh'
