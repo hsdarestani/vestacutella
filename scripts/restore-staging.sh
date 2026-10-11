@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ARCHIVE="${1:-/srv/migration/backup-Oct-07-2026-2.tar.gz}"
+if [[ -n "${1:-}" ]]; then
+  ARCHIVE="$1"
+else
+  ARCHIVE="$(find /srv/migration -maxdepth 1 -type f -name '*.tar.gz' -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -n1 | cut -d' ' -f2-)"
+fi
+
+[[ -n "${ARCHIVE:-}" ]] || { echo "No .tar.gz backup found in /srv/migration"; exit 2; }
 BASE=/srv/vestacutella
 REPO=$BASE/repo
 STAGING=$BASE/staging
@@ -11,6 +17,15 @@ COMPOSE="$REPO/infra/docker-compose.yml"
 
 [[ -f "$ARCHIVE" ]] || { echo "Archive not found: $ARCHIVE"; exit 2; }
 [[ -f "$COMPOSE" ]] || { echo "Compose file not found: $COMPOSE"; exit 2; }
+
+echo "Using backup: $ARCHIVE"
+ARCHIVE_SHA="$(sha256sum "$ARCHIVE" | awk '{print $1}')"
+PREVIOUS_SHA="$(cat "$STAGING/.archive-sha256" 2>/dev/null || true)"
+if [[ "$ARCHIVE_SHA" != "$PREVIOUS_SHA" ]]; then
+  echo "New backup detected; staging/import markers will be refreshed."
+  rm -f "$STAGING/.extracted"
+  rm -f "$RUNTIME/db-cutella/.imported" "$RUNTIME/db-vesta/.imported" "$RUNTIME/.app-passwords-rotated"
+fi
 
 mkdir -p "$STAGING" "$RUNTIME" "$RUNTIME/certs/cutella" "$RUNTIME/certs/vesta"
 
@@ -28,6 +43,7 @@ if [[ ! -f "$STAGING/.extracted" ]]; then
     backup/vesta-cosmetics.ir/domain.cert \
     backup/vesta-cosmetics.ir/domain.key \
     backup/vesta-cosmetics.ir/domain.cacert
+  printf '%s\n' "$ARCHIVE_SHA" > "$STAGING/.archive-sha256"
   touch "$STAGING/.extracted"
 fi
 
