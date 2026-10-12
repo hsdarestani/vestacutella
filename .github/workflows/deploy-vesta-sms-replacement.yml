@@ -1,0 +1,28 @@
+name: Deploy Vesta SMS replacement
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/deploy-vesta-sms-replacement.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-sms-login-production
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SSH utility
+        run: sudo apt-get update && sudo apt-get install -y sshpass
+      - name: Install SMS login and verify with automatic rollback
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/deploy-vesta-sms-replacement.sh "root@$HOST:/tmp/deploy-vesta-sms-replacement.sh"
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null infra/plugins/vesta-sms-login/vesta-sms-login.php "root@$HOST:/tmp/vesta-sms-login.php"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/deploy-vesta-sms-replacement.sh'
