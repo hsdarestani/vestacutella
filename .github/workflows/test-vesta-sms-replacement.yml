@@ -1,0 +1,26 @@
+name: Test Vesta SMS replacement
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/test-vesta-sms-replacement.sh"
+      - "infra/plugins/vesta-sms-login/**"
+      - ".github/workflows/test-vesta-sms-replacement.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y sshpass
+      - name: Test restored OTP flow in isolated Docker container
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/test-vesta-sms-replacement.sh "root@$HOST:/tmp/test-vesta-sms-replacement.sh"
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null infra/plugins/vesta-sms-login/vesta-sms-login.php "root@$HOST:/tmp/vesta-sms-login.php"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/test-vesta-sms-replacement.sh'
