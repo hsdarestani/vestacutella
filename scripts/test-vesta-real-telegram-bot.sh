@@ -30,15 +30,23 @@ $data=json_decode((string)wp_remote_retrieve_body($r),true);
 $ok=($code===200&&is_array($data)&&!empty($data["ok"]));
 echo "bot_getme_http=$code authorized=".($ok?"yes":"no")."\n";
 if(!$ok)exit(23);
-if(!preg_match("/^-?[0-9]{3,20}$/D",$chat)){echo "CHAT_ID_FORMAT_UNKNOWN_SKIP_TEST\n";exit(24);}
+$chats=array_values(array_filter(array_map("trim",explode(",",$chat)),function($c){return $c!=="";}));
+echo "configured_chat_count=".count($chats)."\n";
+if(count($chats)<1||count($chats)>5){echo "UNEXPECTED_CHAT_COUNT\n";exit(24);}
+foreach($chats as $dest){if(!preg_match("/^-?[0-9]{3,20}$/D",$dest)){echo "INVALID_CONFIGURED_CHAT_FORMAT\n";exit(24);}}
 $msg="✅ تست اتصال ربات سفارش وستا پس از انتقال سرور (۱۲ اکتبر ۲۰۲۶). این پیام آزمایشی است و مربوط به سفارش واقعی نیست.";
-$result=wp_remote_post($base."sendMessage",array("timeout"=>15,"redirection"=>0,"body"=>array("chat_id"=>$chat,"text"=>$msg,"disable_notification"=>"true")));
-if(is_wp_error($result)){echo "bot_send_transport_error=".preg_replace("/[^a-z0-9_-]/i","",$result->get_error_code())."\n";exit(25);}
-$scode=(int)wp_remote_retrieve_response_code($result);
-$body=json_decode((string)wp_remote_retrieve_body($result),true);
-$sent=($scode===200&&is_array($body)&&!empty($body["ok"]));
-echo "bot_send_http=$scode delivered_to_configured_chat=".($sent?"yes":"no")."\n";
-if(!$sent)exit(26);
+$passed=0;
+foreach($chats as $idx=>$dest){
+  $result=wp_remote_post($base."sendMessage",array("timeout"=>20,"redirection"=>0,"body"=>array("chat_id"=>$dest,"text"=>$msg,"disable_notification"=>"true")));
+  if(is_wp_error($result)){echo "recipient_index=".$idx." transport_error=".preg_replace("/[^a-z0-9_-]/i","",$result->get_error_code())."\n";continue;}
+  $scode=(int)wp_remote_retrieve_response_code($result);
+  $body=json_decode((string)wp_remote_retrieve_body($result),true);
+  $sent=($scode===200&&is_array($body)&&!empty($body["ok"]));
+  echo "recipient_index=".$idx." http=".$scode." telegram_accepted=".($sent?"yes":"no")."\n";
+  if($sent)$passed++;
+}
+echo "successfully_tested_chats=".$passed."/".count($chats)."\n";
+if($passed!==count($chats))exit(26);
 '
 echo '=== Store still healthy ==='
 for p in / /shop/ /my-account/;do
