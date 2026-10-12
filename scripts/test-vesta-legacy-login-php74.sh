@@ -31,6 +31,15 @@ import re,sys
 p,db=sys.argv[1],sys.argv[2]
 s=open(p,encoding="utf-8",errors="surrogateescape").read()
 s=re.sub(r"define\(\s*['\"]DB_NAME['\"]\s*,\s*['\"][^'\"]+['\"]\s*\)\s*;", f"define('DB_NAME', '{db}');", s)
+for key,val in [("WP_DEBUG","true"),("WP_DEBUG_DISPLAY","true"),("WP_DEBUG_LOG","true")]:
+    pat=r"define\\(\\s*['\\\"]"+key+r"['\\\"]\\s*,\\s*[^;]+\\)\\s*;"
+    repl="define('"+key+"', "+val+");"
+    if re.search(pat,s):
+        s=re.sub(pat,repl,s)
+    else:
+        marker="/* That's all, stop editing!"
+        j=s.find(marker)
+        s=s[:j]+repl+"\\n"+s[j:] if j>=0 else s+"\\n"+repl+"\\n"
 open(p,"w",encoding="utf-8",errors="surrogateescape").write(s)
 PY
 [[ -d "$TESTROOT/wp-content/plugins/smsir.disabled-for-migration" ]] && mv "$TESTROOT/wp-content/plugins/smsir.disabled-for-migration" "$TESTROOT/wp-content/plugins/smsir"
@@ -70,7 +79,9 @@ for p in / /shop/ /my-account/; do
   curl -sS --max-time 40 -H 'Host: vesta-cosmetics.ir' -o /dev/null -w "$p code=%{http_code} ttfb=%{time_starttransfer} total=%{time_total}\n" "http://127.0.0.1:18080$p" || true
 done
 
+echo "=== isolated WordPress debug log ==="
+tail -n 220 "$TESTROOT/wp-content/debug.log" 2>/dev/null || true
 echo "=== isolated container logs ==="
-docker logs --tail 160 "$TESTC" 2>&1 || true
+docker logs --tail 220 "$TESTC" 2>&1 || true
 
 echo "PHP74_COMPAT_TEST_DONE"
