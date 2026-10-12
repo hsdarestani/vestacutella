@@ -1,0 +1,27 @@
+name: Emergency Vesta login rollback
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/emergency-vesta-login-rollback.sh"
+      - ".github/workflows/emergency-vesta-login-rollback.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y sshpass
+      - name: Roll back experimental login plugins
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/emergency-vesta-login-rollback.sh "root@$HOST:/tmp/emergency-vesta-login-rollback.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/emergency-vesta-login-rollback.sh'
