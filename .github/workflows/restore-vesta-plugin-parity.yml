@@ -1,0 +1,27 @@
+name: Restore Vesta SMSIR and XCart
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/restore-vesta-plugin-parity.sh"
+      - ".github/workflows/restore-vesta-plugin-parity.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y sshpass
+      - name: Restore Vesta plugin parity safely
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/restore-vesta-plugin-parity.sh "root@$HOST:/tmp/restore-vesta-plugin-parity.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/restore-vesta-plugin-parity.sh'
