@@ -105,3 +105,10 @@ sed -n '55,115p' "$BASE/runtime/vesta/wp-content/plugins/snapppay-woocommerce-ga
 sed -n '155,205p' "$BASE/runtime/vesta/wp-content/plugins/snapppay-woocommerce-gateway/hooks.php" || true
 
 echo "SNAPPAY_DIAG_OK"
+
+
+echo "=== SnappPay IP tracking implementation ==="
+sed -n '330,470p' "$BASE/runtime/vesta/wp-content/plugins/snapppay-woocommerce-gateway/functions.php" || true
+grep -Rni "snapppay-web-server-ip" "$BASE/runtime/vesta/wp-content/plugins/snapppay-woocommerce-gateway" 2>/dev/null | head -80 || true
+
+echo "SNAPPAY_IP_TRACKING_DIAG_OK"
