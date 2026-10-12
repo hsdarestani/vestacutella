@@ -146,7 +146,7 @@ function vesta_otp_verify() {
         update_user_meta($user_id, 'billing_phone', $phone);
     }
     $user = get_user_by('id', $user_id);
-    if (!$user || !in_array('customer', (array) $user->roles, true)) {
+    if (!$user || !array_intersect(array('customer','subscriber'), (array) $user->roles) || array_intersect(array('administrator','editor','author','shop_manager'), (array) $user->roles)) {
         // Do not give passwordless access to privileged or non-customer WordPress accounts.
         wp_send_json_error(array('message'=>'این حساب نیاز به ورود با رمز عبور دارد.'), 403);
     }
@@ -234,3 +234,15 @@ add_action('woocommerce_before_customer_login_form', function() {
         echo vesta_otp_render(); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
     }
 }, 1);
+
+add_action('woocommerce_before_checkout_form', function() {
+    if (!is_user_logged_in()) {
+        echo vesta_otp_render(); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+    }
+}, 1);
+add_filter('woocommerce_checkout_fields', function($fields) {
+    if (isset($fields['billing']['billing_email'])) {
+        $fields['billing']['billing_email']['required'] = false;
+    }
+    return $fields;
+}, 20);
