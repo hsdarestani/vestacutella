@@ -178,3 +178,16 @@ require "/var/www/html/wp-load.php";
 require_once ABSPATH."wp-admin/includes/plugin.php";
 foreach (get_option("active_plugins",[]) as $p) echo $p.PHP_EOL;
 ' || true
+
+
+echo "=== Vesta current PHP/plugin restore diagnostics ==="
+docker exec vc-vesta php -v | head -2 || true
+docker logs --since 30m vc-vesta 2>&1 | tail -220 || true
+echo "--- smsir main header/includes ---"
+sed -n '1,220p' /srv/vestacutella/runtime/vesta/wp-content/plugins/smsir.disabled-for-migration/index.php 2>/dev/null || true
+echo "--- active_plugins mentions ---"
+docker exec vc-vesta php -r '
+require "/var/www/html/wp-load.php";
+$a=get_option("active_plugins",[]);
+foreach((array)$a as $p) if (stripos($p,"sms")!==false || stripos($p,"xcart")!==false) echo $p.PHP_EOL;
+' 2>&1 || true
