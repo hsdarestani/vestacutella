@@ -196,3 +196,13 @@ echo "=== custom MU plugins ==="
 find "$BASE/runtime/vesta/wp-content/mu-plugins" -maxdepth 1 -type f -printf '%f\n' 2>/dev/null | sort || true
 
 echo "LOGIN_OTP_AUDIT_OK"
+
+
+echo "=== old-origin My Account plugin assets ==="
+curl -ksS --max-time 30 --resolve vesta-cosmetics.ir:443:93.95.27.75 -o /tmp/old-my.html "https://vesta-cosmetics.ir/my-account/" || true
+grep -Eo '/wp-content/plugins/[^/"?]+' /tmp/old-my.html | sort -u | head -220 || true
+
+echo "=== old-origin OTP related asset lines ==="
+grep -Ein 'xcart|smsir|otp|login.min.js|login.css|mobile|phone' /tmp/old-my.html | head -160 || true
+
+echo "OLD_LOGIN_ASSET_AUDIT_OK"
