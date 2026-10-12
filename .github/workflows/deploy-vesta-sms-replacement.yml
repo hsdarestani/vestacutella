@@ -1,4 +1,5 @@
 name: Deploy Vesta SMS replacement
+# Deploy email-verified recovery for legacy shared billing phones after isolated tests.
 # Release tested OTP resolution for duplicated billing contacts (2026-10-12).
 on:
   push:
