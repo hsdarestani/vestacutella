@@ -1,0 +1,28 @@
+name: Keep product pages fresh
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/deploy-fresh-product-cache-policy.sh"
+      - ".github/workflows/deploy-fresh-product-cache-policy.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y sshpass
+      - name: Apply fresh product cache policy
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null infra/nginx.conf "root@$HOST:/tmp/nginx.conf"
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/deploy-fresh-product-cache-policy.sh "root@$HOST:/tmp/deploy-fresh-product-cache-policy.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/deploy-fresh-product-cache-policy.sh'
