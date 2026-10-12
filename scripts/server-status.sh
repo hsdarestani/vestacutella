@@ -153,3 +153,7 @@ WHERE option_name LIKE 'woocommerce_enable_%checkout%'
    OR option_name LIKE 'woocommerce_registration_generate_%'
 ORDER BY option_name;
 " || true
+
+
+echo "=== PHP8-only helpers in Vesta wp-config ==="
+grep -nE 'str_contains|str_starts_with|str_ends_with|match[[:space:]]*\(' /srv/vestacutella/runtime/vesta/wp-config.php || true
