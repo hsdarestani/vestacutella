@@ -1,0 +1,24 @@
+name: Isolated Vesta SMSIR diagnosis
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/test-vesta-smsir-isolated.sh"
+      - ".github/workflows/test-vesta-smsir-isolated.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  staging:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y sshpass
+      - name: Reproduce SMS login safely in sandbox with read-only WordPress volume
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/test-vesta-smsir-isolated.sh "root@$HOST:/tmp/test-vesta-smsir-isolated.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/test-vesta-smsir-isolated.sh'
