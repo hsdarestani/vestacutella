@@ -1,0 +1,27 @@
+name: Restore Vesta login stepwise
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/restore-vesta-login-stepwise.sh"
+      - ".github/workflows/restore-vesta-login-stepwise.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y sshpass
+      - name: Restore Vesta login plugins stepwise
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/restore-vesta-login-stepwise.sh "root@$HOST:/tmp/restore-vesta-login-stepwise.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/restore-vesta-login-stepwise.sh'
