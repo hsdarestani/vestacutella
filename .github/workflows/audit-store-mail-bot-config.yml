@@ -1,0 +1,24 @@
+name: Deep store mail and bot config audit
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/audit-store-mail-bot-config.sh"
+      - ".github/workflows/audit-store-mail-bot-config.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y sshpass
+      - name: Audit config and routes without secrets or order data
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/audit-store-mail-bot-config.sh "root@$HOST:/tmp/audit-store-mail-bot-config.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/audit-store-mail-bot-config.sh'
