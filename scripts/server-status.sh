@@ -170,3 +170,11 @@ for spec in   "smsir.disabled-for-migration/index.php"   "xcart.disabled-for-mig
     echo "loaded_ok".PHP_EOL;
   ' 2>&1 | tail -80 || true
 done
+
+
+echo "=== VESTA_PLUGIN_STATE_AUDIT ==="
+docker exec vc-vesta php -r '
+require "/var/www/html/wp-load.php";
+require_once ABSPATH."wp-admin/includes/plugin.php";
+foreach (get_option("active_plugins",[]) as $p) echo $p.PHP_EOL;
+' || true
