@@ -1,0 +1,24 @@
+name: Trace outgoing Telegram and email DNS
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/trace-telegram-smtp-network.sh"
+      - ".github/workflows/trace-telegram-smtp-network.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  trace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y sshpass
+      - name: Read-only Telegram network and SMTP policy checks
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/trace-telegram-smtp-network.sh "root@$HOST:/tmp/trace-telegram-smtp-network.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/trace-telegram-smtp-network.sh'
