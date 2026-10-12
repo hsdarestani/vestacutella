@@ -1,0 +1,27 @@
+name: Restore Vesta original SMS login
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/restore-vesta-original-sms-login.sh"
+      - ".github/workflows/restore-vesta-original-sms-login.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y sshpass
+      - name: Restore original Vesta login plugins
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/restore-vesta-original-sms-login.sh "root@$HOST:/tmp/restore-vesta-original-sms-login.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/restore-vesta-original-sms-login.sh'
