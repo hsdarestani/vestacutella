@@ -1,0 +1,24 @@
+name: Verify mail DNS after Cloudflare change
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/verify-vesta-mail-after-dns-change.sh"
+      - ".github/workflows/verify-vesta-mail-after-dns-change.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y sshpass dnsutils
+      - name: Run live DNS and one safe SMTP email test
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/verify-vesta-mail-after-dns-change.sh "root@$HOST:/tmp/verify-vesta-mail-after-dns-change.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/verify-vesta-mail-after-dns-change.sh'
