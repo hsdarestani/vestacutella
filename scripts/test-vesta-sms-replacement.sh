@@ -180,6 +180,91 @@ update_user_meta($c,"smsir_phone","09120000004");
 vesta_assert_phone("09120000004", "conflict", "Two explicit SMS owners stay blocked");
 echo "VESTA_OTP_DUPLICATE_PHONE_TESTS_PASSED".PHP_EOL;
 '
+echo '=== Dual verification recovery regression: shared billing number, different accounts ==='
+docker exec "$CT" php -r '
+require "/var/www/html/wp-load.php";
+$one=wp_insert_user(array("user_login"=>"otp_dual_stage_one","user_email"=>"otp-dual-one@example.com","user_pass"=>wp_generate_password(30),"role"=>"customer"));
+$two=wp_insert_user(array("user_login"=>"otp_dual_stage_two","user_email"=>"otp-dual-two@example.com","user_pass"=>wp_generate_password(30),"role"=>"customer"));
+if (is_wp_error($one) || is_wp_error($two)) {fwrite(STDERR,"Fixture setup failed".PHP_EOL); exit(61);}
+update_user_meta($one,"billing_phone","09120000005");
+update_user_meta($two,"billing_phone","+989120000005");
+$phone="09120000005";$otp="314159";$token=bin2hex(random_bytes(24));
+set_transient("vesta_otp_challenge_".substr(vesta_otp_phone_key($phone),0,36),array(
+ "hash"=>wp_hash_password($otp),"token"=>hash("sha256",$token),"attempts"=>0
+),300);
+file_put_contents("/tmp/vesta-stage-phone-token",$token);
+if (!is_wp_error(vesta_otp_existing_user($phone))) exit(62);
+echo "STAGE_AMBIGUOUS_FIXTURE_READY".PHP_EOL;
+'
+cat > "$STAGE/recovery-phone.php" <<'PHP'
+<?php
+require "/var/www/html/wp-load.php";
+$_POST=array("phone"=>"09120000005","code"=>"314159","token"=>getenv("TOKEN"),
+ "nonce"=>wp_create_nonce("vesta_otp_login"));
+$_REQUEST=$_POST;
+vesta_otp_verify();
+PHP
+PHONE_TOKEN="$(docker exec "$CT" cat /tmp/vesta-stage-phone-token)"
+docker exec -e TOKEN="$PHONE_TOKEN" -i "$CT" php < "$STAGE/recovery-phone.php" > "$STAGE/recovery-phone.json"
+RECOVERY_TOKEN="$(python3 - "$STAGE/recovery-phone.json" <<'PY'
+import json,sys
+o=json.load(open(sys.argv[1]))
+assert o["success"] is False and o["data"]["code"]=="account_selection_required",o
+print(o["data"]["recovery_token"])
+PY
+)"
+echo "STAGE_PHONE_ACCOUNT_AMBIGUITY_SAFELY_DETECTED"
+cat > "$STAGE/recovery-email-send.php" <<'PHP'
+<?php
+require "/var/www/html/wp-load.php";
+add_filter("pre_wp_mail",function($skip,$args){
+ if (!preg_match("/([0-9]{6})/", $args["message"], $matches)) {
+   return new WP_Error("test_mail", "Missing recovery code");
+ }
+ file_put_contents("/tmp/vesta-stage-email-code",$matches[1]);
+ return true;
+},10,2);
+$_POST=array("recovery_token"=>getenv("RECOVERY_TOKEN"),
+ "email"=>"otp-dual-one@example.com","nonce"=>wp_create_nonce("vesta_otp_login"));
+$_REQUEST=$_POST;
+vesta_otp_recovery_send();
+PHP
+docker exec -e RECOVERY_TOKEN="$RECOVERY_TOKEN" -i "$CT" php < "$STAGE/recovery-email-send.php" > "$STAGE/recovery-email-send.json"
+python3 - "$STAGE/recovery-email-send.json" <<'PY'
+import json,sys
+assert json.load(open(sys.argv[1]))["success"] is True
+print("STAGE_RECOVERY_EMAIL_SEND_MOCKED_OK")
+PY
+EMAIL_CODE="$(docker exec "$CT" cat /tmp/vesta-stage-email-code)"
+cat > "$STAGE/recovery-email-verify.php" <<'PHP'
+<?php
+require "/var/www/html/wp-load.php";
+$_POST=array("recovery_token"=>getenv("RECOVERY_TOKEN"),
+ "email_code"=>getenv("EMAIL_CODE"),"nonce"=>wp_create_nonce("vesta_otp_login"));
+$_REQUEST=$_POST;
+vesta_otp_recovery_verify();
+PHP
+docker exec -e RECOVERY_TOKEN="$RECOVERY_TOKEN" -e EMAIL_CODE=000000 -i "$CT" php < "$STAGE/recovery-email-verify.php" > "$STAGE/recovery-email-bad.json"
+python3 - "$STAGE/recovery-email-bad.json" <<'PY'
+import json,sys
+assert json.load(open(sys.argv[1]))["success"] is False
+print("STAGE_WRONG_EMAIL_CODE_REJECTED")
+PY
+docker exec -e RECOVERY_TOKEN="$RECOVERY_TOKEN" -e EMAIL_CODE="$EMAIL_CODE" -i "$CT" php < "$STAGE/recovery-email-verify.php" > "$STAGE/recovery-email-good.json"
+python3 - "$STAGE/recovery-email-good.json" <<'PY'
+import json,sys
+assert json.load(open(sys.argv[1]))["success"] is True
+print("STAGE_DOUBLE_VERIFIED_LOGIN_OK")
+PY
+docker exec "$CT" php -r '
+require "/var/www/html/wp-load.php";
+$a=get_user_by("email","otp-dual-one@example.com");
+$b=get_user_by("email","otp-dual-two@example.com");
+if (!$a || !$b || vesta_otp_existing_user("09120000005")!==(int)$a->ID) exit(65);
+if (vesta_otp_phone(get_user_meta($b->ID,"billing_phone",true))!=="09120000005") exit(66);
+if (get_user_meta($b->ID,"smsir_phone",true)!=="") exit(67);
+echo "STAGE_SECOND_ACCOUNT_AND_ORDER_OWNERSHIP_UNCHANGED".PHP_EOL;
+'
 echo '=== Sanitized staging PHP fatal report ==='
 docker exec "$CT" sh -lc 'test ! -f /tmp/vesta-staging-fatal.json || cat /tmp/vesta-staging-fatal.json' || true
 echo STAGING_SMSIR_REPLACEMENT_TEST_PASSED
