@@ -160,3 +160,39 @@ ORDER BY option_name;
 " | head -120 || true
 
 echo "CHECKOUT_FIELD_DIAG_OK"
+
+
+echo "=== compare current vs old-origin My Account ==="
+for target in current old; do
+  echo "--- $target ---"
+  if [[ "$target" == "current" ]]; then
+    curl -ksS --max-time 30 -D /tmp/my.h -o /tmp/my.b "https://vesta-cosmetics.ir/my-account/" || true
+  else
+    curl -ksS --max-time 30 --resolve vesta-cosmetics.ir:443:93.95.27.75 -D /tmp/my.h -o /tmp/my.b "https://vesta-cosmetics.ir/my-account/" || true
+  fi
+  echo "bytes=$(wc -c < /tmp/my.b 2>/dev/null || echo 0)"
+  grep -Eio 'ورود با[^<]{0,80}|کد یک.?بار مصرف|رمز یک.?بار مصرف|otp|sms|شماره موبایل|تلفن همراه|نام کاربری یا آدرس ایمیل|ثبت نام' /tmp/my.b | sort -u | head -80 || true
+done
+
+echo "=== OTP/SMS login implementation candidates on current filesystem ==="
+for root in "$BASE/runtime/vesta/wp-content/plugins" "$BASE/runtime/vesta/wp-content/mu-plugins" "$BASE/runtime/vesta/wp-content/themes"; do
+  [[ -d "$root" ]] || continue
+  grep -Rli --exclude='*.map' -E 'SMSIR_API|103808|vestaland_send_otp|woocommerce_login_form|one.?time|otp|کد یک.?بار مصرف|شماره موبایل' "$root" 2>/dev/null | head -160 || true
+done
+
+echo "=== SMSIR plugin directories/status ==="
+find "$BASE/runtime/vesta/wp-content/plugins" -maxdepth 1 -type d -iname '*sms*' -printf '%f\n' | sort || true
+docker exec vc-vesta php -r '
+require "/var/www/html/wp-load.php";
+require_once ABSPATH."wp-admin/includes/plugin.php";
+foreach (get_plugins() as $file=>$data) {
+  if (stripos($file,"sms")!==false || stripos($data["Name"]??"","sms")!==false) {
+    echo $file." | ".($data["Name"]??"")." | active=".(is_plugin_active($file)?"yes":"no").PHP_EOL;
+  }
+}
+' 2>&1 | tail -100
+
+echo "=== custom MU plugins ==="
+find "$BASE/runtime/vesta/wp-content/mu-plugins" -maxdepth 1 -type f -printf '%f\n' 2>/dev/null | sort || true
+
+echo "LOGIN_OTP_AUDIT_OK"
