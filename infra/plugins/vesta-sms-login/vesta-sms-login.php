@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Vesta SMS.ir OTP Login
  * Description: Unencoded, isolated replacement for the broken legacy SMS.ir customer OTP login.
- * Version: 1.0.0
+ * Version: 1.1.0
  * Requires PHP: 7.4
  */
 if (!defined('ABSPATH')) { exit; }
@@ -130,6 +130,148 @@ function vesta_otp_existing_user($phone) {
     if (count($login) > 1 || count($all) > 1) { return $conflict; }
     return count($all) === 1 ? (int) key($all) : 0;
 }
+/**
+ * A shared billing contact is not proof of ownership of any particular
+ * WooCommerce account. For legacy contacts, require both the SMS challenge
+ * and a code delivered to the account's already-registered email.
+ */
+function vesta_otp_recovery_key($token) {
+    return 'vesta_otp_recovery_' . hash('sha256', $token);
+}
+function vesta_otp_recovery_state() {
+    $token = isset($_POST['recovery_token']) ? trim((string) wp_unslash($_POST['recovery_token'])) : '';
+    if (!preg_match('/^[a-f0-9]{64}$/D', $token)) {
+        return new WP_Error('invalid_recovery', 'درخواست ورود منقضی شده است. دوباره تلاش کنید.');
+    }
+    $state = get_transient(vesta_otp_recovery_key($token));
+    if (!is_array($state) || empty($state['phone']) || !vesta_otp_phone($state['phone'])) {
+        return new WP_Error('invalid_recovery', 'درخواست ورود منقضی شده است. دوباره تلاش کنید.');
+    }
+    return array($token, $state);
+}
+function vesta_otp_recovery_contact_matches($user_id, $phone) {
+    foreach (array('billing_phone', 'phone', 'smsir_phone') as $key) {
+        foreach ((array) get_user_meta($user_id, $key, false) as $stored) {
+            if (vesta_otp_phone($stored) === $phone) { return true; }
+        }
+    }
+    return false;
+}
+function vesta_otp_recovery_has_login_owner($phone) {
+    global $wpdb;
+    $variants = array_values(array_unique(array(
+        $phone, '+98'.substr($phone, 1), '98'.substr($phone, 1),
+        substr($phone, 1), '0098'.substr($phone, 1)
+    )));
+    $holders = implode(',', array_fill(0, count($variants), '%s'));
+    $query = "SELECT COUNT(DISTINCT user_id) FROM {$wpdb->usermeta} WHERE meta_key IN ('smsir_phone','phone') AND meta_value IN ($holders)";
+    return (int) $wpdb->get_var($wpdb->prepare($query, $variants)) > 0;
+}
+function vesta_otp_recovery_send() {
+    vesta_otp_ajax_check();
+    $resolved = vesta_otp_recovery_state();
+    if (is_wp_error($resolved)) {
+        wp_send_json_error(array('message'=>$resolved->get_error_message()), 403);
+    }
+    list($token, $state) = $resolved;
+    if (!empty($state['sent_at']) && (time() - (int) $state['sent_at']) < 60) {
+        wp_send_json_error(array('message'=>'لطفاً یک دقیقه بعد دوباره تلاش کنید.'), 429);
+    }
+    if (!empty($state['requests']) && (int) $state['requests'] >= 3) {
+        wp_send_json_error(array('message'=>'تعداد درخواست‌ها بیش از حد مجاز است. دوباره از ابتدا وارد شوید.'), 429);
+    }
+    $email = isset($_POST['email']) ? sanitize_email(wp_unslash($_POST['email'])) : '';
+    if (!$email || !is_email($email)) {
+        wp_send_json_error(array('message'=>'ایمیل حساب کاربری را درست وارد کنید.'), 400);
+    }
+    $state['requests'] = isset($state['requests']) ? (int) $state['requests'] + 1 : 1;
+    $state['sent_at'] = time();
+    unset($state['email_user'], $state['email_hash']);
+    $phone = $state['phone'];
+    $existing = vesta_otp_existing_user($phone);
+    // Never continue recovery when an explicit mobile login has been bound.
+    if (is_wp_error($existing) && $existing->get_error_code() === 'duplicate_mobile' &&
+        !vesta_otp_recovery_has_login_owner($phone)) {
+        $user = get_user_by('email', $email);
+        if ($user && vesta_otp_recovery_contact_matches($user->ID, $phone) &&
+            array_intersect(array('customer','subscriber'), (array) $user->roles) &&
+            !array_intersect(array('administrator','editor','author','shop_manager'), (array) $user->roles)) {
+            $code = (string) random_int(100000, 999999);
+            $message = "کد تأیید ورود به وستا: " . $code . "\nاعتبار: ۵ دقیقه. این کد را در اختیار دیگران قرار ندهید.";
+            if (wp_mail($user->user_email, 'کد تأیید ورود به وستا', $message)) {
+                $state['email_user'] = (int) $user->ID;
+                $state['email_hash'] = wp_hash_password($code);
+                $state['email_attempts'] = 0;
+                $state['email_expires'] = time() + 300;
+            }
+        }
+    }
+    set_transient(vesta_otp_recovery_key($token), $state, 600);
+    // Avoid revealing which email addresses belong to store customers.
+    wp_send_json_success(array('message'=>'اگر این ایمیل به یکی از حساب‌ها مرتبط باشد، کد تأیید ارسال می‌شود.'));
+}
+function vesta_otp_recovery_verify() {
+    vesta_otp_ajax_check();
+    $resolved = vesta_otp_recovery_state();
+    if (is_wp_error($resolved)) {
+        wp_send_json_error(array('message'=>$resolved->get_error_message()), 403);
+    }
+    list($token, $state) = $resolved;
+    $code = isset($_POST['email_code']) ? trim((string) wp_unslash($_POST['email_code'])) : '';
+    if (!preg_match('/^[0-9]{6}$/D', $code) ||
+        empty($state['email_hash']) || empty($state['email_user']) ||
+        empty($state['email_expires']) || time() > (int) $state['email_expires']) {
+        wp_send_json_error(array('message'=>'کد ایمیل معتبر نیست یا منقضی شده است.'), 400);
+    }
+    $attempts = isset($state['email_attempts']) ? (int) $state['email_attempts'] : 0;
+    if ($attempts >= 5) {
+        delete_transient(vesta_otp_recovery_key($token));
+        wp_send_json_error(array('message'=>'تعداد تلاش‌ها بیش از حد مجاز است.'), 429);
+    }
+    if (!wp_check_password($code, $state['email_hash'])) {
+        $state['email_attempts'] = $attempts + 1;
+        if ($state['email_attempts'] >= 5) delete_transient(vesta_otp_recovery_key($token));
+        else set_transient(vesta_otp_recovery_key($token), $state, 600);
+        wp_send_json_error(array('message'=>'کد ایمیل اشتباه است.'), 400);
+    }
+    $phone = $state['phone'];
+    $user_id = (int) $state['email_user'];
+    $user = get_user_by('id', $user_id);
+    if (!$user || !array_intersect(array('customer','subscriber'), (array) $user->roles) ||
+        array_intersect(array('administrator','editor','author','shop_manager'), (array) $user->roles) ||
+        !vesta_otp_recovery_contact_matches($user_id, $phone)) {
+        wp_send_json_error(array('message'=>'امکان تأیید این حساب وجود ندارد.'), 403);
+    }
+    // Serialize phone ownership changes to avoid two competing recoveries.
+    global $wpdb;
+    $lock = 'vesta_otp_' . substr(vesta_otp_phone_key($phone), 0, 32);
+    if ((int) $wpdb->get_var($wpdb->prepare('SELECT GET_LOCK(%s, 5)', $lock)) !== 1) {
+        wp_send_json_error(array('message'=>'درخواست در حال بررسی است. دوباره تلاش کنید.'), 503);
+    }
+    $safe = false;
+    $existing = vesta_otp_existing_user($phone);
+    if (is_wp_error($existing) && $existing->get_error_code() === 'duplicate_mobile' &&
+        !vesta_otp_recovery_has_login_owner($phone) &&
+        vesta_otp_recovery_contact_matches($user_id, $phone)) {
+        // This is a new identity binding only; no other user or order is changed.
+        $safe = (bool) update_user_meta($user_id, 'smsir_phone', $phone);
+    }
+    $wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)', $lock));
+    if (!$safe) {
+        wp_send_json_error(array('message'=>'تأیید حساب ممکن نشد. لطفاً با پشتیبانی تماس بگیرید.'), 409);
+    }
+    delete_transient(vesta_otp_recovery_key($token));
+    wp_set_current_user($user_id);
+    wp_set_auth_cookie($user_id, true, is_ssl());
+    do_action('wp_login', $user->user_login, $user);
+    $redirect = function_exists('wc_get_page_permalink') ? wc_get_page_permalink('myaccount') : home_url('/my-account/');
+    wp_send_json_success(array('redirect'=>esc_url_raw($redirect)));
+}
+add_action('wp_ajax_nopriv_vesta_otp_recovery_send', 'vesta_otp_recovery_send');
+add_action('wp_ajax_vesta_otp_recovery_send', 'vesta_otp_recovery_send');
+add_action('wp_ajax_nopriv_vesta_otp_recovery_verify', 'vesta_otp_recovery_verify');
+add_action('wp_ajax_vesta_otp_recovery_verify', 'vesta_otp_recovery_verify');
+
 function vesta_otp_verify() {
     vesta_otp_ajax_check();
     $phone = vesta_otp_phone(isset($_POST['phone']) ? wp_unslash($_POST['phone']) : '');
@@ -156,7 +298,18 @@ function vesta_otp_verify() {
     // A verified code is single-use, even when account lookup or creation fails.
     delete_transient($challenge_key);
     $user_id = vesta_otp_existing_user($phone);
-    if (is_wp_error($user_id)) { wp_send_json_error(array('message'=>$user_id->get_error_message()), 409); }
+    if (is_wp_error($user_id)) {
+        if ($user_id->get_error_code() === 'duplicate_mobile') {
+            $recovery_token = bin2hex(random_bytes(32));
+            set_transient(vesta_otp_recovery_key($recovery_token), array('phone'=>$phone, 'requests'=>0), 600);
+            wp_send_json_error(array(
+                'code'=>'account_selection_required',
+                'recovery_token'=>$recovery_token,
+                'message'=>'این شماره در اطلاعات تماس چند حساب وجود دارد. برای ورود امن، ایمیل حساب خود را هم تأیید کنید.'
+            ), 409);
+        }
+        wp_send_json_error(array('message'=>$user_id->get_error_message()), 409);
+    }
     if (!$user_id) {
         $username = 'vesta_mobile_' . substr(hash_hmac('sha256', $phone, wp_salt('secure_auth')), 0, 24);
         if (username_exists($username)) {
@@ -206,6 +359,16 @@ function vesta_otp_render() {
           <label for="vesta-otp-code">کد تأیید</label>
           <input id="vesta-otp-code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="کد ۶ رقمی" />
         </div>
+        <div id="vesta-otp-email-recovery" hidden>
+          <p>برای انتخاب حساب، ایمیل ثبت‌شده در همان حساب را وارد کنید. کد جداگانه‌ای به آن ایمیل ارسال می‌شود.</p>
+          <label for="vesta-otp-email">ایمیل حساب</label>
+          <input id="vesta-otp-email" type="email" inputmode="email" autocomplete="email" placeholder="email@example.com" />
+          <div id="vesta-otp-email-code-row" hidden>
+            <label for="vesta-otp-email-code">کد ایمیل</label>
+            <input id="vesta-otp-email-code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="کد ۶ رقمی ایمیل" />
+          </div>
+          <p>اگر ایمیل حساب را ندارید، از ورود با رمز عبور یا پشتیبانی کمک بگیرید.</p>
+        </div>
         <button id="vesta-otp-submit" type="submit">دریافت کد ورود</button>
         <p id="vesta-otp-feedback" role="status" aria-live="polite"></p>
       </form>
@@ -228,7 +391,11 @@ function vesta_otp_render() {
       var form=document.getElementById('vesta-otp-form'),phone=document.getElementById('vesta-otp-phone'),
       code=document.getElementById('vesta-otp-code'), row=document.getElementById('vesta-otp-code-row'),
       button=document.getElementById('vesta-otp-submit'),feedback=document.getElementById('vesta-otp-feedback');
-      var token='', ajax=<?php echo wp_json_encode($ajax); ?>, nonce=<?php echo wp_json_encode($nonce); ?>;
+      var token='', recoveryToken='', stage='send', ajax=<?php echo wp_json_encode($ajax); ?>, nonce=<?php echo wp_json_encode($nonce); ?>;
+      var recovery=document.getElementById('vesta-otp-email-recovery'),
+          email=document.getElementById('vesta-otp-email'),
+          emailCode=document.getElementById('vesta-otp-email-code'),
+          emailCodeRow=document.getElementById('vesta-otp-email-code-row');
       document.getElementById('vesta-otp-legacy').addEventListener('click',function(){ document.body.classList.toggle('vesta-show-password-login'); });
       async function call(action,details) {
         var d=new FormData();d.append('action',action);d.append('nonce',nonce);
@@ -239,15 +406,29 @@ function vesta_otp_render() {
       form.addEventListener('submit',async function(e){
         e.preventDefault();button.disabled=true;feedback.textContent='لطفاً صبر کنید…';
         try{
-          if(!token){
+          if(stage==='send'){
             var a=await call('vesta_otp_send',{phone:phone.value});
             if(!a.success) throw Error(a.data&&a.data.message||'خطا در ارسال کد');
-            token=a.data.token; row.hidden=false; phone.readOnly=true;
+            token=a.data.token; stage='sms'; row.hidden=false; phone.readOnly=true;
             button.textContent='ورود با کد تأیید';feedback.textContent=a.data.message;code.focus();
-          }else{
+          }else if(stage==='sms'){
             var b=await call('vesta_otp_verify',{phone:phone.value,code:code.value,token:token});
-            if(!b.success) throw Error(b.data&&b.data.message||'کد تأیید نامعتبر است');
-            window.location.assign(b.data.redirect||'/my-account/');
+            if(!b.success) {
+              if(b.data && b.data.code==='account_selection_required' && b.data.recovery_token){
+                recoveryToken=b.data.recovery_token; stage='recovery-email';
+                row.hidden=true; recovery.hidden=false; button.textContent='ارسال کد به ایمیل';
+                feedback.textContent=b.data.message;email.focus();
+              }else throw Error(b.data&&b.data.message||'کد تأیید نامعتبر است');
+            }else window.location.assign(b.data.redirect||'/my-account/');
+          }else if(stage==='recovery-email'){
+            var c=await call('vesta_otp_recovery_send',{recovery_token:recoveryToken,email:email.value});
+            if(!c.success) throw Error(c.data&&c.data.message||'ارسال کد ایمیل ناموفق بود');
+            stage='recovery-verify';email.readOnly=true;emailCodeRow.hidden=false;
+            button.textContent='تأیید ایمیل و ورود';feedback.textContent=c.data.message;emailCode.focus();
+          }else if(stage==='recovery-verify'){
+            var d=await call('vesta_otp_recovery_verify',{recovery_token:recoveryToken,email_code:emailCode.value});
+            if(!d.success) throw Error(d.data&&d.data.message||'کد ایمیل نامعتبر است');
+            window.location.assign(d.data.redirect||'/my-account/');
           }
         }catch(err){feedback.textContent=err.message||'ارتباط برقرار نشد. دوباره تلاش کنید.';}
         button.disabled=false;
