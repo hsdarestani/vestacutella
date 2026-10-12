@@ -24,4 +24,7 @@ jobs:
           SSHPASS: ${{ secrets.PASS }}
         run: |
           sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/restore-vesta-original-sms-login.sh "root@$HOST:/tmp/restore-vesta-original-sms-login.sh"
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null infra/docker-compose.yml "root@$HOST:/tmp/docker-compose.yml"
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null infra/wordpress74/Dockerfile "root@$HOST:/tmp/vesta74-Dockerfile"
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null infra/wordpress74/zz-performance.ini "root@$HOST:/tmp/vesta74-performance.ini"
           sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/restore-vesta-original-sms-login.sh'
