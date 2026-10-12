@@ -66,6 +66,40 @@ foreach ($groups as $phone=>$g) {
     }
   }
 }
+// Audit ambiguous billing-only groups without disclosing any personal data.
+$detail=array(
+  'ambiguous_groups_with_no_order_owners'=>0,
+  'ambiguous_groups_with_one_order_owner'=>0,
+  'ambiguous_groups_with_multiple_order_owners'=>0,
+  'ambiguous_groups_with_missing_email'=>0,
+  'groups_with_unusual_stored_phone_forms'=>0
+);
+foreach ($groups as $phone=>$g) {
+  $variants=array($phone,'+98'.substr($phone,1),'98'.substr($phone,1),
+    substr($phone,1),'0098'.substr($phone,1));
+  foreach ($rows as $r) {
+    if (vesta_otp_phone((string)$r['meta_value'])===$phone &&
+        !in_array((string)$r['meta_value'],$variants,true)) {
+      ++$detail['groups_with_unusual_stored_phone_forms'];
+      break;
+    }
+  }
+  if (count($g['all'])<2 || count($g['login'])!==0) continue;
+  $with_orders=0; $without_email=false;
+  foreach (array_keys($g['all']) as $uid) {
+    $user=get_user_by('id',$uid);
+    if (!$user || !is_email($user->user_email)) $without_email=true;
+    if (function_exists('wc_get_orders')) {
+      $ids=wc_get_orders(array('customer_id'=>$uid,'limit'=>1,'return'=>'ids'));
+      if (!empty($ids)) ++$with_orders;
+    }
+  }
+  if ($with_orders===0) ++$detail['ambiguous_groups_with_no_order_owners'];
+  elseif ($with_orders===1) ++$detail['ambiguous_groups_with_one_order_owner'];
+  else ++$detail['ambiguous_groups_with_multiple_order_owners'];
+  if ($without_email) ++$detail['ambiguous_groups_with_missing_email'];
+}
+echo 'OTP_AUDIT_DETAILS='.wp_json_encode($detail)."\n";
 echo 'OTP_AUDIT_SUMMARY='.wp_json_encode($stats)."\n";
 echo "OTP_AUDIT_COMPLETE=read_only\n";
 PHP
