@@ -18,6 +18,13 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y dnsutils
       - name: Check MX records
         run: |
+          echo "=== vesta DNS ==="
+          echo "NS:"; dig +short NS vesta-cosmetics.ir
+          echo "A:"; dig +short A vesta-cosmetics.ir
+          echo "AAAA:"; dig +short AAAA vesta-cosmetics.ir
+          echo "SOA:"; dig +short SOA vesta-cosmetics.ir
+          echo "via 1.1.1.1:"; dig @1.1.1.1 +short A vesta-cosmetics.ir
+          echo "via 8.8.8.8:"; dig @8.8.8.8 +short A vesta-cosmetics.ir
           echo "=== cutellashop.ir MX ==="
           dig +short MX cutellashop.ir
           echo "=== vesta-cosmetics.ir MX ==="
@@ -28,3 +35,5 @@ jobs:
             dig +short A "$h"
             dig +short AAAA "$h"
           done
+
+# incident dns check 2026-10-12
