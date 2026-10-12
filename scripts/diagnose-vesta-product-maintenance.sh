@@ -44,3 +44,30 @@ curl -4fsS --max-time 10 https://api.ipify.org || true
 echo
 
 echo "PAYMENT_GATEWAY_DIAG_OK"
+
+
+echo "=== gateway source references for Forbidden / API calls ==="
+for p in snapppay-woocommerce-gateway wp-digipay-V1.6.17 persian-cardpay-smart; do
+  d="$BASE/runtime/vesta/wp-content/plugins/$p"
+  [[ -d "$d" ]] || continue
+  echo "--- $p ---"
+  grep -RniE 'Forbidden|خطای درگاه|wp_remote_(get|post|request)|curl_exec|api\.snapppay\.ir|api\.mydigipay\.com|merchant|whitelist|ip address|آی.?پی' "$d" 2>/dev/null     | head -220 || true
+done
+
+echo "=== provider reachability from new server ==="
+for u in https://api.snapppay.ir/ https://api.mydigipay.com/ https://www.mydigipay.com/; do
+  echo "--- $u ---"
+  curl -ksS --max-time 20 -D /tmp/provider.h -o /tmp/provider.b -w 'code=%{http_code} remote=%{remote_ip} total=%{time_total}\n' "$u" || true
+  head -n 15 /tmp/provider.h || true
+  head -c 500 /tmp/provider.b | tr '\n' ' '; echo
+done
+
+echo "=== options names for payment plugins (values hidden) ==="
+docker exec vc-db-vesta mariadb -uroot -p"$VESTA_DB_ROOT_PASSWORD" vestacos_m -N -e "
+SELECT option_name
+FROM wp_options
+WHERE option_name REGEXP 'snap|digipay|zibal|cardpay|gateway'
+ORDER BY option_name;
+" | head -160 || true
+
+echo "PAYMENT_GATEWAY_DEEP_DIAG_OK"
