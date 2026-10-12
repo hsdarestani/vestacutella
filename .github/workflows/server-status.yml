@@ -24,4 +24,5 @@ jobs:
           SSHPASS: ${{ secrets.PASS }}
         run: |
           sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/server-status.sh "root@$HOST:/tmp/server-status.sh"
-          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/server-status.sh'
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/fix-vesta-checkout-no-email.sh "root@$HOST:/tmp/fix-vesta-checkout-no-email.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/server-status.sh && bash /tmp/fix-vesta-checkout-no-email.sh'
