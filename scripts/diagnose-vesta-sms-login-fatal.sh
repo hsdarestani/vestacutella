@@ -65,6 +65,25 @@ foreach($o as $k=>$v) {
   else echo "$k=other".PHP_EOL;
 }
 '
+echo '=== NESTED SMSIR SETTINGS FIELDS (NO VALUES) ==='
+docker exec vc-vesta php -r '
+require "/var/www/html/wp-load.php";
+$o=get_option("smsir_settings");
+function inspect_fields($v,$prefix,$depth) {
+ if (!is_array($v) || $depth>3) return;
+ foreach($v as $k=>$value) {
+   $k=(string)$k;
+   $name=$prefix.".".$k;
+   if (is_array($value)) {
+      echo $name."=array".PHP_EOL;
+      inspect_fields($value,$name,$depth+1);
+   } else echo $name."=".($value===null?"null":(is_string($value)||is_numeric($value)?"scalar_set_".(strlen((string)$value)>0?"yes":"no"):"other")).PHP_EOL;
+ }
+}
+inspect_fields($o,"smsir",0);
+'
+echo NESTED_SETTINGS_META_DONE
+
 echo SETTINGS_STRUCTURE_COMPLETE
 
 echo SMS_OPTIONS_METADATA_ONLY_DONE
