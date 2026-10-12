@@ -157,3 +157,16 @@ ORDER BY option_name;
 
 echo "=== PHP8-only helpers in Vesta wp-config ==="
 grep -nE 'str_contains|str_starts_with|str_ends_with|match[[:space:]]*\(' /srv/vestacutella/runtime/vesta/wp-config.php || true
+
+
+echo "=== PLUGIN_DIRECT_LOAD_DIAG ==="
+for spec in   "smsir.disabled-for-migration/index.php"   "xcart.disabled-for-migration/xcart.php"; do
+  echo "--- $spec ---"
+  docker exec -e PLUGIN_FILE="$spec" vc-vesta php -d display_errors=1 -d error_reporting=E_ALL -r '
+    require "/var/www/html/wp-load.php";
+    $f="/var/www/html/wp-content/plugins/".getenv("PLUGIN_FILE");
+    echo "loading=".$f.PHP_EOL;
+    include $f;
+    echo "loaded_ok".PHP_EOL;
+  ' 2>&1 | tail -80 || true
+done
