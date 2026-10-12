@@ -54,6 +54,19 @@ source "$ENVFILE"
 set +a
 docker exec vc-db-vesta mariadb -uroot -p"$VESTA_DB_ROOT_PASSWORD" -N vestacos_m -e "SELECT option_name FROM wp_options WHERE option_name REGEXP 'smsir|sms_ir|otp|phone|mobile|xcart' ORDER BY option_name LIMIT 90;" | head -n 90
 docker exec vc-db-vesta mariadb -uroot -p"$VESTA_DB_ROOT_PASSWORD" -N vestacos_m -e "SELECT meta_key, COUNT(*) FROM wp_usermeta WHERE meta_key REGEXP 'smsir|sms_ir|otp|phone|mobile' GROUP BY meta_key ORDER BY COUNT(*) DESC LIMIT 30;" | head -n 30
+echo '=== SMSIR_SETTINGS STRUCTURE (KEY NAMES AND VALUE TYPES ONLY) ==='
+docker exec vc-vesta php -r '
+require "/var/www/html/wp-load.php";
+$o=get_option("smsir_settings");
+if (!is_array($o)) {echo "settings_not_array\n";exit;}
+foreach($o as $k=>$v) {
+  if (is_scalar($v)) echo "$k=scalar_set_".(strlen((string)$v)>0?"yes":"no").PHP_EOL;
+  elseif (is_array($v)) echo "$k=array_keys(".implode(",",array_slice(array_keys($v),0,30)).")".PHP_EOL;
+  else echo "$k=other".PHP_EOL;
+}
+'
+echo SETTINGS_STRUCTURE_COMPLETE
+
 echo SMS_OPTIONS_METADATA_ONLY_DONE
 
 echo VESTA_LOGIN_DIAGNOSTIC_COMPLETE
