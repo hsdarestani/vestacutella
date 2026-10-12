@@ -39,10 +39,23 @@ PY
 NET="$(docker inspect vc-vesta --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}')"
 echo "network=$NET"
 
-echo "=== run isolated PHP 7.4 WordPress container ==="
+echo "=== run isolated PHP 7.4 WordPress container with ionCube ==="
 docker pull wordpress:php7.4-apache
-docker run -d --name "$TESTC" --network "$NET" -p 127.0.0.1:18080:80   -v "$TESTROOT:/var/www/html" wordpress:php7.4-apache >/dev/null
+rm -rf /tmp/ioncube74 /tmp/ioncube74.tar.gz /tmp/ioncube74.ini
+curl -fsSL https://downloads.ioncube.com/loader_downloads/ioncube_loaders_lin_x86-64.tar.gz -o /tmp/ioncube74.tar.gz
+mkdir -p /tmp/ioncube74
+tar -xzf /tmp/ioncube74.tar.gz -C /tmp/ioncube74
+EXTDIR="$(docker run --rm wordpress:php7.4-apache php -r 'echo ini_get("extension_dir");')"
+echo "zend_extension=$EXTDIR/ioncube_loader_lin_7.4.so" > /tmp/ioncube74.ini
+echo "extension_dir=$EXTDIR"
+docker run -d --name "$TESTC" --network "$NET" -p 127.0.0.1:18080:80 \
+  -v "$TESTROOT:/var/www/html" \
+  -v "/tmp/ioncube74/ioncube/ioncube_loader_lin_7.4.so:$EXTDIR/ioncube_loader_lin_7.4.so:ro" \
+  -v "/tmp/ioncube74.ini:/usr/local/etc/php/conf.d/00-ioncube.ini:ro" \
+  wordpress:php7.4-apache >/dev/null
 sleep 12
+docker exec "$TESTC" php -v
+docker exec "$TESTC" php -m | grep -i ionCube || true
 
 echo "=== test My Account legacy behavior ==="
 curl -sS --max-time 40 -H 'Host: vesta-cosmetics.ir' -D /tmp/t.h -o /tmp/t.b http://127.0.0.1:18080/my-account/ || true
