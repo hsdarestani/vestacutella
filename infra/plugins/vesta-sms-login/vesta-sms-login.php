@@ -89,17 +89,46 @@ function vesta_otp_send() {
     ), 300);
     wp_send_json_success(array('token'=>$token, 'message'=>'کد تأیید ارسال شد.'));
 }
+/**
+ * Resolve a verified phone without confusing a WooCommerce billing contact
+ * with the identity used for OTP login.
+ *
+ * smsir_phone and phone are login/profile bindings. billing_phone is often a
+ * recipient's contact number and may legitimately appear on several accounts.
+ * Only auto-select an account when all explicit login/profile bindings agree.
+ * Never auto-merge users, delete meta, or choose by ID/order history.
+ */
 function vesta_otp_existing_user($phone) {
     global $wpdb;
-    $alternates = array_unique(array(
-        $phone, '+98'.substr($phone,1), '98'.substr($phone,1), substr($phone,1), '0098'.substr($phone,1)
-    ));
-    $alternates = array_values($alternates);
+    $alternates = array_values(array_unique(array(
+        $phone, '+98'.substr($phone,1), '98'.substr($phone,1),
+        substr($phone,1), '0098'.substr($phone,1)
+    )));
     $holders = implode(',', array_fill(0, count($alternates), '%s'));
-    $sql = "SELECT DISTINCT user_id FROM {$wpdb->usermeta} WHERE meta_key IN ('smsir_phone','phone','billing_phone') AND meta_value IN ($holders) LIMIT 3";
-    $user_ids = $wpdb->get_col($wpdb->prepare($sql, $alternates));
-    if (count($user_ids) > 1) { return new WP_Error('duplicate_mobile', 'این شماره در چند حساب ثبت شده است. لطفاً با پشتیبانی تماس بگیرید.'); }
-    return count($user_ids) === 1 ? (int) $user_ids[0] : 0;
+    // Cap unexpectedly large matches rather than making an unsafe decision on
+    // an incomplete result set. Include meta_key to distinguish login bindings.
+    $sql = "SELECT DISTINCT user_id, meta_key FROM {$wpdb->usermeta} WHERE meta_key IN ('smsir_phone','phone','billing_phone') AND meta_value IN ($holders) LIMIT 101";
+    $rows = $wpdb->get_results($wpdb->prepare($sql, $alternates), ARRAY_A);
+    if ($wpdb->last_error || !is_array($rows)) {
+        return new WP_Error('mobile_lookup_failed', 'بررسی حساب کاربری ممکن نیست. لطفاً دوباره تلاش کنید.');
+    }
+    $all = array();
+    $login = array();
+    foreach ($rows as $row) {
+        $id = (int) $row['user_id'];
+        if ($id <= 0) { continue; }
+        $all[$id] = true;
+        if ($row['meta_key'] === 'smsir_phone' || $row['meta_key'] === 'phone') {
+            $login[$id] = true;
+        }
+    }
+    $conflict = new WP_Error('duplicate_mobile', 'این شماره برای ورود به بیش از یک حساب ثبت شده است. لطفاً با پشتیبانی تماس بگیرید.');
+    if (count($rows) > 100) { return $conflict; }
+    // An explicit login binding wins over somebody else's billing-only contact.
+    if (count($login) === 1) { return (int) key($login); }
+    // Two different login bindings are a genuine account ownership conflict.
+    if (count($login) > 1 || count($all) > 1) { return $conflict; }
+    return count($all) === 1 ? (int) key($all) : 0;
 }
 function vesta_otp_verify() {
     vesta_otp_ajax_check();
