@@ -96,3 +96,5 @@ curl -ksS --max-time 40 -o /dev/null https://vesta-cosmetics.ir/my-account/
 
 trap - EXIT
 echo "VESTA_PHP74_PARITY_OK"
+
+# retry with package-free PHP 7.4 image build
