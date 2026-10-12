@@ -206,3 +206,20 @@ echo "=== old-origin OTP related asset lines ==="
 grep -Ein 'xcart|smsir|otp|login.min.js|login.css|mobile|phone' /tmp/old-my.html | head -160 || true
 
 echo "OLD_LOGIN_ASSET_AUDIT_OK"
+
+
+echo "=== SMSIR/XCart PHP compatibility lint on PHP 8.1 ==="
+for p in smsir.disabled-for-migration xcart.disabled-for-migration; do
+  d="$BASE/runtime/vesta/wp-content/plugins/$p"
+  echo "--- $p headers ---"
+  find "$d" -maxdepth 1 -type f -name '*.php' -print -exec sed -n '1,50p' {} \; | grep -E 'Plugin Name:|Version:|Requires PHP:|Requires at least:' || true
+  echo "--- $p lint failures ---"
+  find "$d" -type f -name '*.php' -print0 | while IFS= read -r -d '' file; do
+    out="$(docker exec vc-vesta php -l "${file#$BASE/runtime/vesta}" 2>&1 || true)"
+    echo "$out" | grep -v 'No syntax errors detected' && echo "FILE=$file" || true
+  done | head -240
+  echo "--- $p PHP8 risk patterns ---"
+  grep -RniE 'create_function\s*\(|get_magic_quotes_gpc\s*\(|each\s*\(|\{\$[^}]+\}|\$[A-Za-z_][A-Za-z0-9_]*\{[^}]+\}' "$d" 2>/dev/null | head -160 || true
+done
+
+echo "PLUGIN_PHP81_AUDIT_OK"
