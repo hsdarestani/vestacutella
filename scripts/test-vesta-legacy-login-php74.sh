@@ -34,7 +34,7 @@ s=re.sub(r"define\(\s*['\"]DB_NAME['\"]\s*,\s*['\"][^'\"]+['\"]\s*\)\s*;", f"def
 open(p,"w",encoding="utf-8",errors="surrogateescape").write(s)
 PY
 [[ -d "$TESTROOT/wp-content/plugins/smsir.disabled-for-migration" ]] && mv "$TESTROOT/wp-content/plugins/smsir.disabled-for-migration" "$TESTROOT/wp-content/plugins/smsir"
-[[ -d "$TESTROOT/wp-content/plugins/xcart.disabled-for-migration" ]] && mv "$TESTROOT/wp-content/plugins/xcart.disabled-for-migration" "$TESTROOT/wp-content/plugins/xcart"
+# Keep XCart disabled in this isolated test; restore only SMS.IR first.
 
 NET="$(docker inspect vc-vesta --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}')"
 echo "network=$NET"
