@@ -1,0 +1,24 @@
+name: Verify Telegram order notification configuration
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/verify-telegram-order-plugin.sh"
+      - ".github/workflows/verify-telegram-order-plugin.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y sshpass
+      - name: Read bot configuration without credentials or order traffic
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/verify-telegram-order-plugin.sh "root@$HOST:/tmp/verify-telegram-order-plugin.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/verify-telegram-order-plugin.sh'
