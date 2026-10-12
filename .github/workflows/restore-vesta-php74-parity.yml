@@ -1,0 +1,35 @@
+name: Restore Vesta original runtime parity
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/restore-vesta-php74-parity.sh"
+      - ".github/workflows/restore-vesta-php74-parity.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y sshpass
+      - name: Upload Vesta PHP 7.4 runtime files
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null infra/docker-compose.yml "root@$HOST:/tmp/docker-compose.yml"
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null infra/wordpress74/Dockerfile "root@$HOST:/tmp/Dockerfile74"
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null infra/wordpress74/zz-performance.ini "root@$HOST:/tmp/zz-performance74.ini"
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/restore-vesta-php74-parity.sh "root@$HOST:/tmp/restore-vesta-php74-parity.sh"
+      - name: Restore old Vesta behavior safely
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/restore-vesta-php74-parity.sh'
