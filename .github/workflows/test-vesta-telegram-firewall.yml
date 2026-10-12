@@ -1,0 +1,24 @@
+name: Test private Telegram container firewall
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/test-vesta-telegram-firewall.sh"
+      - ".github/workflows/test-vesta-telegram-firewall.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y sshpass
+      - name: Temporary single container firewall test with full cleanup
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/test-vesta-telegram-firewall.sh "root@$HOST:/tmp/test-vesta-telegram-firewall.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/test-vesta-telegram-firewall.sh'
