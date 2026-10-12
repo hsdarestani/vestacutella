@@ -1,0 +1,25 @@
+name: Diagnose store email and order alerts
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/diagnose-store-email-order-alerts.sh"
+      - ".github/workflows/diagnose-store-email-order-alerts.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 16
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SSH
+        run: sudo apt-get update && sudo apt-get install -y sshpass
+      - name: Read only diagnosis of mail and order alerts
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/diagnose-store-email-order-alerts.sh "root@$HOST:/tmp/diagnose-store-email-order-alerts.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/diagnose-store-email-order-alerts.sh'
