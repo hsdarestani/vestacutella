@@ -46,4 +46,14 @@ echo '=== HEALTH CHECK ==='
 for p in / /shop/ /my-account/ /checkout/; do
   curl -ksS --max-time 25 --resolve vesta-cosmetics.ir:443:127.0.0.1 -o /dev/null -w "$p http=%{http_code} seconds=%{time_total}\n" "https://vesta-cosmetics.ir$p" || true
 done
+
+echo '=== LEGACY SMS OPTIONS AND CUSTOMER PHONE META COUNTS (NAMES AND COUNTS ONLY) ==='
+ENVFILE=/srv/vestacutella/.env
+set -a
+source "$ENVFILE"
+set +a
+docker exec vc-db-vesta mariadb -uroot -p"$VESTA_DB_ROOT_PASSWORD" -N vestacos_m -e "SELECT option_name FROM wp_options WHERE option_name REGEXP 'smsir|sms_ir|otp|phone|mobile|xcart' ORDER BY option_name LIMIT 90;" | head -n 90
+docker exec vc-db-vesta mariadb -uroot -p"$VESTA_DB_ROOT_PASSWORD" -N vestacos_m -e "SELECT meta_key, COUNT(*) FROM wp_usermeta WHERE meta_key REGEXP 'smsir|sms_ir|otp|phone|mobile' GROUP BY meta_key ORDER BY COUNT(*) DESC LIMIT 30;" | head -n 30
+echo SMS_OPTIONS_METADATA_ONLY_DONE
+
 echo VESTA_LOGIN_DIAGNOSTIC_COMPLETE
