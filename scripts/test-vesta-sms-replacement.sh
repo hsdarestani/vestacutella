@@ -45,7 +45,8 @@ s,n=re.subn(r"(?=require_once\s+ABSPATH\s*\.\s*['\"]wp-settings\.php['\"]\s*;)",
 if n!=1: raise SystemExit("wp-settings insertion anchor missing: stage aborted")
 open(p,"w").write(s)
 PY
-chmod 600 "$STAGE/wp-config.php"
+chgrp 33 "$STAGE/wp-config.php"
+chmod 640 "$STAGE/wp-config.php"
 IMAGE="$(docker inspect vc-vesta -f '{{.Config.Image}}')"
 NET="$(docker inspect vc-vesta -f '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}')"
 echo "image=$IMAGE network=$NET"
@@ -70,6 +71,8 @@ request() {
   grep -Eio 'smsir-login-app|login-app|ورود با کد|ورود با رمز|critical error|خطای مهم' "$STAGE/response.html" | sort -u | head -n 15 || true
   docker exec "$CT" sh -lc 'if [ -f /tmp/vesta-staging-fatal.json ]; then cat /tmp/vesta-staging-fatal.json; else echo no_shutdown_fatal; fi; if [ -f /tmp/vesta-staging-php-errors.log ]; then grep -E "PHP (Fatal|Parse)|Uncaught|ionCube" /tmp/vesta-staging-php-errors.log | tail -n 7 | cut -c1-260 || true; fi'
 }
+echo '=== Read check as Apache worker ==='
+docker exec "$CT" su -s /bin/sh www-data -c 'test -r /var/www/html/wp-config.php && echo wp_config_readable'
 echo '=== Activate replacement only in staging DB ==='
 docker exec "$CT" php -l /var/www/html/wp-content/plugins/vesta-sms-login/vesta-sms-login.php
 docker exec "$CT" php -r '
@@ -82,7 +85,7 @@ echo "gateway_ready=".(function_exists("vesta_otp_ready") && vesta_otp_ready()?"
 '
 echo '=== Browser flow smoke ==='
 curl -sS --max-time 40 -H 'Host: vesta-cosmetics.ir' -o "$STAGE/page.html" -D "$STAGE/headers.txt" -w 'staging_account_http=%{http_code} bytes=%{size_download}\n' http://127.0.0.1:18087/my-account/
-grep -q 'vesta-otp-login' "$STAGE/page.html" && echo "OTP_FORM_VISIBLE" || { echo "OTP_FORM_MISSING"; exit 41; }
+grep -q 'vesta-otp-login' "$STAGE/page.html" && echo "OTP_FORM_VISIBLE" || { echo "OTP_FORM_MISSING"; docker logs --tail 40 "$CT" 2>&1 | tail -n 26 | cut -c1-260; docker exec "$CT" sh -lc 'test ! -f /tmp/vesta-staging-fatal.json || cat /tmp/vesta-staging-fatal.json'; exit 41; }
 echo '=== Test OTP send using in-process mocked SMS.ir HTTP response, no real SMS ==='
 cat > "$STAGE/send.php" <<'PHP'
 <?php
