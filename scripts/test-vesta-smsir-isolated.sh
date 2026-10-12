@@ -50,12 +50,15 @@ IMAGE="$(docker inspect vc-vesta -f '{{.Config.Image}}')"
 NET="$(docker inspect vc-vesta -f '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}')"
 echo "image=$IMAGE network=$NET"
 docker run --rm --entrypoint php -v "$STAGE/wp-config.php:/tmp/test-wp-config.php:ro" "$IMAGE" -l /tmp/test-wp-config.php
+echo '=== Build isolated plugin directory using hardlinks (no writes to source files) ==='
+cp -al "$RUNTIME/wp-content/plugins" "$STAGE/plugins"
+[[ ! -d "$STAGE/plugins/smsir.disabled-for-migration" ]] || mv "$STAGE/plugins/smsir.disabled-for-migration" "$STAGE/plugins/smsir"
+[[ ! -d "$STAGE/plugins/xcart.disabled-for-migration" ]] || mv "$STAGE/plugins/xcart.disabled-for-migration" "$STAGE/plugins/xcart"
 echo '=== Start isolated site. Production WordPress files mounted read-only ==='
 docker run -d --name "$CT" --network "$NET" -p 127.0.0.1:18087:80 --memory 1000m \
   -v "$RUNTIME:/var/www/html:ro" \
   -v "$STAGE/wp-config.php:/var/www/html/wp-config.php:ro" \
-  -v "$RUNTIME/wp-content/plugins/smsir.disabled-for-migration:/var/www/html/wp-content/plugins/smsir:ro" \
-  -v "$RUNTIME/wp-content/plugins/xcart.disabled-for-migration:/var/www/html/wp-content/plugins/xcart:ro" \
+  -v "$STAGE/plugins:/var/www/html/wp-content/plugins:ro" \
   "$IMAGE" >/dev/null
 sleep 8
 request() {
