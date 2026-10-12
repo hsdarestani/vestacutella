@@ -112,3 +112,7 @@ sed -n '330,470p' "$BASE/runtime/vesta/wp-content/plugins/snapppay-woocommerce-g
 grep -Rni "snapppay-web-server-ip" "$BASE/runtime/vesta/wp-content/plugins/snapppay-woocommerce-gateway" 2>/dev/null | head -80 || true
 
 echo "SNAPPAY_IP_TRACKING_DIAG_OK"
+
+
+echo "=== SnappPay gateway admin IP field ==="
+sed -n '80,115p' "$BASE/runtime/vesta/wp-content/plugins/snapppay-woocommerce-gateway/class-wc-gateway-snapppay.php" || true
