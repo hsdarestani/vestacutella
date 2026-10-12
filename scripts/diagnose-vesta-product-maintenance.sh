@@ -71,3 +71,37 @@ ORDER BY option_name;
 " | head -160 || true
 
 echo "PAYMENT_GATEWAY_DEEP_DIAG_OK"
+
+
+echo "=== SnappPay live eligibility check (no transaction) ==="
+docker exec vc-vesta php -r '
+require "/var/www/html/wp-load.php";
+if (!class_exists("SnappPayAPI")) {
+  echo "SnappPayAPI class missing".PHP_EOL;
+  exit;
+}
+$r=(new SnappPayAPI())->is_merchant_eligible(7180000);
+if (is_wp_error($r)) {
+  echo "snappay_error_code=".$r->get_error_code().PHP_EOL;
+  echo "snappay_error_message=".$r->get_error_message().PHP_EOL;
+} else {
+  echo "snappay_result=".wp_json_encode($r).PHP_EOL;
+}
+' 2>&1 | tail -80
+
+echo "=== SnappPay stored web-server IP status ==="
+docker exec vc-vesta php -r '
+require "/var/www/html/wp-load.php";
+$stored=(string)get_option("snapppay-web-server-ip","");
+$ctx=stream_context_create(["http"=>["timeout"=>8],"ssl"=>["verify_peer"=>true,"verify_peer_name"=>true]]);
+$current=@file_get_contents("https://api.ipify.org",false,$ctx);
+$current=is_string($current)?trim($current):"";
+echo "stored_ip_present=".($stored!==""?"yes":"no").PHP_EOL;
+echo "stored_matches_current=".(($stored!=="" && $current!=="" && trim($stored)===$current)?"yes":"no").PHP_EOL;
+' 2>&1 | tail -40
+
+echo "=== SnappPay source around eligibility ==="
+sed -n '55,115p' "$BASE/runtime/vesta/wp-content/plugins/snapppay-woocommerce-gateway/class-snapppay-api.php" || true
+sed -n '155,205p' "$BASE/runtime/vesta/wp-content/plugins/snapppay-woocommerce-gateway/hooks.php" || true
+
+echo "SNAPPAY_DIAG_OK"
