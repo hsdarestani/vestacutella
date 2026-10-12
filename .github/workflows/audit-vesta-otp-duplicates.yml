@@ -1,0 +1,27 @@
+name: Audit Vesta OTP duplicate accounts
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/audit-vesta-otp-duplicates.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: otp-audit-readonly
+  cancel-in-progress: false
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install sshpass
+        run: sudo apt-get update && sudo apt-get install -y sshpass
+      - name: Read-only customer phone collision metrics
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/audit-vesta-otp-duplicates.sh "root@$HOST:/tmp/audit-vesta-otp-duplicates.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/audit-vesta-otp-duplicates.sh'
