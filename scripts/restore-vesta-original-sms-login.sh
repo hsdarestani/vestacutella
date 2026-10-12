@@ -13,6 +13,12 @@ set -a
 source "$ENVFILE"
 set +a
 
+echo "=== Install latest Vesta PHP 7.4 runtime files ==="
+mkdir -p "$REPO/infra/wordpress74"
+install -m 644 /tmp/docker-compose.yml "$REPO/infra/docker-compose.yml"
+install -m 644 /tmp/vesta74-Dockerfile "$REPO/infra/wordpress74/Dockerfile"
+install -m 644 /tmp/vesta74-performance.ini "$REPO/infra/wordpress74/zz-performance.ini"
+
 echo "=== Ensure Vesta is on source-compatible PHP 7.4 ==="
 cd "$REPO/infra"
 docker compose --env-file "$ENVFILE" build vesta
@@ -37,7 +43,7 @@ rollback() {
   ' >/dev/null 2>&1 || true
   [[ -d "$RUNTIME/wp-content/plugins/smsir" ]] && mv "$RUNTIME/wp-content/plugins/smsir" "$RUNTIME/wp-content/plugins/smsir.disabled-for-migration" || true
   [[ -d "$RUNTIME/wp-content/plugins/xcart" ]] && mv "$RUNTIME/wp-content/plugins/xcart" "$RUNTIME/wp-content/plugins/xcart.disabled-for-migration" || true
-  docker exec vc-vesta php -r '
+  docker exec -e ORIG_GUEST="$orig_guest" -e ORIG_SIGNUP="$orig_signup" vc-vesta php -r '
     require "/var/www/html/wp-load.php";
     update_option("woocommerce_enable_guest_checkout", getenv("ORIG_GUEST"));
     update_option("woocommerce_enable_signup_and_login_from_checkout", getenv("ORIG_SIGNUP"));
@@ -58,7 +64,7 @@ restore_one() {
   fi
   [[ -d "$enabled" ]] || { echo "Missing plugin directory: $name"; exit 31; }
 
-  docker exec vc-vesta php -r '
+  docker exec -e PLUGIN_FILE="$file" vc-vesta php -r '
     require "/var/www/html/wp-load.php";
     require_once ABSPATH."wp-admin/includes/plugin.php";
     $file=getenv("PLUGIN_FILE");
