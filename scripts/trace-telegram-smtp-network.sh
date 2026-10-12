@@ -38,4 +38,19 @@ for site in vesta cutella; do
   grep -E 'add_action\(|add_filter\(' "$file" | sed -E "s#(['\"][^'\"]{50})[^'\"]*#\1...(truncated)#g" | cut -c1-180 | head -n 65 || true
  fi
 done
+
+echo '=== TRUSTED FOREIGN HOST REACHABILITY FROM SHOP ==='
+for endpoint in https://smarbiz.sbs/healthz https://solution.smarbiz.sbs/health https://app.aplus-solution.de/; do
+ echo "checking=$endpoint"
+ curl -4 -ksS --max-time 7 -o /dev/null -w 'http=%{http_code} tcp=%{time_connect} tls=%{time_appconnect} remote=%{remote_ip}\n' "$endpoint" 2>&1 | cut -c1-220 || true
+done
+echo '=== DIRECT FOREIGN VPS TCP PORT 443 ==='
+for ip in 91.107.157.75 217.154.208.41; do
+ timeout 4 bash -c 'echo >/dev/tcp/"$1"/443' bash "$ip" >/dev/null 2>&1 && echo "foreign_$ip=reachable" || echo "foreign_$ip=unreachable"
+done
+echo '=== MAIL HOST DNS ==='
+for domain in mail.vesta-cosmetics.ir mail.cutellashop.ir; do
+ echo "$domain";dig @1.1.1.1 +short A "$domain" | head -n 5
+done
+
 echo NETWORK_MAIL_BOT_TRACE_COMPLETE
