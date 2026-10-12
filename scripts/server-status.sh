@@ -143,3 +143,13 @@ if (function_exists("rocket_clean_domain")) {
 ' || true
 docker restart vc-vesta >/dev/null 2>&1 || true
 sleep 4
+
+
+echo "=== Vesta checkout account options ==="
+docker exec vc-db-vesta mariadb -uroot -p"$VESTA_DB_ROOT_PASSWORD" vestacos_m -N -e "
+SELECT option_name,option_value
+FROM wp_options
+WHERE option_name LIKE 'woocommerce_enable_%checkout%'
+   OR option_name LIKE 'woocommerce_registration_generate_%'
+ORDER BY option_name;
+" || true
