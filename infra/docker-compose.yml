@@ -52,8 +52,8 @@ services:
 
   vesta:
     build:
-      context: ./wordpress
-    image: vestacutella-wordpress:php8.1-ioncube
+      context: ./wordpress74
+    image: vestacutella-wordpress:php7.4-ioncube
     container_name: vc-vesta
     restart: unless-stopped
     depends_on:
