@@ -1,0 +1,24 @@
+name: Diagnose Vesta SMS login fatal
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/diagnose-vesta-sms-login-fatal.sh"
+      - ".github/workflows/diagnose-vesta-sms-login-fatal.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnostics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y sshpass
+      - name: Read-only SMS.ir login diagnostics on live server
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/diagnose-vesta-sms-login-fatal.sh "root@$HOST:/tmp/diagnose-vesta-sms-login-fatal.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/diagnose-vesta-sms-login-fatal.sh'
