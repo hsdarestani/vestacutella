@@ -1,0 +1,24 @@
+name: Test store email and Telegram connection
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/test-store-mail-bot-connectivity.sh"
+      - ".github/workflows/test-store-mail-bot-connectivity.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y sshpass
+      - name: Test one admin email and bot gateway auth
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/test-store-mail-bot-connectivity.sh "root@$HOST:/tmp/test-store-mail-bot-connectivity.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/test-store-mail-bot-connectivity.sh'
