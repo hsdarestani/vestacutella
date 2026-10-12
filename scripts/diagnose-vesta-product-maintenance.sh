@@ -116,3 +116,22 @@ echo "SNAPPAY_IP_TRACKING_DIAG_OK"
 
 echo "=== SnappPay gateway admin IP field ==="
 sed -n '80,115p' "$BASE/runtime/vesta/wp-content/plugins/snapppay-woocommerce-gateway/class-wc-gateway-snapppay.php" || true
+
+
+echo "=== refresh SnappPay detected server IP and bearer token, then retest ==="
+docker exec vc-vesta php -r '
+require "/var/www/html/wp-load.php";
+if (function_exists("snapppay_get_ip")) {
+  snapppay_get_ip();
+  echo "server_ip_refreshed".PHP_EOL;
+}
+delete_transient("snapppay_bearer_token");
+echo "bearer_token_cleared".PHP_EOL;
+$r=(new SnappPayAPI())->is_merchant_eligible(7180000);
+if (is_wp_error($r)) {
+  echo "retest_error_code=".$r->get_error_code().PHP_EOL;
+  echo "retest_error_message=".$r->get_error_message().PHP_EOL;
+} else {
+  echo "retest_ok".PHP_EOL;
+}
+' 2>&1 | tail -80
