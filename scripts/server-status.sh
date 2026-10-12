@@ -206,3 +206,9 @@ require "/var/www/html/wp-load.php";
 require "/var/www/html/wp-content/plugins/xcart.disabled-for-migration/xcart.php";
 echo "XCART_MANUAL_LOAD_OK\n";
 ' 2>&1 | tail -120 || true
+
+
+echo "=== SMSIR My Account hooks ==="
+grep -RniE 'my-account|woocommerce_(before|after)_customer_login_form|woocommerce_login|login_form|lost_password|customer_login|smsir_login' /srv/vestacutella/runtime/vesta/wp-content/plugins/smsir.disabled-for-migration 2>/dev/null | head -260 || true
+echo "=== SMSIR WCIntegration ==="
+find /srv/vestacutella/runtime/vesta/wp-content/plugins/smsir.disabled-for-migration -type f -iname '*WC*' -o -iname '*woocommerce*' 2>/dev/null | head -60 || true
