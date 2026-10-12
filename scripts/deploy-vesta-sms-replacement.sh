@@ -89,6 +89,7 @@ for p in / /shop/ /my-account/ /checkout/; do
   esac
   if [[ "$p" == "/my-account/" ]]; then
     grep -q 'vesta-otp-login' /tmp/vesta-otp-response.html || { echo "Replacement OTP form missing from My Account HTML"; exit 41; }
+    grep -q 'vesta-otp-email-recovery' /tmp/vesta-otp-response.html || { echo "Email verified account recovery UI missing"; exit 43; }
   fi
 done
 echo '=== Check error logs after activation ==='
