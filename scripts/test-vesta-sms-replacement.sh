@@ -141,6 +141,45 @@ $x=get_user_by("id",$u);
 if (!$x || !in_array("customer",(array)$x->roles,true)) exit(32);
 echo "CUSTOMER_PHONE_LINK_OK\n";
 '
+echo '=== OTP identity resolution: duplicate billing contact regression tests (staging DB only) ==='
+docker exec "$CT" php -r '
+require "/var/www/html/wp-load.php";
+function vesta_assert_phone($phone, $expected, $label) {
+  $actual = vesta_otp_existing_user($phone);
+  $ok = $expected === "conflict"
+    ? is_wp_error($actual) && $actual->get_error_code() === "duplicate_mobile"
+    : !is_wp_error($actual) && (int) $actual === (int) $expected;
+  if (!$ok) { fwrite(STDERR, "FAILED: ".$label.PHP_EOL); exit(55); }
+  echo "PASS: ".$label.PHP_EOL;
+}
+$users = array();
+foreach (array("a","b","c") as $tag) {
+  $u = wp_insert_user(array("user_login"=>"otp_stage_phone_".$tag,
+    "user_pass"=>wp_generate_password(30), "role"=>"customer"));
+  if (is_wp_error($u)) { fwrite(STDERR, "Staging user setup failed".PHP_EOL); exit(54); }
+  $users[$tag] = (int) $u;
+}
+$a=$users["a"]; $b=$users["b"]; $c=$users["c"];
+update_user_meta($a,"smsir_phone","09120000001");
+update_user_meta($a,"phone","09120000001");
+update_user_meta($b,"billing_phone","+989120000001");
+vesta_assert_phone("09120000001", $a, "OTP owner preferred over unrelated billing contact");
+update_user_meta($b,"phone","09120000001");
+vesta_assert_phone("09120000001", "conflict", "Two explicit login bindings remain blocked");
+delete_user_meta($b,"phone");
+update_user_meta($b,"billing_phone","09120000002");
+update_user_meta($c,"billing_phone","09120000002");
+vesta_assert_phone("09120000002", "conflict", "Ambiguous billing-only contact remains blocked");
+delete_user_meta($c,"billing_phone");
+vesta_assert_phone("09120000002", $b, "Unique legacy billing-only account remains supported");
+update_user_meta($a,"phone","09120000003");
+update_user_meta($c,"billing_phone","00989120000003");
+vesta_assert_phone("09120000003", $a, "Unique profile binding beats billing-only contact");
+update_user_meta($b,"smsir_phone","09120000004");
+update_user_meta($c,"smsir_phone","09120000004");
+vesta_assert_phone("09120000004", "conflict", "Two explicit SMS owners stay blocked");
+echo "VESTA_OTP_DUPLICATE_PHONE_TESTS_PASSED".PHP_EOL;
+'
 echo '=== Sanitized staging PHP fatal report ==='
 docker exec "$CT" sh -lc 'test ! -f /tmp/vesta-staging-fatal.json || cat /tmp/vesta-staging-fatal.json' || true
 echo STAGING_SMSIR_REPLACEMENT_TEST_PASSED
