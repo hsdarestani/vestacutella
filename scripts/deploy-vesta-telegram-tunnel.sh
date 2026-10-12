@@ -5,6 +5,7 @@ RUNTIME=$BASE/runtime/vesta
 MU="$RUNTIME/wp-content/mu-plugins/30-vesta-telegram-strato-egress.php"
 UNIT=/etc/systemd/system/vesta-telegram-strato-tunnel.service
 KEY=/root/.ssh/vesta_strato_telegram_2026
+FIREWALL=/usr/local/sbin/vesta-telegram-strato-firewall
 BACKUP="/srv/backups/vesta-telegram-tunnel-$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -m 700 -p "$BACKUP"
 [[ -s "$KEY" ]] || { echo "Missing private tunnel key";exit 20; }
@@ -14,6 +15,7 @@ GW="$(docker inspect vc-vesta -f '{{range .NetworkSettings.Networks}}{{.Gateway}
 [[ "$GW" =~ ^172\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Unexpected Docker gateway";exit 21; }
 echo "bridge_gateway=$GW"
 [[ ! -e "$UNIT" ]] || { echo "Tunnel service already exists; refusing unsafe overwrite";exit 22; }
+[[ ! -e "$FIREWALL" ]] || { echo "Tunnel firewall helper already exists; refusing unsafe overwrite";exit 23; }
 old_mu=0
 if [[ -f "$MU" ]];then cp -p "$MU" "$BACKUP/old-mu.php";old_mu=1;fi
 cleanup() {
@@ -23,12 +25,35 @@ cleanup() {
     if [[ "$old_mu" == 1 ]];then cp -p "$BACKUP/old-mu.php" "$MU";else rm -f "$MU";fi
     systemctl stop vesta-telegram-strato-tunnel 2>/dev/null || true
     systemctl disable vesta-telegram-strato-tunnel 2>/dev/null || true
-    rm -f "$UNIT"
+    if [[ -x "$FIREWALL" ]];then "$FIREWALL" remove || true;fi
+    rm -f "$FIREWALL" "$UNIT"
     systemctl daemon-reload || true
   fi
   exit "$rc"
 }
 trap cleanup EXIT
+echo '=== Install narrowly scoped firewall helper, only container IP and Docker interface ==='
+install -d -m 755 /usr/local/sbin
+cat >"$FIREWALL" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+ACTION="${1:-}"
+GW="$(docker inspect vc-vesta -f '{{range .NetworkSettings.Networks}}{{.Gateway}}{{end}}')"
+CIP="$(docker inspect vc-vesta -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')"
+BRIDGE="$(ip -o -4 addr show | awk -v gw="$GW" '{split($4,cidr,"/"); if(cidr[1]==gw){print $2;exit}}')"
+[[ "$GW" =~ ^172\.[0-9]+\.[0-9]+\.[0-9]+$ && "$CIP" =~ ^172\.[0-9]+\.[0-9]+\.[0-9]+$ && "$BRIDGE" =~ ^br-[a-zA-Z0-9]+$ ]] || exit 22
+RULE=(-i "$BRIDGE" -s "$CIP/32" -d "$GW/32" -p tcp --dport 11443 -j ACCEPT)
+case "$ACTION" in
+  add)
+    iptables -w -C INPUT "${RULE[@]}" 2>/dev/null || iptables -w -I INPUT 1 "${RULE[@]}"
+    ;;
+  remove)
+    iptables -w -C INPUT "${RULE[@]}" 2>/dev/null && iptables -w -D INPUT "${RULE[@]}" || true
+    ;;
+  *) exit 2 ;;
+esac
+SH
+chmod 700 "$FIREWALL"
 cat >"$UNIT" <<UNIT
 [Unit]
 Description=Vesta order notifications secure tunnel to owned STRATO Telegram egress
@@ -38,7 +63,9 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=root
+ExecStartPre=$FIREWALL add
 ExecStart=/usr/bin/ssh -N -T -i $KEY -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o ExitOnForwardFailure=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=3 -o GatewayPorts=yes -L $GW:11443:api.telegram.org:443 vesta-telegram-tunnel@217.154.208.41
+ExecStopPost=$FIREWALL remove
 Restart=always
 RestartSec=5
 StartLimitIntervalSec=0
