@@ -191,3 +191,18 @@ require "/var/www/html/wp-load.php";
 $a=get_option("active_plugins",[]);
 foreach((array)$a as $p) if (stripos($p,"sms")!==false || stripos($p,"xcart")!==false) echo $p.PHP_EOL;
 ' 2>&1 || true
+
+
+echo "=== isolated SMSIR load on PHP 7.4 ==="
+docker exec vc-vesta php -d display_errors=1 -d error_reporting=E_ALL -r '
+require "/var/www/html/wp-load.php";
+require "/var/www/html/wp-content/plugins/smsir.disabled-for-migration/index.php";
+echo "SMSIR_MANUAL_LOAD_OK\n";
+' 2>&1 | tail -120 || true
+
+echo "=== isolated XCart load on PHP 7.4 ==="
+docker exec vc-vesta php -d display_errors=1 -d error_reporting=E_ALL -r '
+require "/var/www/html/wp-load.php";
+require "/var/www/html/wp-content/plugins/xcart.disabled-for-migration/xcart.php";
+echo "XCART_MANUAL_LOAD_OK\n";
+' 2>&1 | tail -120 || true
