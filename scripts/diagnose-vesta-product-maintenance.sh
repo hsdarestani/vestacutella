@@ -223,3 +223,15 @@ for p in smsir.disabled-for-migration xcart.disabled-for-migration; do
 done
 
 echo "PLUGIN_PHP81_AUDIT_OK"
+
+
+echo "=== SMSIR plugin config/API references ==="
+SMSD="$BASE/runtime/vesta/wp-content/plugins/smsir.disabled-for-migration"
+grep -RniE 'api\.sms\.ir|send/verify|template|api.?key|get_option\(|update_option\(|wp_ajax|smsir-login-app|loginWithOtp|sendOtp' "$SMSD" 2>/dev/null | head -320 || true
+
+echo "=== SMSIR encoded PHP detection ==="
+find "$SMSD" -type f -name '*.php' -maxdepth 5 -print0 | while IFS= read -r -d '' f; do
+  if head -c 200 "$f" | grep -aq 'ionCube\|005'; then echo "$f"; fi
+done | head -120
+
+echo "SMSIR_SOURCE_AUDIT_OK"
