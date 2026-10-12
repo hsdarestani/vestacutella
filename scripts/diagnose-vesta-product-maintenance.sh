@@ -235,3 +235,39 @@ find "$SMSD" -type f -name '*.php' -maxdepth 5 -print0 | while IFS= read -r -d '
 done | head -120
 
 echo "SMSIR_SOURCE_AUDIT_OK"
+
+
+echo "=== Vesta parity: current theme/plugins versus old-origin assets ==="
+docker exec vc-vesta php -r '
+require "/var/www/html/wp-load.php";
+require_once ABSPATH."wp-admin/includes/plugin.php";
+echo "template=".get_option("template").PHP_EOL;
+echo "stylesheet=".get_option("stylesheet").PHP_EOL;
+echo "active_plugins:".PHP_EOL;
+foreach((array)get_option("active_plugins",[]) as $p) echo $p.PHP_EOL;
+' 2>&1 | tail -220
+
+echo "=== SMSIR related option names and sanitized structure ==="
+docker exec vc-vesta php -r '
+require "/var/www/html/wp-load.php";
+global $wpdb;
+$rows=$wpdb->get_results("SELECT option_name,option_value FROM {$wpdb->options} WHERE option_name LIKE \"%smsir%\" OR option_name LIKE \"%sms_ir%\" OR option_name LIKE \"%sms-ir%\" ORDER BY option_name");
+foreach($rows as $r){
+  echo "OPTION ".$r->option_name.PHP_EOL;
+  $v=maybe_unserialize($r->option_value);
+  if(is_array($v)){
+    echo "KEYS ".implode(",",array_keys($v)).PHP_EOL;
+  } elseif(is_object($v)) {
+    echo "OBJECT_KEYS ".implode(",",array_keys((array)$v)).PHP_EOL;
+  } else {
+    echo "TYPE ".gettype($v)." LEN ".strlen((string)$v).PHP_EOL;
+  }
+}
+' 2>&1 | tail -220
+
+echo "=== SMSIR unencoded entrypoint/includes list ==="
+SMSD="$BASE/runtime/vesta/wp-content/plugins/smsir.disabled-for-migration"
+sed -n '1,220p' "$SMSD/index.php" 2>/dev/null || true
+find "$SMSD" -maxdepth 2 -type f -name '*.php' -printf '%P\n' | sort | head -220 || true
+
+echo "VESTA_PARITY_SMSIR_AUDIT_OK"
