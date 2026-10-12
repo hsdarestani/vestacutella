@@ -126,3 +126,20 @@ for sql in "$BASE/staging/backup/vestacos_cutella.sql" "$BASE/staging/backup/ves
   echo "--- $sql ---"
   grep -m 15 -E '^CREATE TABLE' "$sql" 2>/dev/null || true
 done
+
+
+echo "=== EMERGENCY_VESTA_MAINTENANCE_FIX ==="
+docker exec vc-vesta php -r '
+require "/var/www/html/wp-load.php";
+require_once ABSPATH."wp-admin/includes/plugin.php";
+if (is_plugin_active("maintenance/maintenance.php")) {
+  deactivate_plugins("maintenance/maintenance.php", true);
+  echo "maintenance plugin disabled".PHP_EOL;
+}
+if (function_exists("rocket_clean_domain")) {
+  rocket_clean_domain();
+  echo "WP Rocket cache cleared".PHP_EOL;
+}
+' || true
+docker restart vc-vesta >/dev/null 2>&1 || true
+sleep 4
