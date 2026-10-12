@@ -135,3 +135,28 @@ if (is_wp_error($r)) {
   echo "retest_ok".PHP_EOL;
 }
 ' 2>&1 | tail -80
+
+
+echo "=== checkout billing fields ==="
+docker exec vc-vesta php -r '
+require "/var/www/html/wp-load.php";
+$checkout=WC()->checkout();
+$fields=$checkout->get_checkout_fields("billing");
+foreach($fields as $k=>$v){
+  $req=!empty($v["required"])?"yes":"no";
+  $type=$v["type"]??"";
+  $class=isset($v["class"])?implode(",",(array)$v["class"]):"";
+  $label=$v["label"]??"";
+  echo $k." | required=".$req." | type=".$type." | class=".$class." | label=".$label.PHP_EOL;
+}
+' 2>&1 | tail -100
+
+echo "=== checkout field editor related options ==="
+docker exec vc-db-vesta mariadb -uroot -p"$VESTA_DB_ROOT_PASSWORD" vestacos_m -N -e "
+SELECT option_name,LEFT(option_value,1200)
+FROM wp_options
+WHERE option_name REGEXP 'checkout.*field|field.*checkout|wcfe|thwcfe|billing_email'
+ORDER BY option_name;
+" | head -120 || true
+
+echo "CHECKOUT_FIELD_DIAG_OK"
