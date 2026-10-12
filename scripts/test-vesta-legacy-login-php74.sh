@@ -48,7 +48,9 @@ echo "=== test My Account legacy behavior ==="
 curl -sS --max-time 40 -H 'Host: vesta-cosmetics.ir' -D /tmp/t.h -o /tmp/t.b http://127.0.0.1:18080/my-account/ || true
 head -n 12 /tmp/t.h || true
 echo "bytes=$(wc -c < /tmp/t.b 2>/dev/null || echo 0)"
-grep -Eio 'smsir-login-app-1|ورود با رمز یک.?بار مصرف|شماره تلفن یا ایمیل|SMS.IR|otp' /tmp/t.b | sort -u | head -60 || true
+echo "BODY_START:"
+head -c 1200 /tmp/t.b | tr '\n' ' '; echo
+grep -Eio 'smsir-login-app-1|ورود با رمز یک.?بار مصرف|شماره تلفن یا ایمیل|SMS.IR|otp|critical error|خطای مهم' /tmp/t.b | sort -u | head -60 || true
 
 echo "=== smoke isolated legacy-compatible site ==="
 for p in / /shop/ /my-account/; do
