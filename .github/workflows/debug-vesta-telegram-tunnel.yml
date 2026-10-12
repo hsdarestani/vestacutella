@@ -1,0 +1,24 @@
+name: Debug Vesta Telegram SSH channel
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/debug-vesta-telegram-tunnel.sh"
+      - ".github/workflows/debug-vesta-telegram-tunnel.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y sshpass
+      - name: Check temporary private tunnel without changing production services
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/debug-vesta-telegram-tunnel.sh "root@$HOST:/tmp/debug-vesta-telegram-tunnel.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/debug-vesta-telegram-tunnel.sh'
