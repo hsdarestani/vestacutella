@@ -1,0 +1,24 @@
+name: Deploy private Telegram outbound path
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/deploy-vesta-telegram-tunnel.sh"
+      - ".github/workflows/deploy-vesta-telegram-tunnel.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  tunnel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y sshpass
+      - name: Enable rollback-protected STRATO tunnel for Telegram only
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/deploy-vesta-telegram-tunnel.sh "root@$HOST:/tmp/deploy-vesta-telegram-tunnel.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/deploy-vesta-telegram-tunnel.sh'
