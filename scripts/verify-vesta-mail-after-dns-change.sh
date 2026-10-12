@@ -3,7 +3,7 @@ set -uo pipefail
 echo '=== Current Cloudflare mail DNS check 2026-10-12 ==='
 for resolver in 1.1.1.1 8.8.8.8; do
  echo "resolver=$resolver"
- for name in mail.vesta-cosmetics.ir pop.vesta-cosmetics.ir; do
+ for name in mail.vesta-cosmetics.ir pop.vesta-cosmetics.ir smtp.vesta-cosmetics.ir; do
    echo -n "$name A="; dig @"$resolver" +time=4 +tries=1 +short A "$name" | paste -sd',' - || true
  done
  echo "vesta MX:"; dig @"$resolver" +time=4 +tries=1 +short MX vesta-cosmetics.ir | head -n 5
@@ -19,6 +19,10 @@ echo '=== Direct mail subdomain service ports ==='
 for port in 25 110 143 465 587 993 995; do
  timeout 4 bash -c 'echo >/dev/tcp/"$1"/"$2"' bash mail.vesta-cosmetics.ir "$port" >/dev/null 2>&1 && echo "mail_tcp_$port=reachable" || echo "mail_tcp_$port=unreachable"
 done
+echo '=== Dedicated smtp hostname connectivity ==='
+for port in 465 587; do
+ timeout 5 bash -c 'echo >/dev/tcp/"$1"/"$2"' bash smtp.vesta-cosmetics.ir "$port" >/dev/null 2>&1 && echo "smtp_tcp_$port=reachable" || echo "smtp_tcp_$port=unreachable"
+done
 echo '=== PHP WordPress SMTP state ==='
 docker exec vc-vesta php -d display_errors=0 -r '
 require "/var/www/html/wp-load.php";
@@ -33,7 +37,7 @@ add_action("wp_mail_failed",function($e){
  $m=strtolower($e->get_error_message());
  echo "wp_mail_failed_reason=".(strpos($m,"authenticat")!==false?"auth":(strpos($m,"connect")!==false?"connect":(strpos($m,"ssl")!==false?"ssl":"other")))."\n";
 });
-$result=wp_mail($to,"Vesta mail DNS post-change verification 2026-10-12","This is one controlled test email after changing mail.vesta-cosmetics.ir to DNS only. No customer data or order is included.");
+$result=wp_mail($to,"Vesta final SMTP DNS check 2026-10-12","This is one controlled test email after changing mail, pop, and smtp.vesta-cosmetics.ir to DNS only. No customer data or order is included.");
 echo "test_mail_submitted=".($result?"yes":"no")."\n";
 if(!$result)exit(3);
 '
