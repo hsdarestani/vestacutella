@@ -395,3 +395,45 @@ for size,name,z in sorted(items,key=lambda x:-x[0])[:18]:
 PY
 rm -f "$f"
 echo "=== HEAVY_IMAGE_DIAG_DONE ==="
+
+
+echo "=== LOSSLESS PNG OPTIMIZATION DRY RUN ==="
+docker exec -i vc-vesta php <<'PHP'
+<?php
+$base="/var/www/html/wp-content/uploads";
+$files=['ED83410A-44E6-40D9-98B3-9E3EFC5A9026.png','IMG_2078.png','3497C2E4-9664-4275-BFDE-91A6EB754951.png','A41F349F-B523-4FEA-8943-A1EAB187E4C5.png','2-1.png','4-1.png','3-1.png','1-1.png'];
+foreach($files as $name){
+ $matches=glob($base."/*/*/".$name);
+ foreach($matches as $file){
+  $bytes=file_get_contents($file);
+  $chunks=['iCCP','sRGB','gAMA','cHRM','acTL'];
+  $special=[];
+  foreach($chunks as $chunk) if(strpos($bytes,$chunk)!==false) $special[]=$chunk;
+  $image=@imagecreatefrompng($file);
+  if(!$image){echo "SKIP decode_failed $name\n";continue;}
+  $temp=tempnam(sys_get_temp_dir(),"vc_png_");
+  imagealphablending($image,false);imagesavealpha($image,true);
+  $saved=@imagepng($image,$temp,9);
+  $after=$saved?filesize($temp):0;
+  $orig=filesize($file);
+  $pct=$orig>0?round(100*($orig-$after)/$orig,1):0;
+  $same_dimensions=false;$pixel_match=false;
+  if($saved){
+   $test=@imagecreatefrompng($temp);
+   if($test){
+    $same_dimensions=imagesx($test)===imagesx($image)&&imagesy($test)===imagesy($image);
+    $pixel_match=$same_dimensions;
+    foreach([0,.15,.33,.5,.75,.99] as $xp)foreach([0,.15,.33,.5,.75,.99] as $yp){
+     $x=min(imagesx($image)-1,(int)(imagesx($image)*$xp));
+     $y=min(imagesy($image)-1,(int)(imagesy($image)*$yp));
+     if(imagecolorsforindex($image,imagecolorat($image,$x,$y))!==imagecolorsforindex($test,imagecolorat($test,$x,$y)))$pixel_match=false;
+    }
+    imagedestroy($test);
+   }
+  }
+  echo "PNG_PREVIEW $name orig_kb=".round($orig/1024)." new_kb=".round($after/1024)." savings_pct=$pct rgba_samples_equal=".($pixel_match?"yes":"no")." profile_chunks=".implode(",",$special)."\n";
+  @unlink($temp);imagedestroy($image);
+ }
+}
+PHP
+echo "=== PNG_OPTIMIZATION_DRY_RUN_DONE ==="
