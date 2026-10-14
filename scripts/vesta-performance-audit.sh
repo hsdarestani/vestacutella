@@ -297,3 +297,18 @@ docker logs --since 35m vc-nginx 2>&1 | grep -Ei 'emerg|error|cache|mkdir|permis
 echo "live_conf_sha=$(sha256sum /srv/vestacutella/repo/infra/nginx.conf | cut -d' ' -f1)"
 docker exec vc-nginx nginx -t || true
 echo "=== ROOT_CAUSE_DIAGNOSTIC_END ==="
+
+
+echo "=== REAL NETWORK PATH DIAG ==="
+for d in cutellashop.ir vesta-cosmetics.ir app.vesta-cosmetics.ir; do
+ echo "--- $d default ---"
+ curl -kLsS --max-time 20 --resolve "$d:443:127.0.0.1" -o /dev/null -w 'remote=%{remote_ip} code=%{http_code} ttfb=%{time_starttransfer}\n' "https://$d/" || true
+ echo "--- $d direct no-proxy ---"
+ curl -kLsS --max-time 20 --noproxy '*' --resolve "$d:443:127.0.0.1" -o /dev/null -w 'remote=%{remote_ip} code=%{http_code} ttfb=%{time_starttransfer}\n' "https://$d/" || true
+done
+echo "proxy_env_set=$(env | grep -Eic '^(https?|all)_proxy=' || true)"
+echo "=== PORT AND NGINX PROCESS ==="
+ss -lntp 2>/dev/null | grep -E '(:80 |:443 )' | head -15 || true
+docker exec vc-nginx ps -ef 2>/dev/null | grep nginx | head -20 || true
+docker ps --format 'table {{.Names}}\t{{.Ports}}' | grep -E '^NAMES|^vc-nginx' || true
+echo "=== PATH_DIAG_DONE ==="
