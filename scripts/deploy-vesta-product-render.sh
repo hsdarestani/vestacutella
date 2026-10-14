@@ -59,8 +59,8 @@ for i in $(seq 1 5);do
  rm -f "$tmp";sleep 2
 done
 grep -q 'id="vc-mobile-product-render"' "$tmp" || { echo "CSS not in HTML";exit 35; }
-[[ "$(grep -o 'type="image/webp"' "$tmp" | wc -l)" -ge 9 ]] || {echo "WebP regression";exit 36;}
-grep -q 'vc-owl-preinit-layout' "$tmp" || {echo "Owl CSS regression";exit 37;}
+[[ "$(grep -o 'type="image/webp"' "$tmp" | wc -l)" -ge 9 ]] || { echo "WebP regression"; exit 36; }
+grep -q 'vc-owl-preinit-layout' "$tmp" || { echo "Owl CSS regression"; exit 37; }
 rm -f "$tmp"
 for d in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
  c="$(status "$d" /)"
