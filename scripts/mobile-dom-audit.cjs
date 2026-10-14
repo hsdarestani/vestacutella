@@ -27,7 +27,7 @@ const puppeteer=require('puppeteer-core');
  const result=await page.evaluate(()=>{
   const samples=window.__vc_samples||[];
   const interesting=[600,1500,2400,3300,4200,5100,7500,9900,11000];
-  const selected=interesting.map(t=>samples.reduce((best,s)=>Math.abs(s.t-t)<Math.abs(best?.t-t??1e9)?s:best,null)).filter(Boolean);
+  const selected=interesting.map(t=>samples.reduce((best,s)=>!best || Math.abs(s.t-t)<Math.abs(best.t-t)?s:best,null)).filter(Boolean);
   return {shifts:window.__vc_shifts||[],samples:selected};
  });
  console.log('SHIFT_EVENTS',JSON.stringify(result.shifts).slice(0,23000));
