@@ -1,82 +1,56 @@
 #!/usr/bin/env bash
-# Non-invasive Redis integration preflight. Deliberately no load tests.
 set -euo pipefail
-BASE=/srv/vestacutella
-echo "=== REDIS OBJECT CACHE INTEGRATION PREFLIGHT ==="
-docker exec vc-redis redis-cli PING
-docker exec vc-redis redis-cli INFO memory | grep -E '^(used_memory_human|maxmemory_human|maxmemory_policy):' || true
-for site in cutella vesta; do
-  echo "--- $site ---"
-  wp="/srv/vestacutella/runtime/$site/wp-content"
-  test -d "$wp"
-  if [[ -e "$wp/object-cache.php" ]]; then
-    echo "object-cache.php=EXISTS - will not overwrite"
-  else
-    echo "object-cache.php=none"
-  fi
-  if [[ -e "$wp/plugins/redis-cache/redis-cache.php" ]]; then
-    echo "redis-cache plugin=EXISTS"
-  else
-    echo "redis-cache plugin=not-installed"
-  fi
-  docker exec "vc-$site" sh -c 'command -v wp || echo wpcli_not_present; php -r "echo PHP_VERSION, PHP_EOL;"'
-  docker exec "vc-$site" php -r '
-    require "/var/www/html/wp-load.php";
-    echo "wp_version=".get_bloginfo("version").PHP_EOL;
-    echo "wp_using_ext_object_cache=".(wp_using_ext_object_cache()?"yes":"no").PHP_EOL;
-    echo "cache_key_salt=".(defined("WP_CACHE_KEY_SALT")?"already-defined":"none").PHP_EOL;
-  ' 2>/dev/null || echo "WordPress failed to bootstrap"
-  grep -Eq "wp-settings.php" "$BASE/runtime/$site/wp-config.php" && echo "config marker present" || echo "config marker missing"
-done
-echo "=== DOWNLOAD REACHABILITY (without installation) ==="
-curl -ILfsS --max-time 15 -o /dev/null -w 'wordpress_repo_http=%{http_code} bytes=%{size_download}\n' https://downloads.wordpress.org/plugin/redis-cache.3.0.0.zip || true
-curl -ILfsS --max-time 15 -o /dev/null -w 'wpcli_http=%{http_code}\n' https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar || true
-echo "=== PREFLIGHT SUCCESS ==="
-
-echo "=== CUTELLA REDIS ROLLBACK HEALTH ==="
-for d in cutellashop.ir vesta-cosmetics.ir app.vesta-cosmetics.ir; do
-  for path in / /wp-login.php; do
-    curl -kLsS --max-time 20 --resolve "$d:443:127.0.0.1" -o /dev/null -w "domain=$d path=$path status=%{http_code} ttfb=%{time_starttransfer}\n" "https://$d$path" || true
-  done
-done
-if [[ -f /srv/vestacutella/runtime/cutella/wp-content/object-cache.php ]];then
- echo "cutella_dropin_present=yes"
-else echo "cutella_dropin_present=no";fi
-if [[ -d /srv/vestacutella/runtime/cutella/wp-content/plugins/redis-cache ]];then
- echo "cutella_plugin_present=yes"
-else echo "cutella_plugin_present=no";fi
-if grep -q 'WP_REDIS_' /srv/vestacutella/runtime/cutella/wp-config.php;then echo "cutella_redis_settings_present=yes"; else echo "cutella_redis_settings_present=no";fi
-echo "=== CUTELLA RECENT PHP/APACHE ERRORS (sanitized) ==="
-docker logs --since 15m vc-cutella 2>&1 | grep -Ei 'PHP Fatal|PHP Warning|PHP Notice|PHP Parse|Uncaught|Allowed memory|redis|[[:space:]]500[[:space:]]' | tail -70 | sed -E 's/(password|token|secret|authorization)[^ ]*/[REDACTED]/Ig' || true
-for f in /srv/vestacutella/runtime/cutella/wp-content/debug.log /srv/vestacutella/runtime/cutella/wp-content/vc-debug.log;do
-  [[ -f "$f" ]] || continue
-  grep -Ei 'fatal|redis|uncaught' "$f" | tail -30 | sed -E 's/(password|token|secret|authorization)[^ ]*/[REDACTED]/Ig' || true
-done
-echo "=== ROLLBACK CHECK DONE ==="
-
-
-echo "=== FINAL BOTH STORES REDIS CHECK ==="
-docker exec vc-redis redis-cli ping || true
-docker exec vc-redis redis-cli info memory | grep -E '^(used_memory_human|maxmemory_human|maxmemory_policy):' || true
-for site in cutella vesta;do
- echo "--- $site ---"
- docker exec "vc-$site" php -r '
- require "/var/www/html/wp-load.php";
- echo "ext_cache=".(wp_using_ext_object_cache()?"yes":"no").PHP_EOL;
- echo "redis_db=".(defined("WP_REDIS_DATABASE")?WP_REDIS_DATABASE:"undefined").PHP_EOL;
- echo "redis_prefix=".(defined("WP_REDIS_PREFIX")?WP_REDIS_PREFIX:"undefined").PHP_EOL;
- if(wp_using_ext_object_cache()){
-  $k="vcverify";$g="vcverify";
-  wp_cache_set($k, "ok", $g, 30);
-  echo "roundtrip=".(wp_cache_get($k,$g)==="ok"?"ok":"failed").PHP_EOL;
- }
- ' || true
-done
-for d in cutellashop.ir vesta-cosmetics.ir app.vesta-cosmetics.ir;do
- for p in / /wp-login.php;do
-  curl --noproxy '*' -ksS --resolve "$d:443:127.0.0.1" --max-time 20 -o /dev/null \
-   -w "$d$p code=%{http_code} ttfb=%{time_starttransfer}\n" "https://$d$p" || true
- done
-done
+echo "=== CDN AND SERVER ==="
 free -h
-echo "=== FINAL BOTH STORES CHECK DONE ==="
+df -h /
+for d in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir; do
+  echo "--- $d ORIGIN ---"
+  curl -kLsS --noproxy '*' --resolve "$d:443:127.0.0.1" --max-time 25 -o /dev/null -w 'origin http=%{http_code} ttfb=%{time_starttransfer}\n' "https://$d/"
+  echo "--- $d PUBLIC ---"
+  curl -kLsS --noproxy '*' --max-time 25 -o /dev/null -w 'public http=%{http_code} remote=%{remote_ip} ttfb=%{time_starttransfer}\n' "https://$d/" || true
+  curl -kLsSI --noproxy '*' --max-time 18 "https://$d/" | grep -Ei '^(HTTP/|server:|cf-cache-status:|cache-control:)' | head -10 || true
+done
+echo "=== IMAGE ELEMENT REFERENCES ==="
+f="$(mktemp)"
+curl -kLsS --noproxy '*' --resolve vesta-cosmetics.ir:443:127.0.0.1 --max-time 25 "https://vesta-cosmetics.ir/" > "$f"
+F="$f" python3 - <<'PY'
+from html.parser import HTMLParser
+import html,os
+class P(HTMLParser):
+ def __init__(self): super().__init__();self.items=[]
+ def handle_starttag(self,tag,attrs):
+  if tag=='img':self.items.append(dict(attrs))
+p=P();p.feed(open(os.environ['F'],errors='replace').read())
+selected=['ED83410A-44E6-40D9-98B3-9E3EFC5A9026.png','IMG_2078.png','3497C2E4-9664-4275-BFDE-91A6EB754951.png','A41F349F-B523-4FEA-8943-A1EAB187E4C5.png']
+for a in p.items:
+ for k in ['src','data-src','data-lazy-src']:
+  value=html.unescape(a.get(k,''))
+  if any(n in value for n in selected):
+   print('TARGET_TAG',k,repr(value[:240]),'loading',a.get('loading'),'priority',a.get('fetchpriority'),'size',a.get('width'),a.get('height'));break
+for root,dirs,files in os.walk('/srv/vestacutella/runtime/vesta/wp-content/uploads'):
+ for n in files:
+  if n in selected:
+   path=os.path.join(root,n)
+   print('TARGET_FILE',path,os.path.getsize(path))
+PY
+rm -f "$f"
+echo "=== SAFE WEBP ENCODING TRIAL (TEMP ONLY) ==="
+docker exec -i vc-vesta php <<'PHP'
+<?php
+$want=['ED83410A-44E6-40D9-98B3-9E3EFC5A9026.png','IMG_2078.png','3497C2E4-9664-4275-BFDE-91A6EB754951.png','A41F349F-B523-4FEA-8943-A1EAB187E4C5.png'];
+$iter=new RecursiveIteratorIterator(new RecursiveDirectoryIterator('/var/www/html/wp-content/uploads',FilesystemIterator::SKIP_DOTS));
+foreach($iter as $file){
+ if(!in_array($file->getBasename(),$want,true))continue;
+ $path=$file->getPathname();$im=@imagecreatefrompng($path);if(!$im)continue;
+ $tmp=tempnam(sys_get_temp_dir(),'vcw');
+ if(imagewebp($im,$tmp,86)){
+  $test=@imagecreatefromwebp($tmp);
+  echo "WEBP_TEST ".$file->getBasename()." original_kb=".round(filesize($path)/1024).
+       " webp_kb=".round(filesize($tmp)/1024).
+       " dimensions_same=".($test && imagesx($test)==imagesx($im)&&imagesy($test)==imagesy($im)?'yes':'no')."\n";
+  if($test)imagedestroy($test);
+ }
+ @unlink($tmp);imagedestroy($im);
+}
+PHP
+echo "=== AUDIT_COMPLETE ==="
