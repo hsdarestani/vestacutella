@@ -1,11 +1,11 @@
 const puppeteer=require('puppeteer-core');
 const variants=[
  {id:'baseline_p1',css:''},
- {id:'product_visibility_p1',css:'@media(max-width:767px){.wd-carousel-container.slider-type-product .wd-product{content-visibility:auto;contain-intrinsic-size:auto 350px;}}'},
+ {id:'product_visibility_p1',css:'@media(max-width:767px){.wd-carousel-container.slider-type-product .product-wrapper{content-visibility:auto;contain-intrinsic-size:auto 350px;}}'},
  {id:'baseline_p2',css:''},
- {id:'product_visibility_p2',css:'@media(max-width:767px){.wd-carousel-container.slider-type-product .wd-product{content-visibility:auto;contain-intrinsic-size:auto 350px;}}'},
+ {id:'product_visibility_p2',css:'@media(max-width:767px){.wd-carousel-container.slider-type-product .product-wrapper{content-visibility:auto;contain-intrinsic-size:auto 350px;}}'},
  {id:'baseline_p3',css:''},
- {id:'product_visibility_p3',css:'@media(max-width:767px){.wd-carousel-container.slider-type-product .wd-product{content-visibility:auto;contain-intrinsic-size:auto 350px;}}'}
+ {id:'product_visibility_p3',css:'@media(max-width:767px){.wd-carousel-container.slider-type-product .product-wrapper{content-visibility:auto;contain-intrinsic-size:auto 350px;}}'}
 ];
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function test(v){
@@ -55,8 +55,8 @@ async function test(v){
    webpSources:document.querySelectorAll('picture source[type="image/webp"]').length,
    lazyImages:document.querySelectorAll('img[loading="lazy"]').length,
    deferredRows:cv.length,
-   styledProducts:[...document.querySelectorAll('.wd-carousel-container.slider-type-product .wd-product')].filter(e=>getComputedStyle(e).contentVisibility==='auto').length,
-   styledProductSamples:[...document.querySelectorAll('.wd-carousel-container.slider-type-product .wd-product')].slice(0,3).map(e=>({height:Math.round(e.getBoundingClientRect().height),display:getComputedStyle(e).display,contentVisibility:getComputedStyle(e).contentVisibility})),
+   styledProducts:[...document.querySelectorAll('.wd-carousel-container.slider-type-product .product-wrapper')].filter(e=>getComputedStyle(e).contentVisibility==='auto').length,
+   styledProductSamples:[...document.querySelectorAll('.wd-carousel-container.slider-type-product .product-wrapper')].slice(0,3).map(e=>({height:Math.round(e.getBoundingClientRect().height),display:getComputedStyle(e).display,contentVisibility:getComputedStyle(e).contentVisibility})),
    bodyHeight:document.body.scrollHeight,
    heroLoaded:!![...document.querySelectorAll('picture img')].find(i=>i.naturalWidth>0)
   };
