@@ -6,7 +6,7 @@ const samples=[
  {id:'all_owl_preinit_block',css:'@media(max-width:767px){.wd-carousel-container>.owl-carousel.wd-owl:not(.owl-loaded){display:block!important;}}'},
  {id:'baseline_c',css:''},
  {id:'post_content_visibility',css:'@media(max-width:767px){.wd-carousel-container.slider-type-post{content-visibility:auto;contain-intrinsic-size:auto 650px;}}'}
-]
+];
 (async()=>{
  for(const test of samples){
   const browser=await puppeteer.launch({headless:true,executablePath:'/usr/bin/google-chrome',args:['--no-sandbox','--disable-dev-shm-usage','--disk-cache-size=0']});
