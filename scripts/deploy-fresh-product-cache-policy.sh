@@ -57,7 +57,6 @@ echo "=== Validate stores and app are unchanged ==="
 
 echo "=== Verify the 12s guest cache hits ==="
 one="$(mktemp)";two="$(mktemp)";cookie="$(mktemp)";private="$(mktemp)"
-trap 'rm -f "$one" "$two" "$cookie" "$private";rollback' EXIT
 for f in "$one" "$two"; do
   curl -kLsS --max-time 20 --resolve cutellashop.ir:443:127.0.0.1 \
     -D "$f" -o /dev/null https://cutellashop.ir/
