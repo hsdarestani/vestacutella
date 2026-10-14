@@ -1,0 +1,46 @@
+name: Deploy verified Vesta Owl mobile CSS
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/deploy-vesta-owl-preinit-safe.sh"
+      - "scripts/verify-vesta-owl-preinit.cjs"
+      - "scripts/revert-vesta-owl-preinit-safe.sh"
+      - ".github/workflows/deploy-vesta-owl-preinit-safe.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vc-vesta-owl-verified
+  cancel-in-progress: false
+jobs:
+  deploy_and_verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SSH helper and browser driver
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass
+          npm install --no-save puppeteer-core@24 --no-audit --no-fund
+      - name: Publish reversible CSS without any container restart
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          test -n "$HOST" && test -n "$SSHPASS"
+          sshpass -e scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/deploy-vesta-owl-preinit-safe.sh "root@$HOST:/tmp/vc-vesta-owl-css.sh"
+          sshpass -e ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" "bash /tmp/vc-vesta-owl-css.sh"
+      - name: Require a real mobile CLS gain and unchanged working carousels
+        run: node scripts/verify-vesta-owl-preinit.cjs
+      - name: Automatic rollback if deployment or visual functionality test failed
+        if: failure()
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          if [[ -n "$HOST" && -n "$SSHPASS" ]];then
+            sshpass -e scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/revert-vesta-owl-preinit-safe.sh "root@$HOST:/tmp/vc-vesta-owl-revert.sh"
+            sshpass -e ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" "bash /tmp/vc-vesta-owl-revert.sh"
+          fi
