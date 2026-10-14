@@ -29,6 +29,19 @@ echo "cutella=$cutella_before vesta=$vesta_before app=$app_before"
 [[ "$cutella_before" == 200 && "$vesta_before" == 200 ]] || {
   echo "ABORT: store baseline unhealthy"; exit 39;
 }
+echo "=== Verify isolated app will survive Nginx recreation ==="
+nginx_nets="$(docker inspect --format '{{range $name,$net := .NetworkSettings.Networks}}{{println $name}}{{end}}' vc-nginx)"
+echo "nginx_networks=$nginx_nets"
+[[ "$nginx_nets" == "vestacutella-backend" ]] || {
+  echo "ABORT: existing Nginx has additional/manual Docker networks"; exit 41;
+}
+docker inspect --format '{{range $name,$net := .NetworkSettings.Networks}}{{println $name}}{{end}}' vc-vestaapp-web | grep -qx vestacutella-backend || {
+  echo "ABORT: app container not attached to shared network"; exit 42;
+}
+test -s /srv/vestacutella/.env
+docker cp /tmp/nginx.conf vc-nginx:/tmp/vc-next-nginx.conf
+docker exec vc-nginx nginx -t -c /tmp/vc-next-nginx.conf
+
 cp -a "$TARGET" "$BACKUP"
 echo "Backup: $BACKUP"
 changed=0
@@ -37,17 +50,23 @@ rollback() {
   trap - EXIT ERR INT TERM
   if [[ "$changed" == 1 ]]; then
     echo "ROLLBACK config due to failed test: $rc"
-    cp -a "$BACKUP" "$TARGET"
+    cat "$BACKUP" > "$TARGET"
+    (cd /srv/vestacutella/repo/infra && docker compose --env-file /srv/vestacutella/.env up -d --no-deps --force-recreate nginx) || true
     docker exec vc-nginx nginx -t || true
-    docker exec vc-nginx nginx -s reload || true
   fi
   exit "$rc"
 }
 trap rollback EXIT
-install -m 644 /tmp/nginx.conf "$TARGET"
+cat /tmp/nginx.conf > "$TARGET"
 changed=1
+# A single-file bind mount keeps its old inode if host config is replaced.
+# Recreate nginx alone, then verify the container sees the exact intended file.
+(cd /srv/vestacutella/repo/infra && docker compose --env-file /srv/vestacutella/.env up -d --no-deps --force-recreate nginx)
 docker exec vc-nginx nginx -t
-docker exec vc-nginx nginx -s reload
+host_sha="$(sha256sum "$TARGET" | cut -d' ' -f1)"
+container_sha="$(docker exec vc-nginx sha256sum /etc/nginx/nginx.conf | cut -d' ' -f1)"
+echo "host_sha=$host_sha container_sha=$container_sha"
+[[ "$host_sha" == "$container_sha" ]] || { echo "ABORT: bind mount still stale"; exit 43; }
 sleep 2
 
 echo "=== Validate stores and app are unchanged ==="
