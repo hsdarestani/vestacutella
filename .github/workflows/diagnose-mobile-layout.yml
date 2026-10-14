@@ -1,0 +1,22 @@
+name: Diagnose mobile layout shifts
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/mobile-dom-audit.cjs"
+      - ".github/workflows/diagnose-mobile-layout.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  trace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check Chrome and install remote browser API
+        run: |
+          command -v google-chrome
+          npm install --no-save puppeteer-core@24 --no-audit --no-fund
+      - name: Observe real mobile page layout
+        run: node scripts/mobile-dom-audit.cjs
