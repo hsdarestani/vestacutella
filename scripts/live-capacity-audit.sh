@@ -40,3 +40,20 @@ print('HAS_AJAX_CONTENT_ENDPOINT',bool(re.search('admin-ajax.php',f)))
 PY
 rm -f "$tmp"
 echo "=== STAGING ASSESSMENT COMPLETE ==="
+
+
+echo "=== POST CUTELLA JS ROLLBACK HEALTH ==="
+for d in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
+ for route in / /shop/ /my-account/ /wp-login.php;do
+   [[ "$d" == app.vesta-cosmetics.ir && "$route" != / ]] && continue
+   http="$(curl --noproxy '*' -kLsS --max-time 25 --resolve "$d:443:127.0.0.1" -o /dev/null -w '%{http_code}' "https://$d$route")"
+   echo "$d$route http=$http"
+   [[ "$http" == 200 ]] || exit 51
+ done
+done
+P=/srv/vestacutella/runtime/cutella/wp-content/mu-plugins/vc-cutella-anon-home-no-revslider.php
+if [[ -e "$P" ]];then echo "FAILED: trial Cutella plugin remains";exit 52;fi
+echo "cutella_trial_plugin_absent=yes"
+docker exec vc-redis redis-cli ping
+docker exec vc-nginx nginx -t
+echo "CUTELLA_ROLLBACK_HEALTH_CONFIRMED"
