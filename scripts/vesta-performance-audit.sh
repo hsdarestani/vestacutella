@@ -249,3 +249,28 @@ for site in cutella vesta; do
  ' 2>&1 | head -20 || true
 done
 echo "=== CACHE_BYPASS_DIAGNOSTICS_DONE ==="
+
+
+echo "=== WHY CUTELLA IS NOT PAGE-CACHED ==="
+docker exec vc-cutella php -r '
+ require "/var/www/html/wp-load.php";
+ echo "show_on_front=".get_option("show_on_front")." page_on_front=".get_option("page_on_front")." woocommerce_shop_page_id=".get_option("woocommerce_shop_page_id").PHP_EOL;
+ $r=get_option("wp_rocket_settings",[]);
+ foreach ($r as $k=>$v) {
+  if(preg_match("/cache_reject|cache.*query|cache.*cookie|cache_ssl|cache_mobile|cache_logged|cache_purge|never_cache|preload/i",$k)){
+   echo $k."=".substr(is_scalar($v)?strval($v):json_encode($v),0,1000).PHP_EOL;
+  }
+ }
+ if(function_exists("get_rocket_option")){
+  foreach(["cache_reject_uri","cache_reject_cookies","cache_reject_ua"] as $k){
+   echo "get_rocket_option_".$k."=".substr(json_encode(get_rocket_option($k)),0,1000).PHP_EOL;
+  }
+ }
+' 2>&1 | head -65 || true
+echo "=== DONT_CACHE_FLAGS_IN_ACTIVE_PLUGINS ==="
+for site in cutella vesta; do
+ f="/srv/vestacutella/runtime/$site/wp-content"
+ echo "--- $site ---"
+ grep -RslE 'DONOTCACHEPAGE|rocket_cache_reject_uri|rocket_override_donotcachepage' "$f/mu-plugins" 2>/dev/null | head -15 || true
+done
+echo "=== CACHE_EXCLUSIONS_DONE ==="
