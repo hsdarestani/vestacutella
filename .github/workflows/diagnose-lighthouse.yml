@@ -1,0 +1,45 @@
+name: Diagnose captured mobile Lighthouse reports
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/diagnose-lighthouse.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Download previously captured real mobile reports
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p reports
+          gh run download 38545119320 --repo hsdarestani/vestacutella --name vesta-cutella-mobile-lighthouse --dir reports
+          ls -lh reports
+      - name: Find LCP, CLS, and main-thread bottlenecks
+        run: |
+          python3 - <<'PY'
+          import os,json
+          for site in ['vesta-cosmetics.ir','cutellashop.ir']:
+           f='reports/'+site+'.json'
+           j=json.load(open(f));a=j.get('audits',{})
+           print('=== DIAGNOSE',site,'===')
+           for key in ['largest-contentful-paint-element','layout-shifts','mainthread-work-breakdown','long-tasks','render-blocking-resources','unused-javascript','unused-css-rules','third-party-summary','lcp-discovery-insight','lcp-breakdown-insight']:
+            q=a.get(key,{})
+            print('AUDIT',key,'title=',q.get('title'),'display=',q.get('displayValue'),'score=',q.get('score'))
+            rows=(q.get('details') or {}).get('items',[])
+            if not isinstance(rows,list):continue
+            rows=sorted(rows,key=lambda z:-(z.get('totalBytes',0) or z.get('duration',0) or z.get('wastedBytes',0) or z.get('transferSize',0) or 0))
+            for row in rows[:6]:
+             n=row.get('node') or {}
+             print('  ITEM',str({'selector':n.get('selector'),'snippet':str(n.get('snippet',''))[:230],'url':str(row.get('url',''))[:190],'duration':row.get('duration'),'wastedMs':row.get('wastedMs'),'wastedBytes':row.get('wastedBytes'),'totalBytes':row.get('totalBytes'),'startTime':row.get('startTime')})[:650])
+           net=(a.get('network-requests') or {}).get('details',{}).get('items',[])
+           net=sorted(net,key=lambda z:-(z.get('transferSize') or 0))
+           print('LARGEST NETWORK REQUESTS')
+           for row in net[:12]:
+            print('  REQUEST',str(row.get('url',''))[:190],'transfer',row.get('transferSize'),'resource',row.get('resourceSize'),'mime',row.get('mimeType'))
+          PY
