@@ -15,7 +15,11 @@ echo "=== Vesta mobile visibility safe preflight ==="
 for d in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
   [[ "$(status "$d" /)" == 200 ]] || { echo "ABORT site unhealthy: $d";exit 31; }
 done
-[[ ! -e "$PLUGIN" ]] || { echo "ABORT existing CSS mu-plugin; no overwrite";exit 32; }
+if [[ -e "$PLUGIN" ]]; then
+  grep -q 'vc-mobile-product-render' "$PLUGIN" || { echo "ABORT unknown existing plugin"; exit 32; }
+  echo "Already installed; preserving existing plugin for independent verification"
+  exit 0
+fi
 [[ -s "$MU/vc-vesta-owl-init-mobile.php" ]] || { echo "ABORT existing safe carousel CSS missing";exit 33; }
 [[ -s "$MU/vc-vesta-hero-webp.php" ]] || { echo "ABORT existing optimized image fallback missing";exit 34; }
 
