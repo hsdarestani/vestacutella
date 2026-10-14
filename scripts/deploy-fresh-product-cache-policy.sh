@@ -3,7 +3,7 @@
 set -euo pipefail
 TARGET=/srv/vestacutella/repo/infra/nginx.conf
 BACKUP="/srv/backups/nginx-safe-speed-$(date -u +%Y%m%dT%H%M%SZ).conf"
-EXPECTED_SHA="308d7945e5a42f152313c4add7d4b523bf0d5e7f10e8097356f56cac5d25928f"
+EXPECTED_SHA="bfd069d68f0f745ce8d3767cfe4f4ef586de72559c3c543777c6038859bbd643"
 mkdir -p /srv/backups
 test -s /tmp/nginx.conf
 test -s "$TARGET"
