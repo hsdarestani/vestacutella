@@ -362,3 +362,36 @@ PY
  rm -f "$f"
 done
 echo "=== POST_DEPLOY_MEDIA_AND_TTFB_DONE ==="
+
+
+echo "=== VESTA HEAVY IMAGE ATTRIBUTES AND TOOLS ==="
+command -v jpegoptim || true
+command -v optipng || true
+command -v cwebp || true
+command -v convert || true
+python3 -c 'import PIL;print("pillow_available=yes")' 2>/dev/null || echo "pillow_available=no"
+docker exec vc-vesta php -r 'if(extension_loaded("gd")) {echo "php_gd_webp=".(function_exists("imagewebp")?"yes":"no").PHP_EOL;}else{echo "php_gd=no".PHP_EOL;}' || true
+f="$(mktemp)"
+curl --noproxy '*' -kLsS --max-time 20 --resolve vesta-cosmetics.ir:443:127.0.0.1 https://vesta-cosmetics.ir/ > "$f"
+F="$f" python3 - <<'PY'
+import os,urllib.parse,html
+from html.parser import HTMLParser
+class P(HTMLParser):
+ def __init__(self):super().__init__();self.ims=[]
+ def handle_starttag(self,tag,attrs):
+  if tag=="img":self.ims.append(dict(attrs))
+p=P();p.feed(open(os.environ["F"],errors="replace").read())
+print("image_count",len(p.ims),"srcset_count",sum(bool(z.get("srcset") or z.get("data-srcset")) for z in p.ims))
+items=[]
+for z in p.ims:
+ v=z.get("src") or z.get("data-src") or ""
+ u=urllib.parse.urlsplit(urllib.parse.urljoin("https://vesta-cosmetics.ir/",html.unescape(v)))
+ if u.hostname not in ("vesta-cosmetics.ir","www.vesta-cosmetics.ir") or not u.path.startswith("/wp-content/uploads/"):continue
+ path="/srv/vestacutella/runtime/vesta"+urllib.parse.unquote(u.path)
+ if os.path.isfile(path):
+  items.append((os.path.getsize(path),os.path.basename(path),z))
+for size,name,z in sorted(items,key=lambda x:-x[0])[:18]:
+ print("KB",size//1024,"file",name[:100],"display",z.get("width"),"x",z.get("height"),"loading",z.get("loading"),"srcset",bool(z.get("srcset") or z.get("data-srcset")),"priority",z.get("fetchpriority"))
+PY
+rm -f "$f"
+echo "=== HEAVY_IMAGE_DIAG_DONE ==="
