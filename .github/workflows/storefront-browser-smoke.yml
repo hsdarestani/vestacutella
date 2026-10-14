@@ -1,0 +1,20 @@
+name: Storefront browser regression smoke
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/storefront-browser-smoke.cjs"
+      - ".github/workflows/storefront-browser-smoke.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install safe headless browser driver
+        run: npm install --no-save puppeteer-core@24 --no-audit --no-fund
+      - name: Test public flows without accounts or live purchases
+        run: node scripts/storefront-browser-smoke.cjs
