@@ -312,3 +312,11 @@ ss -lntp 2>/dev/null | grep -E '(:80 |:443 )' | head -15 || true
 docker exec vc-nginx ps -ef 2>/dev/null | grep nginx | head -20 || true
 docker ps --format 'table {{.Names}}\t{{.Ports}}' | grep -E '^NAMES|^vc-nginx' || true
 echo "=== PATH_DIAG_DONE ==="
+
+
+echo "=== BIND MOUNT INODE CHECK ==="
+stat -c 'host-file inode=%i size=%s device=%d' /srv/vestacutella/repo/infra/nginx.conf || true
+docker exec vc-nginx stat -c 'container-file inode=%i size=%s device=%d' /etc/nginx/nginx.conf || true
+sha256sum /srv/vestacutella/repo/infra/nginx.conf || true
+docker exec vc-nginx sha256sum /etc/nginx/nginx.conf || true
+echo "=== MOUNT CHECK END ==="
