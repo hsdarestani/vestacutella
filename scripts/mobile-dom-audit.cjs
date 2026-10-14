@@ -1,3 +1,4 @@
+// Read-only post-CSS-fix layout shift source capture for CLS residual; no site edits.
 // Post-deploy mobile guard verification: capture layout shifts after 2026-10-14 rollout.
 const puppeteer=require('puppeteer-core');
 (async()=>{
