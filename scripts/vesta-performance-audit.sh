@@ -274,3 +274,18 @@ for site in cutella vesta; do
  grep -RslE 'DONOTCACHEPAGE|rocket_cache_reject_uri|rocket_override_donotcachepage' "$f/mu-plugins" 2>/dev/null | head -15 || true
 done
 echo "=== CACHE_EXCLUSIONS_DONE ==="
+
+
+echo "=== STAGED NGINX SAFE-PREFLIGHT (NO RELOAD) ==="
+test_nginx="$(mktemp)"
+if curl -fsSL --max-time 15 "https://raw.githubusercontent.com/hsdarestani/vestacutella/perf-cache-cutella-safe-20261014/infra/nginx.conf" -o "$test_nginx"; then
+  docker cp "$test_nginx" vc-nginx:/tmp/vc-staged-nginx.conf
+  if docker exec vc-nginx nginx -t -c /tmp/vc-staged-nginx.conf; then
+    echo "STAGED_NGINX_TEST_OK"
+  else
+    echo "STAGED_NGINX_TEST_FAILED"
+  fi
+else
+  echo "STAGED_NGINX_DOWNLOAD_FAILED"
+fi
+rm -f "$test_nginx"
