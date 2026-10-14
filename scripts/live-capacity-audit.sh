@@ -19,3 +19,10 @@ done
 echo "=== CUTELLA ERROR SIGNALS ==="
 docker logs --since 15m vc-cutella 2>&1 | grep -Ei "segfault|fatal|php.*error|[[:space:]]500[[:space:]]" | tail -25 | sed -E "s/(password|token|secret|authorization)[^ ]*/[REDACTED]/Ig" || true
 echo "=== POST_ROLLBACK_HEALTH_SUCCESS ==="
+
+echo "=== CUTELLA PHP-CLI CRASH DIAGNOSTICS, READ ONLY ==="
+docker exec vc-cutella php -v 2>&1 | head -8 || true
+docker exec vc-cutella php -d opcache.enable_cli=0 -l /var/www/html/wp-config.php 2>&1 | head -15 || true
+docker exec vc-cutella php -r "echo PHP_VERSION, PHP_EOL;" 2>&1 | head -10 || true
+docker exec vc-cutella php -d opcache.enable_cli=0 -r "echo PHP_VERSION, PHP_EOL;" 2>&1 | head -10 || true
+echo "=== CUTELLA CLI DIAGNOSTIC COMPLETE ==="
