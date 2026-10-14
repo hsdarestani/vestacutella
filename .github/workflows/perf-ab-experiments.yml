@@ -1,0 +1,25 @@
+name: Browser performance A/B experiments
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/perf-ab-experiments.cjs"
+      - ".github/workflows/perf-ab-experiments.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vc-perf-ab
+  cancel-in-progress: true
+jobs:
+  experiments:
+    runs-on: ubuntu-latest
+    timeout-minutes: 13
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install browser controller
+        run: |
+          command -v google-chrome
+          npm install --no-save puppeteer-core@24 --no-audit --no-fund
+      - name: Compare mobile variants without changing servers
+        run: node scripts/perf-ab-experiments.cjs
