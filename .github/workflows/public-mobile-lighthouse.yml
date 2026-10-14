@@ -1,4 +1,5 @@
 name: Public mobile Lighthouse performance
+# Verification after additional Vesta WebP images and CLS reservation
 on:
   push:
     branches: [main]
