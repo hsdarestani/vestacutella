@@ -1,84 +1,38 @@
 #!/usr/bin/env bash
-# Final read-only sanity checks: all home/shop image variants, WebP, cache safety.
+# Production read-only resource/CDN inventory for Vesta + Cutella.
 set -euo pipefail
-echo "=== FINAL STORE MEDIA AND CACHE CHECK ==="
-for site in vesta cutella;do
- if [[ "$site" == vesta ]];then d=vesta-cosmetics.ir; else d=cutellashop.ir;fi
- echo "--- $site : $d ---"
- for route in / /shop/ /cart/ /checkout/ /my-account/ /wp-login.php;do
-  code="$(curl --noproxy '*' -kLsS --max-time 25 --resolve "$d:443:127.0.0.1" -o /dev/null -w '%{http_code}' "https://$d$route")"
-  echo "route=$route code=$code"
-  [[ "$code" == 200 ]] || [[ "$code" == 302 ]] || exit 21
- done
- for route in / /shop/;do
-  tmp="$(mktemp)"
-  curl --noproxy '*' -kLsS --max-time 25 --resolve "$d:443:127.0.0.1" "https://$d$route" > "$tmp"
-  DOMAIN="$d" SITE="$site" PAGE="$route" FILE="$tmp" python3 - <<'PY'
-import os,html,urllib.parse,collections
+echo "=== PROXY ==="
+for d in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir; do
+ echo "domain=$d"
+ curl --noproxy "*" -ksSI --max-time 18 "https://$d/" | grep -iE "^(HTTP/|server:|cf-ray:|cf-cache-status:|cache-control:)" | head -10 || true
+ curl --noproxy "*" -ksSI --max-time 18 --resolve "$d:443:127.0.0.1" "https://$d/" | grep -iE "^(HTTP/|server:|cf-ray:|cf-cache-status:|cache-control:)" | head -10 || true
+done
+echo "=== CUTELLA HTML RESOURCES ==="
+f="$(mktemp)"
+curl --noproxy "*" -ksSL --max-time 25 --resolve cutellashop.ir:443:127.0.0.1 https://cutellashop.ir/ > "$f"
+F="$f" python3 - <<'PY'
+import os
 from html.parser import HTMLParser
 class P(HTMLParser):
- def __init__(self): super().__init__();self.images=[];self.pictures=0;self.webps=[]
- def handle_starttag(self,t,attrs):
-  d=dict(attrs)
-  if t=='img':self.images.append(d)
-  if t=='picture':self.pictures+=1
-  if t=='source' and d.get('type')=='image/webp':self.webps.append(d.get('srcset',''))
-p=P();p.feed(open(os.environ['FILE'],errors='replace').read())
-d=os.environ['DOMAIN'];site=os.environ['SITE'];base='/srv/vestacutella/runtime/'+site
-urls=set();remote=set()
-for im in p.images:
- for attr in ['src','data-src','data-lazy-src']:
-  if im.get(attr):urls.add(im[attr])
- for attr in ['srcset','data-srcset']:
-  if im.get(attr):
-   for part in im[attr].split(','):
-    u=part.strip().split()
-    if u:urls.add(u[0])
-for u in p.webps:urls.add(u)
-missing=[];matched=0
-for val in urls:
- val=html.unescape(val)
- if val.startswith(('data:','blob:','javascript:')):continue
- parsed=urllib.parse.urlsplit(urllib.parse.urljoin('https://'+d+'/',val))
- if parsed.hostname not in (d,'www.'+d):
-  remote.add(parsed.hostname or '');continue
- path=urllib.parse.unquote(parsed.path)
- if not path.startswith('/wp-content/'):continue
- loc=base+path
- if os.path.isfile(loc):matched+=1
- else:missing.append(parsed.path)
-print('MEDIA_COUNTS',d,os.environ['PAGE'],'img_tags',len(p.images),'picture_tags',p.pictures,'webp_sources',len(p.webps),'local_assets',matched,'missing_on_disk',len(missing),'remote_hosts',','.join(sorted(remote))[:250])
-for x in missing[:20]:print('MEDIA_MISSING',x[:250])
-if site=='vesta' and os.environ['PAGE']=='/':
- assert len(p.webps)>=4, 'Missing Vesta four WebP sources'
- for src in p.webps:
-  assert src.endswith('.vc20261014.webp'), 'Unknown source format'
+ def __init__(self):super().__init__();self.scripts=[];self.styles=[];self.classes=[]
+ def handle_starttag(self,t,a):
+  d=dict(a)
+  if t=="script" and d.get("src"):self.scripts.append(d["src"])
+  if t=="link" and d.get("rel")=="stylesheet":self.styles.append(d.get("href",""))
+  if d.get("class"):self.classes.extend(d["class"].split())
+p=P();s=open(os.environ["F"],errors="replace").read();p.feed(s)
+print("css_count",len(p.styles),"js_count",len(p.scripts))
+print("revslider_markup",any(w in s for w in ("rs-module","rev_slider","rev-slide")))
+print("dashicons_markers",sum("dashicons" in c for c in p.classes))
+print("cutella_banners",sum("cutella-banner" in c for c in p.classes))
+for kind,items in (("css",p.styles),("js",p.scripts)):
+ for u in items:
+  if any(x in u.lower() for x in ("revslider","dashicons","jquery","elementor","cutella-")):print(kind,u[:210])
 PY
-  rm -f "$tmp"
- done
- echo "=== $d sample public static cache headers ==="
- url="$(find "/srv/vestacutella/runtime/$site/wp-content/uploads/" -type f \( -iname '*.jpg' -o -iname '*.png' -o -iname '*.webp' \) -print -quit)"
- if [[ -n "$url" ]];then
-  path="$(printf '%s' "$url" | sed "s#^/srv/vestacutella/runtime/$site##")"
-  curl --noproxy '*' -kLsSI --max-time 20 "https://$d$path" | grep -Ei '^(HTTP/|server:|cf-cache-status:|cache-control:|content-type:)' | head -10 || true
- fi
+rm -f "$f"
+echo "=== WORDPRESS FRONTEND SETTINGS ==="
+for site in cutella vesta;do
+ echo "$site"
+ docker exec "vc-$site" php -r 'require "/var/www/html/wp-load.php"; echo "theme=".get_stylesheet().PHP_EOL;foreach((array)get_option("active_plugins",[]) as $p)if(preg_match("/rocket|revslider|cutella|redis/i",$p))echo "active=".$p.PHP_EOL; $o=get_option("wp_rocket_settings",[]);foreach(["remove_unused_css","minify_css","delay_js","defer_all_js"] as $k)echo "rocket_".$k."=".json_encode($o[$k]??null).PHP_EOL;' 2>&1 | head -25
 done
-echo "=== CUTELLA PUBLIC CACHE COOKIE BYPASS ==="
-for cookie in '' 'woocommerce_items_in_cart=1';do
- if [[ -z "$cookie" ]];then
-  curl --noproxy '*' -kLsSI --max-time 20 --resolve cutellashop.ir:443:127.0.0.1 https://cutellashop.ir/ | grep -Ei '^(HTTP/|x-vc-guest-cache:)' | head -5
- else
-  curl --noproxy '*' -kLsSI --max-time 20 --resolve cutellashop.ir:443:127.0.0.1 -H "Cookie: $cookie" https://cutellashop.ir/ | grep -Ei '^(HTTP/|x-vc-guest-cache:)' | head -5
- fi
-done
-echo "=== REDIS AND ROUTING ==="
-for site in vesta cutella;do
- docker exec "vc-$site" php -r '
- require "/var/www/html/wp-load.php";
- echo "external_cache=".(wp_using_ext_object_cache()?"yes":"no").
- " redis_db=".(defined("WP_REDIS_DATABASE")?WP_REDIS_DATABASE:"none").PHP_EOL;
- ' 2>/dev/null || exit 23
-done
-grep -q 'server_name app.vesta-cosmetics.ir;' /srv/vestacutella/repo/infra/nginx.conf
-docker exec vc-nginx nginx -t
-echo "FINAL_STORE_MEDIA_AND_CACHE_OK"
+echo "=== CDN_DEPENDENCIES_AUDIT_OK ==="
