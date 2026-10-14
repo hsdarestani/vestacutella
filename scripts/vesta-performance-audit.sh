@@ -1,63 +1,96 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# Read-only production baseline for both WooCommerce stores.
+set -uo pipefail
 BASE=/srv/vestacutella
-ENVFILE=$BASE/.env
-set -a
-source "$ENVFILE"
-set +a
-
-echo "=== SYSTEM ==="
+echo "=== AUDIT $(date -u +%FT%TZ) ==="
+echo "=== SERVER ==="
+hostname
 uptime
 free -h
 df -h /
-docker stats --no-stream vc-vesta vc-db-vesta vc-nginx
-
-echo "=== PHP / OPCACHE ==="
-docker exec vc-vesta php -r '
-echo "php=".PHP_VERSION.PHP_EOL;
-echo "memory_limit=".ini_get("memory_limit").PHP_EOL;
-echo "opcache.enable=".ini_get("opcache.enable").PHP_EOL;
-echo "opcache.memory_consumption=".ini_get("opcache.memory_consumption").PHP_EOL;
-echo "opcache.max_accelerated_files=".ini_get("opcache.max_accelerated_files").PHP_EOL;
-echo "realpath_cache_size=".ini_get("realpath_cache_size").PHP_EOL;
-'
-
-echo "=== MARIADB ==="
-docker exec vc-db-vesta mariadb -uroot -p"$VESTA_DB_ROOT_PASSWORD" -N -e "
-SHOW VARIABLES WHERE Variable_name IN ('innodb_buffer_pool_size','innodb_log_file_size','max_connections','tmp_table_size','max_heap_table_size');
-SHOW GLOBAL STATUS WHERE Variable_name IN ('Threads_connected','Threads_running','Created_tmp_disk_tables','Created_tmp_tables','Innodb_buffer_pool_reads','Innodb_buffer_pool_read_requests','Slow_queries');
-"
-
-echo "=== WORDPRESS DB ==="
-docker exec vc-db-vesta mariadb -uroot -p"$VESTA_DB_ROOT_PASSWORD" vestacos_m -N -e "
-SELECT CONCAT('options_rows=',COUNT(*)) FROM wp_options;
-SELECT CONCAT('autoload_bytes=',COALESCE(SUM(LENGTH(option_value)),0)) FROM wp_options WHERE autoload IN ('yes','on','auto','auto-on');
-SELECT CONCAT('transients=',COUNT(*),' bytes=',COALESCE(SUM(LENGTH(option_value)),0)) FROM wp_options WHERE option_name LIKE '_transient_%' OR option_name LIKE '_site_transient_%';
-SELECT CONCAT('action_scheduler_pending=',COUNT(*)) FROM wp_actionscheduler_actions WHERE status='pending';
-SELECT CONCAT('posts=',COUNT(*)) FROM wp_posts;
-SELECT CONCAT('postmeta=',COUNT(*)) FROM wp_postmeta;
-SELECT CONCAT('options_table_mb=',ROUND((data_length+index_length)/1024/1024,1)) FROM information_schema.tables WHERE table_schema='vestacos_m' AND table_name='wp_options';
-SELECT CONCAT('postmeta_table_mb=',ROUND((data_length+index_length)/1024/1024,1)) FROM information_schema.tables WHERE table_schema='vestacos_m' AND table_name='wp_postmeta';
-" 2>/dev/null || true
-
-echo "=== LOCAL RESPONSE TIMINGS ==="
-for u in / /shop/ /wp-login.php; do
-  for i in 1 2 3; do
-    curl -ksS --resolve vesta-cosmetics.ir:443:127.0.0.1 -o /dev/null       -w "$u run=$i code=%{http_code} dns=%{time_namelookup} connect=%{time_connect} tls=%{time_appconnect} ttfb=%{time_starttransfer} total=%{time_total} size=%{size_download}\n"       "https://vesta-cosmetics.ir$u" || true
+echo "=== RECENT BACKUPS (metadata only) ==="
+for p in /srv/backups /srv/vestacutella/runtime/db-vesta /srv/vestacutella/runtime/db-cutella; do
+  if [[ -e "$p" ]]; then du -sh "$p" 2>/dev/null || true; else echo "MISSING $p"; fi
+done
+find /srv/backups -maxdepth 2 -type f -printf '%TY-%Tm-%Td %s %p\n' 2>/dev/null | sort -r | head -15 || true
+echo "=== DOCKER ==="
+docker ps --format 'table {{.Names}}\t{{.Status}}'
+docker stats --no-stream --format 'table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.PIDs}}' vc-nginx vc-vesta vc-cutella vc-db-vesta vc-db-cutella 2>/dev/null || true
+echo "=== PHP/EXTENSIONS ==="
+for site in vesta cutella; do
+  echo "--- $site ---"
+  docker exec "vc-$site" php -r 'echo "version=".PHP_VERSION." opcache=".(extension_loaded("Zend OPcache")?"yes":"no")." redis_extension=".(extension_loaded("redis")?"yes":"no")." memory=".ini_get("memory_limit").PHP_EOL;' 2>/dev/null || true
+done
+echo "=== DATABASE METRICS ==="
+for db in vesta cutella; do
+  echo "--- $db ---"
+  docker exec "vc-$db" php -r '
+  require "/var/www/html/wp-load.php";
+  global $wpdb;
+  echo "dbname=".DB_NAME." tables_prefix=".$wpdb->prefix.PHP_EOL;
+  $r=$wpdb->get_row("SELECT COUNT(*) n, COALESCE(SUM(LENGTH(option_value)),0) b FROM {$wpdb->options} WHERE autoload IN (\"yes\",\"on\",\"auto\",\"auto-on\")",ARRAY_A);
+  echo "autoload_rows=".($r["n"]??"unknown")." bytes=".($r["b"]??"unknown").PHP_EOL;
+  echo "wp_cache_ext=".(function_exists("wp_using_ext_object_cache") && wp_using_ext_object_cache()?"yes":"no").PHP_EOL;
+  $plugins=(array)get_option("active_plugins",[]);
+  foreach($plugins as $p) if(preg_match("/rocket|redis|cache|asset|optimi|performance|woocommerce/i",$p)) echo "active_plugin=".$p.PHP_EOL;
+  ' 2>&1 | grep -Ev 'DB_PASSWORD|SECRET|TOKEN|password=|Authorization:|Bearer ' | head -35 || true
+done
+echo "=== ORIGIN RESPONSE TIME (3x per page) ==="
+for domain in vesta-cosmetics.ir cutellashop.ir; do
+  for path in / /shop/ /wp-login.php; do
+    for i in 1 2 3; do
+      curl -kLsS --max-time 18 --resolve "$domain:443:127.0.0.1" -o /dev/null \
+        -w "$domain $path run=$i status=%{http_code} ttfb=%{time_starttransfer}s total=%{time_total}s size=%{size_download}\n" "https://$domain$path" || true
+    done
   done
 done
-
-echo "=== PUBLIC RESPONSE TIMINGS ==="
-for u in / /shop/ /wp-login.php; do
-  for i in 1 2 3; do
-    curl -ksS -o /dev/null       -w "$u run=$i code=%{http_code} dns=%{time_namelookup} connect=%{time_connect} tls=%{time_appconnect} ttfb=%{time_starttransfer} total=%{time_total} size=%{size_download}\n"       "https://vesta-cosmetics.ir$u" || true
-  done
+echo "=== STATIC FILES AND IMAGE AUDIT ==="
+for domain in vesta-cosmetics.ir cutellashop.ir; do
+  echo "--- $domain ---"
+  f="$(mktemp)"
+  curl -kLsS --max-time 25 --resolve "$domain:443:127.0.0.1" "https://$domain/" > "$f" || true
+  DOMAIN="$domain" HTML_FILE="$f" python3 - <<'PY'
+import os,re,subprocess,urllib.parse,html
+from html.parser import HTMLParser
+d=os.environ["DOMAIN"]; content=open(os.environ["HTML_FILE"],errors="replace").read()
+class Assets(HTMLParser):
+ def __init__(self):
+  super().__init__(); self.urls=[]; self.images=0
+ def handle_starttag(self,tag,attrs):
+  a=dict(attrs)
+  if tag=="img":
+   self.images+=1
+   for k in ("src","data-src","data-lazy-src"):
+    if a.get(k): self.urls.append(a[k]); break
+  elif tag=="link" and a.get("rel","").find("stylesheet")>=0 and a.get("href"):
+   self.urls.append(a["href"])
+  elif tag=="script" and a.get("src"):
+   self.urls.append(a["src"])
+p=Assets();p.feed(content)
+urls=[]; seen=set()
+for v in p.urls:
+ v=html.unescape(v)
+ if not v or v.startswith(("data:","blob:")):continue
+ v=urllib.parse.urljoin("https://"+d+"/",v)
+ if v not in seen:urls.append(v);seen.add(v)
+print("html_bytes=%d img_elements=%d distinct_asset_urls=%d"%(len(content.encode()),p.images,len(urls)))
+print("legacy_asset_hosts="+",".join(sorted(set(urllib.parse.urlsplit(x).hostname or "" for x in urls if urllib.parse.urlsplit(x).hostname not in (d,"www."+d))))[:500])
+fails=[]
+for u in urls[:35]:
+ cmd=["curl","-kLsS","--max-time","8","--range","0-0","-o","/dev/null","-w","%{http_code} %{time_total} %{size_download}"]
+ if urllib.parse.urlsplit(u).hostname in (d,"www."+d):
+  cmd+=["--resolve",urllib.parse.urlsplit(u).hostname+":443:127.0.0.1"]
+ try:
+  a=subprocess.run(cmd+[u],capture_output=True,text=True,timeout=10)
+  t=a.stdout.strip().split()
+  code=int(t[0]) if t and t[0].isdigit() else 0
+  if code not in (200,206,301,302): fails.append((code,u))
+ except Exception: fails.append((0,u))
+print("assets_tested=%d failing=%d"%(min(35,len(urls)),len(fails)))
+for code,u in fails[:20]:print("BROKEN_ASSET",code,u[:250])
+PY
+  rm -f "$f"
+  echo "Cache headers:"
+  curl -kLsSI --max-time 12 --resolve "$domain:443:127.0.0.1" "https://$domain/" | grep -Ei '^(HTTP/|cache-control:|expires:|content-encoding:|vary:|server:)' | head -12 || true
 done
-
-echo "=== HEADERS ==="
-curl -ksSI https://vesta-cosmetics.ir/ | grep -Ei '^(HTTP/|server:|content-type:|content-length:|content-encoding:|cache-control:|expires:|vary:|x-|strict-transport-security:)' || true
-
-echo "=== NGINX CONFIG TEST ==="
-docker exec vc-nginx nginx -t
-
-echo "PERF_AUDIT_OK"
+echo "=== PRODUCTION_BASELINE_DONE ==="
