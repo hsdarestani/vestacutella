@@ -1,0 +1,30 @@
+name: Deploy Vesta mobile layout stability safely
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/deploy-vesta-layout-stability.sh"
+      - ".github/workflows/deploy-vesta-layout-stability.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-layout-stability-deploy
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SSH helper
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Deploy WebP with backup, original-image fallback, and rollback
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          test -n "$HOST"
+          test -n "$SSHPASS"
+          sshpass -e scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/deploy-vesta-layout-stability.sh "root@$HOST:/tmp/vc-deploy-vesta-layout.sh"
+          sshpass -e ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/vc-deploy-vesta-layout.sh'
