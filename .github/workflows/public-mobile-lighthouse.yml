@@ -1,0 +1,50 @@
+name: Public mobile Lighthouse performance
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/public-mobile-lighthouse.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  mobile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Browser and Lighthouse
+        run: |
+          which google-chrome || which chromium || true
+          node --version
+          npm install -g lighthouse@12 --no-audit --no-fund
+      - name: Measure both public homepages from a mobile viewport
+        run: |
+          for site in vesta-cosmetics.ir cutellashop.ir; do
+            echo "=== LIGHTHOUSE MOBILE $site ==="
+            timeout 175s lighthouse "https://$site/" --only-categories=performance \
+              --chrome-flags="--headless --no-sandbox --disable-dev-shm-usage" \
+              --form-factor=mobile --screenEmulation.mobile=true \
+              --max-wait-for-load=45000 --output=json --output-path="/tmp/$site.json" --quiet || true
+            SITE="$site" python3 - <<'PY'
+          import json,os
+          site=os.environ['SITE']
+          try: j=json.load(open('/tmp/'+site+'.json'))
+          except Exception as e:
+           print('RESULT',site,'audit_unavailable',str(e));raise SystemExit(0)
+          a=j.get('audits',{})
+          print('RESULT',site,'score',j.get('categories',{}).get('performance',{}).get('score'))
+          for k in ['first-contentful-paint','largest-contentful-paint','total-blocking-time','cumulative-layout-shift','speed-index','server-response-time']:
+           z=a.get(k,{})
+           print('METRIC',site,k,z.get('displayValue'),z.get('numericValue'))
+          print('FINAL_URL',j.get('finalDisplayedUrl'),'runtime_error',j.get('runtimeError'))
+          PY
+          done
+      - name: Publish JSON reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vesta-cutella-mobile-lighthouse
+          path: /tmp/*.ir.json
+          if-no-files-found: ignore
+          retention-days: 7
