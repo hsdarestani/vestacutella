@@ -320,3 +320,45 @@ docker exec vc-nginx stat -c 'container-file inode=%i size=%s device=%d' /etc/ng
 sha256sum /srv/vestacutella/repo/infra/nginx.conf || true
 docker exec vc-nginx sha256sum /etc/nginx/nginx.conf || true
 echo "=== MOUNT CHECK END ==="
+
+
+echo "=== POST DEPLOY TTFB AND MEDIA SIZES ==="
+for site in cutella vesta; do
+ [[ "$site" == cutella ]] && d=cutellashop.ir || d=vesta-cosmetics.ir
+ echo "--- $site post deploy ---"
+ for i in 1 2 3;do
+   curl --noproxy '*' -kLsS --max-time 20 --resolve "$d:443:127.0.0.1" -o /dev/null \
+     -w "run=$i ttfb=%{time_starttransfer} total=%{time_total} code=%{http_code}\n" "https://$d/" || true
+ done
+ f="$(mktemp)"
+ curl --noproxy '*' -kLsS --max-time 20 --resolve "$d:443:127.0.0.1" "https://$d/" > "$f"
+ D="$d" SITE="$site" F="$f" python3 - <<'PY'
+import os,html,collections,statistics,urllib.parse
+from html.parser import HTMLParser
+d=os.environ["D"];site=os.environ["SITE"]
+class P(HTMLParser):
+ def __init__(self):super().__init__();self.urls=[]
+ def handle_starttag(self,tag,attrs):
+  if tag!="img":return
+  x=dict(attrs)
+  for k in ("src","data-src","data-lazy-src"):
+   if x.get(k):self.urls.append(x[k]);break
+p=P();p.feed(open(os.environ["F"],errors="replace").read())
+files={};ext=collections.Counter();total=0
+for u in p.urls:
+ z=urllib.parse.urlsplit(urllib.parse.urljoin("https://"+d+"/",html.unescape(u)))
+ if z.hostname not in (d,"www."+d) or not z.path.startswith("/wp-content/uploads/"):continue
+ loc="/srv/vestacutella/runtime/"+site+urllib.parse.unquote(z.path)
+ if os.path.isfile(loc):files[loc]=os.path.getsize(loc)
+for loc,sz in files.items():
+ ext[os.path.splitext(loc)[-1].lower()]+=1;total+=sz
+size=sorted(files.values())
+p95=size[int(len(size)*.95)] if size else 0
+print("unique_images=%d total_bytes=%d p95_kb=%d over_300KB=%d over_1MB=%d"%(len(files),total,p95//1024,sum(x>300*1024 for x in size),sum(x>1024*1024 for x in size)))
+print("image_formats="+str(dict(ext)))
+for loc,sz in sorted(files.items(),key=lambda x:-x[1])[:10]:
+ print("large_image_kb=%d file=%s"%(sz//1024,os.path.basename(loc)[:150]))
+PY
+ rm -f "$f"
+done
+echo "=== POST_DEPLOY_MEDIA_AND_TTFB_DONE ==="
