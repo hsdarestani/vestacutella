@@ -1,0 +1,20 @@
+name: Cutella browser-only asset lab
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/cutella-mobile-asset-lab.cjs"
+      - ".github/workflows/cutella-mobile-asset-lab.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  lab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install browser controller
+        run: npm install --no-save puppeteer-core@24 --no-audit --no-fund
+      - name: Compare without editing production
+        run: node scripts/cutella-mobile-asset-lab.cjs
