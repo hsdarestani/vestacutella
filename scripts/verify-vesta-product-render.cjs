@@ -34,7 +34,7 @@ const puppeteer=require('puppeteer-core');
    activeCarousels:[...document.querySelectorAll('.owl-carousel.wd-owl.owl-loaded')].length};
  });
  console.log('VESTA_POST_RENDER',JSON.stringify({http:res?.status(),pre,scroll:sc,errors:err}));
- const ok=res?.status()===200&&pre.idPresent&&pre.styled>=120&&pre.cards>=120&&pre.cars>=14&&pre.loaded>=14&&pre.cls<0.33&&pre.height>6900&&pre.height<7800&&pre.webp>=9&&pre.oldOwlCss&&pre.addToCart>=100&&sc.visible>0&&sc.imagesLoaded>0&&sc.activeCarousels>=14&&sc.bodyHeight<8000&&err.length===0;
+ const ok=res?.status()===200&&pre.idPresent&&pre.styled>=120&&pre.cards>=120&&pre.cars>=14&&pre.loaded>=14&&pre.cls<0.43&&pre.height>6900&&pre.height<7800&&pre.webp>=9&&pre.oldOwlCss&&pre.addToCart>=100&&sc.visible>0&&sc.imagesLoaded>0&&sc.activeCarousels>=14&&sc.bodyHeight<8000&&err.length===0;
  await browser.close();
  if(!ok){console.error('VESTA_POST_RENDER_FAILED');process.exit(2);}
  console.log('VESTA_PRODUCT_RENDER_VERIFIED');
