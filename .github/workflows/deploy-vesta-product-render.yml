@@ -1,0 +1,45 @@
+name: Deploy verified Vesta product render optimization
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/deploy-vesta-product-render.sh"
+      - "scripts/verify-vesta-product-render.cjs"
+      - "scripts/revert-vesta-product-render.sh"
+      - ".github/workflows/deploy-vesta-product-render.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vc-vesta-product-render
+  cancel-in-progress: false
+jobs:
+  deploy_verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install remote helper and browser
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+          npm install --no-save puppeteer-core@24 --no-audit --no-fund
+      - name: Apply mobile CSS with production smoke and local rollback
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          test -n "$HOST" && test -n "$SSHPASS"
+          sshpass -e scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/deploy-vesta-product-render.sh "root@$HOST:/tmp/vc-vesta-product-render.sh"
+          sshpass -e ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" "bash /tmp/vc-vesta-product-render.sh"
+      - name: Independent real mobile browser and scroll validation
+        run: node scripts/verify-vesta-product-render.cjs
+      - name: Revert scoped plugin if deployment or browser validation fails
+        if: failure()
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          if [[ -n "$HOST" && -n "$SSHPASS" ]];then
+            sshpass -e scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/revert-vesta-product-render.sh "root@$HOST:/tmp/vc-vesta-product-render-revert.sh"
+            sshpass -e ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" "bash /tmp/vc-vesta-product-render-revert.sh"
+          fi
