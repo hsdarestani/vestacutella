@@ -165,3 +165,15 @@ PY
   rm -f "$file"
 done
 echo "=== CACHE_DEEP_DIVE_DONE ==="
+
+
+echo "=== LIVE NGINX INVENTORY BEFORE ANY DEPLOY ==="
+for file in /srv/vestacutella/repo/infra/nginx.conf /srv/vestacutella/repo/infra/docker-compose.yml; do
+ if [[ -r "$file" ]]; then sha256sum "$file"; wc -l "$file"; else echo "MISSING $file"; fi
+done
+docker exec vc-nginx sha256sum /etc/nginx/nginx.conf || true
+grep -En '^[[:space:]]*(upstream|server_name|location|proxy_pass|include|listen)' /srv/vestacutella/repo/infra/nginx.conf | head -120 || true
+echo "=== APACHE WORKERS ==="
+docker exec vc-cutella sh -c 'ps aux 2>/dev/null | grep -E "apache2|httpd" | grep -v grep | wc -l' || true
+docker exec vc-vesta sh -c 'ps aux 2>/dev/null | grep -E "apache2|httpd" | grep -v grep | wc -l' || true
+echo "=== LIVE_NGINX_INVENTORY_DONE ==="
