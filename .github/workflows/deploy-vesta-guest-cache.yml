@@ -1,0 +1,49 @@
+name: Deploy Vesta guest origin cache safely
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/deploy-vesta-guest-cache.sh"
+      - ".github/workflows/deploy-vesta-guest-cache.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vc-vesta-guest-cache-deploy
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate candidate before touching production
+        run: |
+          bash -n scripts/deploy-vesta-guest-cache.sh
+          grep -Fq '12s anonymous-only Vesta origin microcache' infra/nginx.conf
+          grep -Fq 'proxy_no_cache $vc_skip_guest_cache $http_authorization $upstream_http_set_cookie' infra/nginx.conf
+      - name: Install remote helper
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Deploy guest cache with remote Nginx preflight and automatic rollback
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          test -n "$HOST" && test -n "$SSHPASS"
+          sshpass -e scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null infra/nginx.conf "root@$HOST:/tmp/vc-vesta-guest-nginx.conf"
+          sshpass -e scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/deploy-vesta-guest-cache.sh "root@$HOST:/tmp/vc-deploy-vesta-guest-cache.sh"
+          sshpass -e ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/vc-deploy-vesta-guest-cache.sh'
+      - name: Verify public storefront and isolated application still resolve
+        run: |
+          set -euo pipefail
+          for domain in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir; do
+            c=$(curl -sS -L --max-time 30 -o /dev/null -w '%{http_code}' "https://$domain/")
+            echo "$domain https=$c"
+            [[ "$c" == 200 ]]
+          done
+          for path in /shop/ /cart/ /my-account/ /wp-login.php; do
+            c=$(curl -sS -L --max-time 30 -o /dev/null -w '%{http_code}' "https://vesta-cosmetics.ir$path")
+            echo "Vesta $path=$c"
+            [[ "$c" == 200 ]]
+          done
+          echo "PUBLIC_STOREFRONTS_HEALTHY"
