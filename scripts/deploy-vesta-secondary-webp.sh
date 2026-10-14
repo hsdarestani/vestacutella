@@ -87,6 +87,9 @@ extra=[
  "'/wp-content/uploads/2026/06/IMG_4060.jpeg'",
 ]
 s=s.replace(anchor,anchor+",\n   "+",\n   ".join(extra))
+# All nine target elements appear across the full homepage, not only the first 30 <img> tags.
+if '$html,30);' not in s: raise ValueError('Expected callback limit changed')
+s=s.replace('$html,30);','$html,1000);')
 with open(p,'w',encoding='utf-8') as w:w.write(s)
 PY
 chown 33:33 "$PLUGIN"
