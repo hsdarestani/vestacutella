@@ -42,6 +42,7 @@ rollback() {
   echo "Rollback because image or homepage verification failed, rc=$code"
   cp -p "$BACKUP/hero-plugin.before.php" "$PLUGIN"
   chown 33:33 "$PLUGIN"
+  docker restart vc-vesta >/dev/null || true
   for f in $FILES;do rm -f "$f.$STAMP.webp";done
   if [[ -d "$BACKUP/home-cache" ]];then
    cp -p "$BACKUP/home-cache/"* "$CONTENT/cache/wp-rocket/vesta-cosmetics.ir/" 2>/dev/null || true
@@ -91,6 +92,14 @@ PY
 chown 33:33 "$PLUGIN"
 chmod 644 "$PLUGIN"
 docker exec vc-vesta php -l /var/www/html/wp-content/mu-plugins/vc-vesta-hero-webp.php
+echo "=== Restart Vesta PHP workers so OPcache sees changed primary plugin ==="
+docker restart vc-vesta >/dev/null
+for i in $(seq 1 15);do
+ code="$(status / || true)"
+ [[ "$code" == 200 ]] && break
+ sleep 2
+done
+[[ "$(status /)" == 200 ]] || { echo "Site not healthy after safe PHP reload";exit 27; }
 echo "=== Validate new images ==="
 for file in $FILES;do
  path="$(printf '%s' "$file" | sed "s#^$BASE##")"
