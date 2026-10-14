@@ -46,11 +46,18 @@ rollback() {
     cat "$WORK/wp-config.before.php" > "$CONFIG"
     wp plugin deactivate redis-cache --quiet || true
     if [[ -d "$CONTENT/plugins/redis-cache" ]]; then rm -rf "$CONTENT/plugins/redis-cache";fi
+    docker restart vc-cutella >/dev/null || true
+    for i in $(seq 1 15);do
+      [[ "$(status /)" == 200 ]] && break
+      sleep 2
+    done
+    echo "rollback_cutella_code=$(status /)"
   fi
   exit "$rc"
 }
 trap rollback EXIT
 
+modified=1
 CONFIG_PATH="$CONFIG" python3 - <<'PY'
 import os
 p=os.environ["CONFIG_PATH"]
@@ -74,9 +81,16 @@ if i<0: raise RuntimeError("No safe WP bootstrap insertion marker")
 s=s[:i]+defs+"\n"+s[i:]
 with open(p,"w",encoding="utf-8",errors="surrogateescape") as f:f.write(s)
 PY
-modified=1
 chown 33:33 "$CONFIG"
-
+echo "=== Restart Cutella Apache to load Redis settings BEFORE installing drop-in ==="
+docker restart vc-cutella >/dev/null
+for i in $(seq 1 15);do
+  [[ "$(status /)" == 200 ]] && break
+  sleep 2
+done
+[[ "$(status /)" == 200 ]] || { echo "Site unhealthy after PHP config reload"; exit 40; }
+docker exec vc-cutella php -r '$f=@fsockopen("redis",6379,$err,$msg,2);if(!$f){fwrite(STDERR,"Redis DNS/network failure\n");exit(46);}fclose($f);echo "Redis DNS/network reachability OK\n";'
+echo "=== Enable object cache now that web PHP has fresh settings ==="
 wp plugin install /tmp/vc-redis-plugin.zip --activate --quiet
 wp redis enable
 
