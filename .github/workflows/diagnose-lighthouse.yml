@@ -43,3 +43,16 @@ jobs:
            for row in net[:12]:
             print('  REQUEST',str(row.get('url',''))[:190],'transfer',row.get('transferSize'),'resource',row.get('resourceSize'),'mime',row.get('mimeType'))
           PY
+      - name: Explain exact LCP and layout shift nodes
+        run: |
+          python3 - <<'PY'
+          import json
+          for s in ['vesta-cosmetics.ir','cutellashop.ir']:
+           j=json.load(open('reports/'+s+'.json'))
+           print('=== RAW IMPORTANT ELEMENTS',s,'===')
+           for k in ['layout-shifts','largest-contentful-paint-element','lcp-discovery-insight','lcp-breakdown-insight']:
+            a=j['audits'].get(k,{})
+            print('AUDIT',k)
+            for row in (a.get('details') or {}).get('items',[])[:6]:
+             print(json.dumps(row,ensure_ascii=False)[:2300])
+          PY
