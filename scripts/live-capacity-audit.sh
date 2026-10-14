@@ -1,28 +1,42 @@
 #!/usr/bin/env bash
-# Independent health verification after guarded rollback. No PHP code execution.
+# Read-only staging feasibility + front-page rendering inventory
 set -euo pipefail
-echo "=== POST ROLLBACK SITE HEALTH ==="
-for d in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
- for route in / /shop/ /wp-login.php;do
-  [[ "$d" == app.vesta-cosmetics.ir && "$route" != / ]] && continue
-  code="$(curl --noproxy "*" -ksSL --max-time 30 --resolve "$d:443:127.0.0.1" -o /dev/null -w "%{http_code}" "https://$d$route")"
-  echo "$d$route http=$code"
-  [[ "$code" == 200 ]] || { echo "FAIL origin HTTP";exit 31;}
- done
+echo "=== HOST STAGING CAPACITY ==="
+date -u
+free -m
+df -h / /srv/vestacutella 2>/dev/null || df -h /
+uptime
+docker stats --no-stream --format 'name={{.Name}} cpu={{.CPUPerc}} memory={{.MemUsage}}' vc-nginx vc-vesta vc-cutella vc-db-vesta vc-db-cutella vc-redis 2>/dev/null
+echo "=== SAFE INSTANCE COUNTS AND PORTS ==="
+docker ps --format 'name={{.Names}} status={{.Status}} ports={{.Ports}}' | head -30
+echo "=== WORDPRESS STOREFRONT META ==="
+for site in vesta cutella;do
+  echo "site=$site"
+  docker exec "vc-$site" php -r '
+  require "/var/www/html/wp-load.php";
+  echo "front_id=".get_option("page_on_front").PHP_EOL;
+  echo "shop_id=".get_option("woocommerce_shop_page_id").PHP_EOL;
+  echo "theme=".get_stylesheet().PHP_EOL;
+  echo "ext_object_cache=".(wp_using_ext_object_cache()?"yes":"no").PHP_EOL;
+  ' 2>&1 | head -20
 done
-if [[ -e /srv/vestacutella/runtime/cutella/wp-content/mu-plugins/vc-cutella-guest-dashicons.php ]];then
- echo "FAIL: trial dropin still active";exit 32;
-else echo "cutella_dashicons_trial=absent (rollback clean)";fi
-for name in vc-nginx vc-cutella vc-vesta vc-db-cutella vc-db-vesta vc-redis;do
- docker inspect -f "{{.Name}} running={{.State.Running}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}" "$name"
-done
-echo "=== CUTELLA ERROR SIGNALS ==="
-docker logs --since 15m vc-cutella 2>&1 | grep -Ei "segfault|fatal|php.*error|[[:space:]]500[[:space:]]" | tail -25 | sed -E "s/(password|token|secret|authorization)[^ ]*/[REDACTED]/Ig" || true
-echo "=== POST_ROLLBACK_HEALTH_SUCCESS ==="
-
-echo "=== CUTELLA PHP-CLI CRASH DIAGNOSTICS, READ ONLY ==="
-docker exec vc-cutella php -v 2>&1 | head -8 || true
-docker exec vc-cutella php -d opcache.enable_cli=0 -l /var/www/html/wp-config.php 2>&1 | head -15 || true
-docker exec vc-cutella php -r "echo PHP_VERSION, PHP_EOL;" 2>&1 | head -10 || true
-docker exec vc-cutella php -d opcache.enable_cli=0 -r "echo PHP_VERSION, PHP_EOL;" 2>&1 | head -10 || true
-echo "=== CUTELLA CLI DIAGNOSTIC COMPLETE ==="
+echo "=== VESTA HOME SLIDER AND LAZY IMAGE COUNTS ==="
+tmp="$(mktemp)"
+curl --noproxy '*' -kLsS --max-time 25 --resolve vesta-cosmetics.ir:443:127.0.0.1 https://vesta-cosmetics.ir/ -o "$tmp"
+FILE="$tmp" python3 - <<'PY'
+import os,re
+from html.parser import HTMLParser
+class P(HTMLParser):
+ def __init__(self):super().__init__();self.rows=[];self.ims=[];self.sliders=[];self.styles=[]
+ def handle_starttag(self,t,attrs):
+  a=dict(attrs);cl=a.get('class','')
+  if t=='img':self.ims.append(a)
+  if 'owl-carousel' in cl:self.sliders.append({'id':a.get('id'),'classes':cl[:90]})
+  if ('vc_row' in cl or 'wd-carousel-container' in cl) and t=='div': self.rows.append({'id':a.get('id'),'classes':cl[:145]})
+p=P();f=open(os.environ['FILE'],errors='replace').read();p.feed(f)
+print('HTML_KB',round(len(f.encode())/1024),'IMG',len(p.ims),'LOADING_LAZY',sum(x.get('loading')=='lazy' for x in p.ims),'LOADING_EAGER',sum(x.get('loading')=='eager' for x in p.ims),'SRCSET',sum(bool(x.get('srcset')) for x in p.ims),'WD_SLIDERS',len(p.sliders),'ROWS',len(p.rows))
+for n,x in enumerate(p.rows[:35]):print('ROW',n,x['id'],x['classes'])
+print('HAS_AJAX_CONTENT_ENDPOINT',bool(re.search('admin-ajax.php',f)))
+PY
+rm -f "$tmp"
+echo "=== STAGING ASSESSMENT COMPLETE ==="
