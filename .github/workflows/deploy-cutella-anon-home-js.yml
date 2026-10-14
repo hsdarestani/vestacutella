@@ -1,0 +1,50 @@
+name: Deploy Cutella anonymous homepage JS reduction
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/deploy-cutella-anon-home-js.sh"
+      - "scripts/verify-cutella-anon-home-js.cjs"
+      - "scripts/revert-cutella-anon-home-js.sh"
+      - ".github/workflows/deploy-cutella-anon-home-js.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vc-cutella-home-js-safeguard
+  cancel-in-progress: false
+jobs:
+  deploy_verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install runner dependencies
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+          npm install --no-save puppeteer-core@24 --no-audit --no-fund
+      - name: Preflight shell scripts with zero production access
+        run: |
+          bash -n scripts/deploy-cutella-anon-home-js.sh
+          bash -n scripts/revert-cutella-anon-home-js.sh
+      - name: Apply Cutella anonymous homepage-only JS reduction safely
+        id: deploy
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          test -n "$HOST" && test -n "$SSHPASS"
+          sshpass -e scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/deploy-cutella-anon-home-js.sh "root@$HOST:/tmp/vc-cutella-anon-js.sh"
+          sshpass -e ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" "bash /tmp/vc-cutella-anon-js.sh"
+      - name: Verify real mobile banners, products and dynamic WooCommerce routes
+        run: node scripts/verify-cutella-anon-home-js.cjs
+      - name: Roll back ONLY if current run deployed successfully and browser test failed
+        if: ${{ failure() && steps.deploy.outcome == 'success' }}
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          if [[ -n "$HOST" && -n "$SSHPASS" ]];then
+            sshpass -e scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/revert-cutella-anon-home-js.sh "root@$HOST:/tmp/vc-cutella-anon-js-revert.sh"
+            sshpass -e ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" "bash /tmp/vc-cutella-anon-js-revert.sh"
+          fi
