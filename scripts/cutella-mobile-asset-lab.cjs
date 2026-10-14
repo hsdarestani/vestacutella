@@ -2,10 +2,11 @@ const puppeteer=require('puppeteer-core');
 
 const modes=[
  {id:'baseline1',block:[]},
- {id:'block_dashicons',block:['dashicons.min.css']},
+ {id:'block_revslider1',block:['/revslider/public/js/sr7.js','/revslider/public/js/libs/tptools.js']},
  {id:'baseline2',block:[]},
- {id:'block_revslider',block:['/revslider/public/js/sr7.js','/revslider/public/js/libs/tptools.js']},
- {id:'baseline3',block:[]}
+ {id:'block_revslider2',block:['/revslider/public/js/sr7.js','/revslider/public/js/libs/tptools.js']},
+ {id:'baseline3',block:[]},
+ {id:'block_revslider3',block:['/revslider/public/js/sr7.js','/revslider/public/js/libs/tptools.js']}
 ];
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function check(m){
