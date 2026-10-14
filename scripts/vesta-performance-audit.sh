@@ -219,3 +219,33 @@ PY
  rm -f "$f"
 done
 echo "=== CACHE_AND_ASSETS_DEEP_DONE ==="
+
+
+echo "=== CACHE BYPASS DIAGNOSTICS ==="
+for site in cutella vesta; do
+ [[ "$site" == cutella ]] && d=cutellashop.ir || d=vesta-cosmetics.ir
+ echo "--- $site ---"
+ for path in / /shop/; do
+   header="$(mktemp)"
+   curl -ksSL --max-time 25 --resolve "$d:443:127.0.0.1" -D "$header" -o /dev/null "https://$d$path" || true
+   echo "path=$path"
+   grep -Ei '^(HTTP/|Cache-Control:|Age:|x-rocket:|x-cache:|vary:|expires:)' "$header" | head -12 || true
+   echo "cookie_names=$(grep -i '^set-cookie:' "$header" | sed -E 's/^[^:]+:[[:space:]]*([^=;]+)=.*/\1/i' | tr '\n' ',' | cut -c1-300)"
+   rm -f "$header"
+ done
+ echo "Cached shop files:"
+ find "/srv/vestacutella/runtime/$site/wp-content/cache/wp-rocket/$d/shop" -maxdepth 1 -type f -printf '%f %s bytes\n' 2>/dev/null | head -5 || true
+ docker exec "vc-$site" php -r '
+   require "/var/www/html/wp-load.php";
+   global $wpdb;
+   $t=$wpdb->prefix."actionscheduler_actions";
+   $found=$wpdb->get_var($wpdb->prepare("SHOW TABLES LIKE %s",$t));
+   if($found){
+     $rows=$wpdb->get_results("SELECT status,COUNT(*) n FROM ".$t." GROUP BY status",ARRAY_A);
+     foreach($rows as $r)echo "scheduler_".$r["status"]."=".$r["n"].PHP_EOL;
+     $old=$wpdb->get_var("SELECT COUNT(*) FROM ".$t." WHERE status IN (\"complete\",\"failed\",\"canceled\") AND scheduled_date_gmt < DATE_SUB(UTC_TIMESTAMP(), INTERVAL 60 DAY)");
+     echo "old_terminal_jobs_60d=".$old.PHP_EOL;
+   }
+ ' 2>&1 | head -20 || true
+done
+echo "=== CACHE_BYPASS_DIAGNOSTICS_DONE ==="
