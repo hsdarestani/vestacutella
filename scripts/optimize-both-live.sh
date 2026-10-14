@@ -1,108 +1,73 @@
 #!/usr/bin/env bash
+# Stage one of Redis introduction: start an isolated and memory-limited cache
+# service only. Do not alter WordPress, PHP, database, Nginx or live sessions.
 set -euo pipefail
-
 BASE=/srv/vestacutella
-REPO=$BASE/repo
-ENVFILE=$BASE/.env
-COMPOSE=$REPO/infra/docker-compose.yml
-BACKUP=/srv/backups/live-speed
-ts="$(date -u +%Y%m%dT%H%M%SZ)"
-mkdir -p "$BACKUP/$ts"
+TARGET="$BASE/repo/infra/docker-compose.yml"
+ENVFILE="$BASE/.env"
+BACKUP="/srv/backups/redis-bootstrap-$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -p "$BACKUP"
+test -s "$ENVFILE"
+test -s /tmp/docker-compose.yml
 
-set -a
-source "$ENVFILE"
-set +a
-
-echo "=== backup current proxy config ==="
-cp "$REPO/infra/nginx.conf" "$BACKUP/$ts/nginx.conf"
-cp "$REPO/infra/docker-compose.yml" "$BACKUP/$ts/docker-compose.yml"
-
-echo "=== clean obsolete migration working copies; original uploaded archive stays ==="
-rm -rf "$BASE/staging/domains" "$BASE/staging/backup"
-rm -f "$BASE/staging/.extracted"
-rm -f /srv/migration/current/vesta-candidate-clean-*.sql.gz 2>/dev/null || true
-docker exec vc-db-vesta mariadb -uroot -p"$VESTA_DB_ROOT_PASSWORD" -e "DROP DATABASE IF EXISTS vestacos_candidate;" || true
-
-echo "=== tune live MariaDB memory online ==="
-docker exec vc-db-vesta mariadb -uroot -p"$VESTA_DB_ROOT_PASSWORD" -e "
-SET GLOBAL innodb_buffer_pool_size=402653184;
-SET GLOBAL tmp_table_size=33554432;
-SET GLOBAL max_heap_table_size=33554432;
-"
-docker exec vc-db-cutella mariadb -uroot -p"$CUTELLA_DB_ROOT_PASSWORD" -e "
-SET GLOBAL innodb_buffer_pool_size=201326592;
-SET GLOBAL tmp_table_size=33554432;
-SET GLOBAL max_heap_table_size=33554432;
-"
-
-cleanup_wp_db() {
-  local container="$1" rootpass="$2" db="$3"
-  echo "--- cleanup $db ---"
-  docker exec "$container" mariadb -uroot -p"$rootpass" "$db" -e "
-    DELETE v,t
-      FROM wp_options t
-      LEFT JOIN wp_options v
-        ON v.option_name=CONCAT('_transient_',SUBSTRING(t.option_name,20))
-     WHERE t.option_name LIKE '\\_transient\\_timeout\\_%'
-       AND CAST(t.option_value AS UNSIGNED) > 0
-       AND CAST(t.option_value AS UNSIGNED) < UNIX_TIMESTAMP();
-
-    DELETE v,t
-      FROM wp_options t
-      LEFT JOIN wp_options v
-        ON v.option_name=CONCAT('_site_transient_',SUBSTRING(t.option_name,25))
-     WHERE t.option_name LIKE '\\_site\\_transient\\_timeout\\_%'
-       AND CAST(t.option_value AS UNSIGNED) > 0
-       AND CAST(t.option_value AS UNSIGNED) < UNIX_TIMESTAMP();
-
-    DELETE FROM wp_woocommerce_sessions WHERE session_expiry < UNIX_TIMESTAMP();
-
-    ANALYZE TABLE wp_options, wp_postmeta, wp_posts;
-  " || true
+code() {
+  local domain="$1"
+  curl -kLsS --max-time 22 --resolve "$domain:443:127.0.0.1" \
+    -o /dev/null -w '%{http_code}' "https://$domain/"
 }
-
-cleanup_wp_db vc-db-vesta "$VESTA_DB_ROOT_PASSWORD" vestacos_m
-cleanup_wp_db vc-db-cutella "$CUTELLA_DB_ROOT_PASSWORD" vestacos_cutella
-
-echo "=== install optimized nginx/compose ==="
-install -m 644 /tmp/nginx.conf "$REPO/infra/nginx.conf"
-install -m 644 /tmp/docker-compose.yml "$REPO/infra/docker-compose.yml"
-
-echo "=== recreate only nginx with direct static mounts ==="
-cd "$REPO/infra"
-docker compose --env-file "$ENVFILE" up -d --no-deps --force-recreate nginx
-sleep 5
-docker exec vc-nginx nginx -t
-
-echo "=== smoke both sites ==="
-for d in vesta-cosmetics.ir cutellashop.ir; do
-  for p in / /wp-login.php; do
-    code="$(curl --max-time 30 -ksS -o /dev/null -w '%{http_code}' "https://$d$p" || true)"
-    echo "$d$p HTTP=$code"
-    [[ "$code" == "200" ]] || exit 31
-  done
+for domain in cutellashop.ir vesta-cosmetics.ir app.vesta-cosmetics.ir; do
+  status="$(code "$domain")"
+  echo "before: $domain status=$status"
+  [[ "$status" == 200 ]] || { echo "ABORT: unhealthy baseline"; exit 31; }
 done
-
-echo "=== verify static is served with long cache ==="
-for d in vesta-cosmetics.ir cutellashop.ir; do
-  asset="$(curl -ksS "https://$d/" | grep -Eo "https://$d/[^\"' ]+\.(css|js)(\?[^\"' ]*)?" | head -1 || true)"
-  echo "$d asset=$asset"
-  if [[ -n "$asset" ]]; then
-    curl -ksSI "$asset" | grep -Ei '^(HTTP/|cache-control:|expires:|server:)' || true
+# Strict validation: existing services must be preserved unchanged.
+for c in db-cutella db-vesta vesta cutella nginx; do
+  grep -Eq "^  $c:" /tmp/docker-compose.yml || { echo "ABORT: missing existing service $c"; exit 32; }
+done
+grep -Eq '^  redis:' /tmp/docker-compose.yml
+grep -q 'image: redis:7.4-alpine' /tmp/docker-compose.yml
+grep -q 'mem_limit: 192m' /tmp/docker-compose.yml
+cp -a "$TARGET" "$BACKUP/compose.before.yml"
+echo "Backup: $BACKUP"
+changed=0
+rollback() {
+  local ec=$?
+  trap - EXIT
+  if [[ "$changed" == 1 ]]; then
+    echo "ROLLBACK: redis bootstrap failed rc=$ec"
+    (cd "$BASE/repo/infra" && docker compose --env-file "$ENVFILE" stop redis) || true
+    cat "$BACKUP/compose.before.yml" > "$TARGET"
   fi
+  exit "$ec"
+}
+trap rollback EXIT
+# Parse with Docker Compose before installing the desired new definition.
+(cd "$BASE/repo/infra" && docker compose -f /tmp/docker-compose.yml --env-file "$ENVFILE" config -q)
+cat /tmp/docker-compose.yml > "$TARGET"
+changed=1
+(cd "$BASE/repo/infra" && docker compose --env-file "$ENVFILE" up -d --no-deps redis)
+healthy=""
+for i in $(seq 1 20); do
+  healthy="$(docker inspect --format '{{.State.Health.Status}}' vc-redis 2>/dev/null || true)"
+  [[ "$healthy" == healthy ]] && break
+  sleep 2
 done
-
-echo "=== resulting DB tuning ==="
-docker exec vc-db-vesta mariadb -uroot -p"$VESTA_DB_ROOT_PASSWORD" -N -e "
-SHOW VARIABLES WHERE Variable_name IN ('innodb_buffer_pool_size','tmp_table_size','max_heap_table_size');
-"
-docker exec vc-db-cutella mariadb -uroot -p"$CUTELLA_DB_ROOT_PASSWORD" -N -e "
-SHOW VARIABLES WHERE Variable_name IN ('innodb_buffer_pool_size','tmp_table_size','max_heap_table_size');
-"
-
-echo "=== disk after cleanup ==="
-df -h /
-docker image prune -f >/dev/null 2>&1 || true
-df -h /
-
-echo "LIVE_SPEED_OPTIMIZATION_OK"
+[[ "$healthy" == healthy ]] || { echo "Redis not healthy: $healthy"; exit 33; }
+docker exec vc-redis redis-cli ping | grep -qx PONG
+maxmemory="$(docker exec vc-redis redis-cli CONFIG GET maxmemory | tail -1)"
+[[ "$maxmemory" == 134217728 ]] || { echo "Wrong maxmemory: $maxmemory"; exit 34; }
+[[ "$(docker port vc-redis | wc -l)" == 0 ]] || { echo "Unexpected Redis public port"; exit 35; }
+for domain in cutellashop.ir vesta-cosmetics.ir app.vesta-cosmetics.ir; do
+  status="$(code "$domain")"
+  echo "after: $domain status=$status"
+  [[ "$status" == 200 ]] || { echo "Rollback: site failure"; exit 36; }
+done
+# No object-cache.php drop-ins are installed in this stage.
+for site in vesta cutella; do
+  [[ ! -f "$BASE/runtime/$site/wp-content/object-cache.php" ]] || {
+    echo "Warning: existing cache drop-in now present for $site; inspect before enabling Redis"
+  }
+done
+changed=0
+trap - EXIT
+echo "REDIS_SERVER_BOOTSTRAP_SUCCESS"
