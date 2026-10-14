@@ -1,0 +1,33 @@
+name: DNS and CDN read-only preflight
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/dns-cdn-preflight.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Install DNS tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq dnsutils
+      - name: Inspect delegation, mail and app records without any changes
+        run: |
+          for domain in vesta-cosmetics.ir cutellashop.ir; do
+            echo "=== DNS $domain ==="
+            echo "NS:"; dig +short NS "$domain"
+            echo "MX:"; dig +short MX "$domain"
+            echo "A:"; dig +short A "$domain"
+            echo "AAAA:"; dig +short AAAA "$domain"
+            echo "WWW CNAME:"; dig +short CNAME "www.$domain"
+            echo "WWW A:"; dig +short A "www.$domain"
+            echo "HTTP public headers:"
+            curl -kLsSI --max-time 15 "https://$domain/" | grep -Ei "^(HTTP/|server:|cf-ray:|cf-cache-status:)" | head -12 || true
+          done
+          echo "=== app.vesta-cosmetics.ir ==="
+          dig +short CNAME app.vesta-cosmetics.ir
+          dig +short A app.vesta-cosmetics.ir
+          curl -kLsSI --max-time 15 https://app.vesta-cosmetics.ir/ | grep -Ei "^(HTTP/|server:|cf-ray:|cf-cache-status:)" | head -10 || true
