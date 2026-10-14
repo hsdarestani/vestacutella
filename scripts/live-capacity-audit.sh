@@ -53,3 +53,30 @@ for f in /srv/vestacutella/runtime/cutella/wp-content/debug.log /srv/vestacutell
   grep -Ei 'fatal|redis|uncaught' "$f" | tail -30 | sed -E 's/(password|token|secret|authorization)[^ ]*/[REDACTED]/Ig' || true
 done
 echo "=== ROLLBACK CHECK DONE ==="
+
+
+echo "=== FINAL BOTH STORES REDIS CHECK ==="
+docker exec vc-redis redis-cli ping || true
+docker exec vc-redis redis-cli info memory | grep -E '^(used_memory_human|maxmemory_human|maxmemory_policy):' || true
+for site in cutella vesta;do
+ echo "--- $site ---"
+ docker exec "vc-$site" php -r '
+ require "/var/www/html/wp-load.php";
+ echo "ext_cache=".(wp_using_ext_object_cache()?"yes":"no").PHP_EOL;
+ echo "redis_db=".(defined("WP_REDIS_DATABASE")?WP_REDIS_DATABASE:"undefined").PHP_EOL;
+ echo "redis_prefix=".(defined("WP_REDIS_PREFIX")?WP_REDIS_PREFIX:"undefined").PHP_EOL;
+ if(wp_using_ext_object_cache()){
+  $k="vcverify";$g="vcverify";
+  wp_cache_set($k, "ok", $g, 30);
+  echo "roundtrip=".(wp_cache_get($k,$g)==="ok"?"ok":"failed").PHP_EOL;
+ }
+ ' || true
+done
+for d in cutellashop.ir vesta-cosmetics.ir app.vesta-cosmetics.ir;do
+ for p in / /wp-login.php;do
+  curl --noproxy '*' -ksS --resolve "$d:443:127.0.0.1" --max-time 20 -o /dev/null \
+   -w "$d$p code=%{http_code} ttfb=%{time_starttransfer}\n" "https://$d$p" || true
+ done
+done
+free -h
+echo "=== FINAL BOTH STORES CHECK DONE ==="
