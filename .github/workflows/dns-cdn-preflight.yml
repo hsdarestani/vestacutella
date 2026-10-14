@@ -10,24 +10,48 @@ permissions:
 jobs:
   inspect:
     runs-on: ubuntu-latest
-    timeout-minutes: 6
+    timeout-minutes: 9
     steps:
       - name: Install DNS tools
         run: sudo apt-get update -qq && sudo apt-get install -y -qq dnsutils
-      - name: Inspect delegation, mail and app records without any changes
+      - name: Confirm live public Cloudflare, SSL, images, account, checkout and mail DNS
+        shell: bash
         run: |
-          for domain in vesta-cosmetics.ir cutellashop.ir; do
-            echo "=== DNS $domain ==="
-            echo "NS:"; dig +short NS "$domain"
-            echo "MX:"; dig +short MX "$domain"
-            echo "A:"; dig +short A "$domain"
-            echo "AAAA:"; dig +short AAAA "$domain"
-            echo "WWW CNAME:"; dig +short CNAME "www.$domain"
-            echo "WWW A:"; dig +short A "www.$domain"
-            echo "HTTP public headers:"
-            curl -kLsSI --max-time 15 "https://$domain/" | grep -Ei "^(HTTP/|server:|cf-ray:|cf-cache-status:)" | head -12 || true
+          set -uo pipefail
+          for domain in vesta-cosmetics.ir www.vesta-cosmetics.ir app.vesta-cosmetics.ir cutellashop.ir; do
+            echo "=== HOST $domain ==="
+            echo "A_RECORDS:"; dig +short A "$domain" || true
+            echo "AAAA_RECORDS:"; dig +short AAAA "$domain" || true
+            echo "CNAME_RECORDS:"; dig +short CNAME "$domain" || true
+            echo "HEADERS:"
+            curl -sS -I -L --max-time 22 --retry 1 "https://$domain/" \
+              | grep -iE '^(HTTP/|server:|cf-cache-status:|cf-ray:|location:|strict-transport-security:|content-type:)' | head -18 || true
+            curl -sS -L --max-time 22 -o /dev/null \
+              -w "VALIDATED_GET domain=$domain http=%{http_code} remote=%{remote_ip} ttfb=%{time_starttransfer}s ssl_verify=%{ssl_verify_result} redirects=%{num_redirects}\n" \
+              "https://$domain/" || true
           done
-          echo "=== app.vesta-cosmetics.ir ==="
-          dig +short CNAME app.vesta-cosmetics.ir
-          dig +short A app.vesta-cosmetics.ir
-          curl -kLsSI --max-time 15 https://app.vesta-cosmetics.ir/ | grep -Ei "^(HTTP/|server:|cf-ray:|cf-cache-status:)" | head -10 || true
+          echo "=== MAIL DNS PRESERVATION ==="
+          for domain in vesta-cosmetics.ir cutellashop.ir; do
+            echo "MX for $domain:";dig +short MX "$domain" || true
+            echo "mail A for $domain:";dig +short A "mail.$domain" || true
+            echo "mail CNAME for $domain:";dig +short CNAME "mail.$domain" || true
+            echo "TXT SPF for $domain:"
+            dig +short TXT "$domain" | grep -i 'v=spf1' || true
+          done
+          echo "=== VESTA COMMERCE PUBLIC PATHS ==="
+          for path in /shop/ /cart/ /checkout/ /my-account/ /wp-login.php; do
+            hfile="$(mktemp)"
+            curl -sS -L --max-time 25 --retry 1 -D "$hfile" -o /dev/null \
+              -w "COMMERCE_PATH $path http=%{http_code} ssl=%{ssl_verify_result} redirected=%{num_redirects}\n" \
+              "https://vesta-cosmetics.ir$path" || true
+            grep -iE '^(HTTP/|cf-cache-status:|cache-control:|location:)' "$hfile" | tail -12 || true
+            rm -f "$hfile"
+          done
+          echo "=== ORIGINAL AND WEBP IMAGES ==="
+          for suffix in '.png' '.png.vc20261014.webp'; do
+            path="/wp-content/uploads/2026/05/ED83410A-44E6-40D9-98B3-9E3EFC5A9026$suffix"
+            curl -sS -L --max-time 24 -o /dev/null \
+              -w "IMAGE_CHECK $suffix http=%{http_code} content_type=%{content_type} bytes=%{size_download} ttfb=%{time_starttransfer}s ssl=%{ssl_verify_result}\n" \
+              "https://vesta-cosmetics.ir$path" || true
+          done
+          echo "=== READ_ONLY_EDGE_AUDIT_COMPLETED ==="
