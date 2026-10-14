@@ -1,73 +1,104 @@
 #!/usr/bin/env bash
-# Stage one of Redis introduction: start an isolated and memory-limited cache
-# service only. Do not alter WordPress, PHP, database, Nginx or live sessions.
+# Safe rollout of persistent WordPress object cache to CUTELLA only.
 set -euo pipefail
 BASE=/srv/vestacutella
-TARGET="$BASE/repo/infra/docker-compose.yml"
-ENVFILE="$BASE/.env"
-BACKUP="/srv/backups/redis-bootstrap-$(date -u +%Y%m%dT%H%M%SZ)"
-mkdir -p "$BACKUP"
-test -s "$ENVFILE"
-test -s /tmp/docker-compose.yml
-
-code() {
-  local domain="$1"
-  curl -kLsS --max-time 22 --resolve "$domain:443:127.0.0.1" \
-    -o /dev/null -w '%{http_code}' "https://$domain/"
+CONTENT="$BASE/runtime/cutella/wp-content"
+CONFIG="$BASE/runtime/cutella/wp-config.php"
+WORK="/srv/backups/cutella-redis-$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -p "$WORK"
+chmod 700 "$WORK"
+status() {
+ curl -kLsS --max-time 25 --resolve "cutellashop.ir:443:127.0.0.1" \
+ -o /dev/null -w '%{http_code}' "https://cutellashop.ir$1"
 }
-for domain in cutellashop.ir vesta-cosmetics.ir app.vesta-cosmetics.ir; do
-  status="$(code "$domain")"
-  echo "before: $domain status=$status"
-  [[ "$status" == 200 ]] || { echo "ABORT: unhealthy baseline"; exit 31; }
-done
-# Strict validation: existing services must be preserved unchanged.
-for c in db-cutella db-vesta vesta cutella nginx; do
-  grep -Eq "^  $c:" /tmp/docker-compose.yml || { echo "ABORT: missing existing service $c"; exit 32; }
-done
-grep -Eq '^  redis:' /tmp/docker-compose.yml
-grep -q 'image: redis:7.4-alpine' /tmp/docker-compose.yml
-grep -q 'mem_limit: 192m' /tmp/docker-compose.yml
-cp -a "$TARGET" "$BACKUP/compose.before.yml"
-echo "Backup: $BACKUP"
-changed=0
+wp() { docker exec vc-cutella php /tmp/vc-wp-cli.phar --allow-root --path=/var/www/html "$@"; }
+echo "=== Cutella Redis rollout preflight ==="
+[[ "$(status /)" == 200 ]] || { echo "ABORT: Cutella home unhealthy";exit 31; }
+[[ "$(status /wp-login.php)" == 200 ]] || { echo "ABORT: Cutella login unhealthy";exit 32; }
+[[ "$(docker exec vc-redis redis-cli ping)" == PONG ]] || { echo "ABORT: Redis unavailable";exit 33; }
+[[ -f "$CONFIG" ]] && [[ -d "$CONTENT/plugins" ]]
+[[ ! -e "$CONTENT/object-cache.php" ]] || { echo "ABORT: existing object cache, refuse overwrite";exit 34; }
+[[ ! -e "$CONTENT/plugins/redis-cache" ]] || { echo "ABORT: existing Redis plugin, refuse overwrite";exit 35; }
+if grep -q "WP_REDIS_" "$CONFIG"; then echo "ABORT: existing Redis constants";exit 36;fi
+
+cp -p "$CONFIG" "$WORK/wp-config.before.php"
+chmod 600 "$WORK/wp-config.before.php"
+echo "backup_dir=$WORK"
+
+curl -fLsS --retry 2 --connect-timeout 12 --max-time 55 \
+ https://downloads.wordpress.org/plugin/redis-cache.3.0.0.zip -o "$WORK/redis-cache-3.0.0.zip"
+curl -fLsS --retry 2 --connect-timeout 12 --max-time 55 \
+ https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -o "$WORK/wp-cli.phar"
+[[ "$(stat -c %s "$WORK/wp-cli.phar")" -gt 3000000 ]] || { echo "WP-CLI download incomplete";exit 37; }
+[[ "$(stat -c %s "$WORK/redis-cache-3.0.0.zip")" -gt 50000 ]] || { echo "Plugin download incomplete";exit 38; }
+docker cp "$WORK/wp-cli.phar" vc-cutella:/tmp/vc-wp-cli.phar
+docker cp "$WORK/redis-cache-3.0.0.zip" vc-cutella:/tmp/vc-redis-plugin.zip
+wp core is-installed
+if wp plugin is-active redis-cache; then echo "ABORT: Redis plugin unexpectedly active";exit 39;fi
+
+modified=0
 rollback() {
-  local ec=$?
+  rc=$?
   trap - EXIT
-  if [[ "$changed" == 1 ]]; then
-    echo "ROLLBACK: redis bootstrap failed rc=$ec"
-    (cd "$BASE/repo/infra" && docker compose --env-file "$ENVFILE" stop redis) || true
-    cat "$BACKUP/compose.before.yml" > "$TARGET"
+  if [[ "$modified" == 1 ]]; then
+    echo "=== CUTELLA REDIS ROLLBACK rc=$rc ==="
+    rm -f "$CONTENT/object-cache.php"
+    cat "$WORK/wp-config.before.php" > "$CONFIG"
+    wp plugin deactivate redis-cache --quiet || true
+    if [[ -d "$CONTENT/plugins/redis-cache" ]]; then rm -rf "$CONTENT/plugins/redis-cache";fi
   fi
-  exit "$ec"
+  exit "$rc"
 }
 trap rollback EXIT
-# Parse with Docker Compose before installing the desired new definition.
-(cd "$BASE/repo/infra" && docker compose -f /tmp/docker-compose.yml --env-file "$ENVFILE" config -q)
-cat /tmp/docker-compose.yml > "$TARGET"
-changed=1
-(cd "$BASE/repo/infra" && docker compose --env-file "$ENVFILE" up -d --no-deps redis)
-healthy=""
-for i in $(seq 1 20); do
-  healthy="$(docker inspect --format '{{.State.Health.Status}}' vc-redis 2>/dev/null || true)"
-  [[ "$healthy" == healthy ]] && break
-  sleep 2
+
+CONFIG_PATH="$CONFIG" python3 - <<'PY'
+import os
+p=os.environ["CONFIG_PATH"]
+s=open(p,encoding="utf-8",errors="surrogateescape").read()
+defs=(
+"define('WP_REDIS_CLIENT', 'predis');\n"
+"define('WP_REDIS_HOST', 'redis');\n"
+"define('WP_REDIS_PORT', 6379);\n"
+"define('WP_REDIS_DATABASE', 0);\n"
+"define('WP_REDIS_PREFIX', 'vc_cutella:');\n"
+"define('WP_REDIS_TIMEOUT', 0.5);\n"
+"define('WP_REDIS_READ_TIMEOUT', 0.5);\n"
+"define('WP_REDIS_GRACEFUL', true);\n"
+)
+marker="/* That's all, stop editing!"
+i=s.find(marker)
+if i<0:
+  marker="require_once ABSPATH . 'wp-settings.php';"
+  i=s.find(marker)
+if i<0: raise RuntimeError("No safe WP bootstrap insertion marker")
+s=s[:i]+defs+"\n"+s[i:]
+with open(p,"w",encoding="utf-8",errors="surrogateescape") as f:f.write(s)
+PY
+modified=1
+chown 33:33 "$CONFIG"
+
+wp plugin install /tmp/vc-redis-plugin.zip --activate --quiet
+wp redis enable
+
+echo "=== Verify Redis WordPress functionality ==="
+docker exec vc-cutella php -r '
+  require "/var/www/html/wp-load.php";
+  if (!wp_using_ext_object_cache()) { fwrite(STDERR,"external object cache not enabled\n");exit(41); }
+  if (!wp_cache_set("vc_test_20261014","connected","vc_rollout",90))exit(42);
+  if (wp_cache_get("vc_test_20261014","vc_rollout")!=="connected")exit(43);
+  echo "Cutella object cache enabled and roundtrip OK\n";
+'
+docker exec vc-redis redis-cli -n 0 --scan --pattern 'vc_cutella:*' | head -3 || true
+for path in / /shop/ /wp-login.php /cart/ /checkout/ /my-account/;do
+ c="$(status "$path")"
+ echo "cutella $path code=$c"
+ case "$c" in 200|301|302) ;; *) echo "Bad HTTP $c";exit 44;;esac
 done
-[[ "$healthy" == healthy ]] || { echo "Redis not healthy: $healthy"; exit 33; }
-docker exec vc-redis redis-cli ping | grep -qx PONG
-maxmemory="$(docker exec vc-redis redis-cli CONFIG GET maxmemory | tail -1)"
-[[ "$maxmemory" == 134217728 ]] || { echo "Wrong maxmemory: $maxmemory"; exit 34; }
-[[ "$(docker port vc-redis | wc -l)" == 0 ]] || { echo "Unexpected Redis public port"; exit 35; }
-for domain in cutellashop.ir vesta-cosmetics.ir app.vesta-cosmetics.ir; do
-  status="$(code "$domain")"
-  echo "after: $domain status=$status"
-  [[ "$status" == 200 ]] || { echo "Rollback: site failure"; exit 36; }
+for domain in vesta-cosmetics.ir app.vesta-cosmetics.ir;do
+ c="$(curl -kLsS --max-time 25 --resolve "$domain:443:127.0.0.1" -o /dev/null -w '%{http_code}' "https://$domain/")"
+ echo "$domain code=$c"
+ [[ "$c" == 200 ]] || exit 45
 done
-# No object-cache.php drop-ins are installed in this stage.
-for site in vesta cutella; do
-  [[ ! -f "$BASE/runtime/$site/wp-content/object-cache.php" ]] || {
-    echo "Warning: existing cache drop-in now present for $site; inspect before enabling Redis"
-  }
-done
-changed=0
+modified=0
 trap - EXIT
-echo "REDIS_SERVER_BOOTSTRAP_SUCCESS"
+echo "CUTELLA_REDIS_OBJECT_CACHE_ENABLED"
