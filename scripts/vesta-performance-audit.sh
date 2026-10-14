@@ -94,3 +94,74 @@ PY
   curl -kLsSI --max-time 12 --resolve "$domain:443:127.0.0.1" "https://$domain/" | grep -Ei '^(HTTP/|cache-control:|expires:|content-encoding:|vary:|server:)' | head -12 || true
 done
 echo "=== PRODUCTION_BASELINE_DONE ==="
+
+
+echo "=== DEEP DIVE CACHE ==="
+for site in cutella vesta; do
+  echo "--- $site WordPress caching ---"
+  docker exec "vc-$site" php -r '
+    require "/var/www/html/wp-load.php";
+    echo "WP_CACHE=".(defined("WP_CACHE")?(WP_CACHE?"true":"false"):"not-defined").PHP_EOL;
+    echo "advanced_cache=".(is_file(WP_CONTENT_DIR."/advanced-cache.php")?"present":"missing").PHP_EOL;
+    echo "object_cache_dropin=".(is_file(WP_CONTENT_DIR."/object-cache.php")?"present":"missing").PHP_EOL;
+    echo "wp_rocket_plugin=".(is_dir(WP_PLUGIN_DIR."/wp-rocket")?"present":"missing").PHP_EOL;
+    $r=get_option("wp_rocket_settings",[]);
+    foreach(["cache_mobile","do_caching_mobile_files","lazyload","lazyload_iframes","minify_css","minify_js","defer_all_js","remove_unused_css","delay_js"] as $key) {
+      echo "rocket_".$key."=".(isset($r[$key])?json_encode($r[$key]):"unset").PHP_EOL;
+    }
+    global $wpdb;
+    if ($wpdb instanceof wpdb) {
+      foreach (["actionscheduler_actions","woocommerce_sessions"] as $t) {
+        $n=$wpdb->get_var($wpdb->prepare("SHOW TABLES LIKE %s",$wpdb->prefix.$t));
+        if ($n) {
+          $cnt=$wpdb->get_var("SELECT COUNT(*) FROM ".$wpdb->prefix.$t);
+          echo $t."_rows=".$cnt.PHP_EOL;
+        }
+      }
+    }
+  ' 2>&1 | grep -Ev 'DB_PASSWORD|SECRET|TOKEN|password=|Authorization:|Bearer ' | head -35 || true
+  c="/srv/vestacutella/runtime/$site/wp-content/cache/wp-rocket"
+  if [[ -d "$c" ]]; then
+    echo "wp_rocket_files=$(find "$c" -type f 2>/dev/null | wc -l)"
+    du -sh "$c" 2>/dev/null || true
+    find "$c" -maxdepth 3 -type f -printf '%p %s bytes\n' 2>/dev/null | head -8 || true
+  else
+    echo "wp_rocket_disk_cache=missing"
+  fi
+done
+echo "=== CHECK ALL HOME PAGE IMAGE FILES ==="
+for site in vesta cutella; do
+  [[ "$site" == vesta ]] && domain=vesta-cosmetics.ir || domain=cutellashop.ir
+  file="$(mktemp)"
+  curl -kLsS --max-time 20 --resolve "$domain:443:127.0.0.1" "https://$domain/" > "$file" || true
+  DOMAIN="$domain" SITE="$site" HTML_FILE="$file" python3 - <<'PY'
+import os,urllib.parse,html
+from html.parser import HTMLParser
+domain=os.environ["DOMAIN"];site=os.environ["SITE"]
+class Reader(HTMLParser):
+ def __init__(self):super().__init__();self.images=[]
+ def handle_starttag(self,tag,attrs):
+  if tag=="img":
+   d=dict(attrs)
+   for k in ("src","data-src","data-lazy-src"):
+    if d.get(k):
+     self.images.append(d[k]);break
+p=Reader();p.feed(open(os.environ["HTML_FILE"],errors="replace").read())
+missing=[];present=0;remote=0;seen=set()
+for u in p.images:
+ u=html.unescape(u);u=urllib.parse.urljoin("https://"+domain+"/",u)
+ parsed=urllib.parse.urlsplit(u)
+ if parsed.hostname not in (domain,"www."+domain):remote+=1;continue
+ path=urllib.parse.unquote(parsed.path)
+ if not path.startswith("/wp-content/uploads/"):continue
+ local="/srv/vestacutella/runtime/"+site+path
+ if local in seen:continue
+ seen.add(local)
+ if os.path.isfile(local):present+=1
+ else:missing.append(u)
+print("front_page_images=%s unique_uploads=%s disk_present=%s disk_missing=%s remote_images=%s"%(len(p.images),len(seen),present,len(missing),remote))
+for x in missing[:30]:print("MISSING_IMAGE",x[:250])
+PY
+  rm -f "$file"
+done
+echo "=== CACHE_DEEP_DIVE_DONE ==="
