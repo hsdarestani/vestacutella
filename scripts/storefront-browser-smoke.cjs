@@ -1,3 +1,4 @@
+// Final safe offscreen product renderer regression: 2026-10-14
 // Final read-only WooCommerce and app smoke after guarded CSS rollout.
 const puppeteer=require('puppeteer-core');
 const hosts=['vesta-cosmetics.ir','cutellashop.ir'];
