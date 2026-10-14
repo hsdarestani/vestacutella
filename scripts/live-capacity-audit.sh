@@ -32,3 +32,24 @@ echo "=== DOWNLOAD REACHABILITY (without installation) ==="
 curl -ILfsS --max-time 15 -o /dev/null -w 'wordpress_repo_http=%{http_code} bytes=%{size_download}\n' https://downloads.wordpress.org/plugin/redis-cache.3.0.0.zip || true
 curl -ILfsS --max-time 15 -o /dev/null -w 'wpcli_http=%{http_code}\n' https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar || true
 echo "=== PREFLIGHT SUCCESS ==="
+
+echo "=== CUTELLA REDIS ROLLBACK HEALTH ==="
+for d in cutellashop.ir vesta-cosmetics.ir app.vesta-cosmetics.ir; do
+  for path in / /wp-login.php; do
+    curl -kLsS --max-time 20 --resolve "$d:443:127.0.0.1" -o /dev/null -w "domain=$d path=$path status=%{http_code} ttfb=%{time_starttransfer}\n" "https://$d$path" || true
+  done
+done
+if [[ -f /srv/vestacutella/runtime/cutella/wp-content/object-cache.php ]];then
+ echo "cutella_dropin_present=yes"
+else echo "cutella_dropin_present=no";fi
+if [[ -d /srv/vestacutella/runtime/cutella/wp-content/plugins/redis-cache ]];then
+ echo "cutella_plugin_present=yes"
+else echo "cutella_plugin_present=no";fi
+if grep -q 'WP_REDIS_' /srv/vestacutella/runtime/cutella/wp-config.php;then echo "cutella_redis_settings_present=yes"; else echo "cutella_redis_settings_present=no";fi
+echo "=== CUTELLA RECENT PHP/APACHE ERRORS (sanitized) ==="
+docker logs --since 15m vc-cutella 2>&1 | grep -Ei 'PHP Fatal|PHP Warning|PHP Notice|PHP Parse|Uncaught|Allowed memory|redis|[[:space:]]500[[:space:]]' | tail -70 | sed -E 's/(password|token|secret|authorization)[^ ]*/[REDACTED]/Ig' || true
+for f in /srv/vestacutella/runtime/cutella/wp-content/debug.log /srv/vestacutella/runtime/cutella/wp-content/vc-debug.log;do
+  [[ -f "$f" ]] || continue
+  grep -Ei 'fatal|redis|uncaught' "$f" | tail -30 | sed -E 's/(password|token|secret|authorization)[^ ]*/[REDACTED]/Ig' || true
+done
+echo "=== ROLLBACK CHECK DONE ==="
