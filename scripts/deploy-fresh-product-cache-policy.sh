@@ -61,20 +61,20 @@ for f in "$one" "$two"; do
   curl -kLsS --max-time 20 --resolve cutellashop.ir:443:127.0.0.1 \
     -D "$f" -o /dev/null https://cutellashop.ir/
 done
-echo "1st: $(grep -i '^x-vc-guest-cache:' "$one" || true)"
-echo "2nd: $(grep -i '^x-vc-guest-cache:' "$two" || true)"
-grep -Eiq '^x-vc-guest-cache:[[:space:]]*HIT' "$two"
+echo "1st response:"; grep -Ei "^(HTTP/|x-vc-guest|cache-control:|expires:)" "$one" || true
+echo "2nd response:"; grep -Ei "^(HTTP/|x-vc-guest|cache-control:|expires:)" "$two" || true
+grep -Eiq '^x-vc-guest-cache:[[:space:]]*status=HIT' "$two"
 
 curl -kLsS --max-time 20 --resolve cutellashop.ir:443:127.0.0.1 \
   -H 'Cookie: woocommerce_items_in_cart=1' \
   -D "$cookie" -o /dev/null https://cutellashop.ir/
 echo "Cookie request: $(grep -i '^x-vc-guest-cache:' "$cookie" || true)"
-grep -Eiq '^x-vc-guest-cache:[[:space:]]*BYPASS' "$cookie"
+grep -Eiq '^x-vc-guest-cache:[[:space:]]*status=BYPASS' "$cookie"
 
 for path in /cart/ /checkout/ /my-account/ /wp-login.php /?s=sample; do
   curl -kLsS --max-time 20 --resolve cutellashop.ir:443:127.0.0.1 \
     -D "$private" -o /dev/null "https://cutellashop.ir$path"
-  if grep -Eiq '^x-vc-guest-cache:[[:space:]]*(HIT|MISS|EXPIRED)' "$private"; then
+  if grep -Eiq '^x-vc-guest-cache:[[:space:]]*status=(HIT|MISS|EXPIRED)' "$private"; then
     echo "FAIL: dynamic path cached: $path"
     exit 40
   fi
