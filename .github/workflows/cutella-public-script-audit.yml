@@ -1,0 +1,31 @@
+name: Cutella public script audit
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/cutella-public-script-audit.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fetch public homepage scripts and attributes without edits
+        run: |
+          curl -fsSL --max-time 25 https://cutellashop.ir/ > /tmp/cutella-index.html
+          python3 - <<'PY'
+          from html.parser import HTMLParser
+          class P(HTMLParser):
+           def __init__(self):super().__init__();self.js=[]
+           def handle_starttag(self,t,attrs):
+            d=dict(attrs)
+            if t=="script" and d.get("src"):self.js.append(d)
+          p=P();s=open("/tmp/cutella-index.html").read();p.feed(s)
+          print("script_tags",len(p.js),"html_bytes",len(s))
+          for a in p.js:
+           if "revslider" in a.get("src","").lower():
+            print("REVSLIDER_SCRIPT",{"id":a.get("id"),"src":a["src"][:280],"async":a.get("async"),"defer":a.get("defer")})
+          print("SCRIPT_MARKER_COUNTS",{"rs-module":s.count("rs-module"),"rev_slider":s.count("rev_slider"),"SR7":s.count("SR7"),"rs6":s.count("rs6"),"cutella-slider":s.count("cutella-slider")})
+          PY
