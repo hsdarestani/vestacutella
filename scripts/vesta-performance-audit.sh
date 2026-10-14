@@ -177,3 +177,45 @@ echo "=== APACHE WORKERS ==="
 docker exec vc-cutella sh -c 'ps aux 2>/dev/null | grep -E "apache2|httpd" | grep -v grep | wc -l' || true
 docker exec vc-vesta sh -c 'ps aux 2>/dev/null | grep -E "apache2|httpd" | grep -v grep | wc -l' || true
 echo "=== LIVE_NGINX_INVENTORY_DONE ==="
+
+
+echo "=== GIT / LIVE NGINX DIFFERENCE ==="
+tmpconfig="$(mktemp)"
+if curl -fsSL --max-time 12 https://raw.githubusercontent.com/hsdarestani/vestacutella/main/infra/nginx.conf -o "$tmpconfig"; then
+  diff -u "$tmpconfig" /srv/vestacutella/repo/infra/nginx.conf | head -140 || true
+else
+  echo "Cannot read upstream nginx config"
+fi
+rm -f "$tmpconfig"
+echo "=== CUTELLA HOME DISK CACHE ==="
+for site in cutella vesta; do
+ [[ "$site" == cutella ]] && d=cutellashop.ir || d=vesta-cosmetics.ir
+ p="/srv/vestacutella/runtime/$site/wp-content/cache/wp-rocket/$d"
+ echo "-- $site disk cache at $p"
+ if [[ -d "$p" ]]; then
+  find "$p" -maxdepth 1 -type f -printf "%f %s bytes %TY-%Tm-%Td %TH:%TM\n" | head -10
+  find "$p" -maxdepth 1 -type d -printf 'dir %f\n' | head -15
+ else echo "cache-host-directory missing";fi
+done
+echo "=== IMAGE LOAD ATTRIBUTES ==="
+for d in vesta-cosmetics.ir cutellashop.ir;do
+ f="$(mktemp)"
+ curl -kLsS --max-time 20 --resolve "$d:443:127.0.0.1" "https://$d/" > "$f" || true
+ F="$f" D="$d" python3 - <<'PY'
+import os
+from html.parser import HTMLParser
+class P(HTMLParser):
+ def __init__(self):super().__init__();self.total=0;self.lazy=0;self.eager=0;self.width=0;self.empty=0
+ def handle_starttag(self,tag,attrs):
+  if tag!="img":return
+  x=dict(attrs);self.total+=1
+  if x.get("loading")=="lazy":self.lazy+=1
+  if x.get("loading")=="eager":self.eager+=1
+  if x.get("width") and x.get("height"):self.width+=1
+  if not x.get("src") and not x.get("data-src"):self.empty+=1
+p=P();p.feed(open(os.environ["F"],errors="replace").read())
+print(os.environ["D"],"total",p.total,"lazy",p.lazy,"eager",p.eager,"dimensioned",p.width,"without-src",p.empty)
+PY
+ rm -f "$f"
+done
+echo "=== CACHE_AND_ASSETS_DEEP_DONE ==="
