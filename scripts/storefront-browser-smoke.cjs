@@ -1,3 +1,4 @@
+// Final read-only WooCommerce and app smoke after guarded CSS rollout.
 const puppeteer=require('puppeteer-core');
 const hosts=['vesta-cosmetics.ir','cutellashop.ir'];
 const paths=['/','/shop/','/cart/','/checkout/','/my-account/','/wp-login.php'];
