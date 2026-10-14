@@ -1,4 +1,4 @@
-name: Diagnose captured mobile Lighthouse reports
+name: Diagnose latest mobile LCP and blocking assets
 on:
   push:
     branches: [main]
@@ -18,7 +18,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p reports
-          gh run download 38545119320 --repo hsdarestani/vestacutella --name vesta-cutella-mobile-lighthouse --dir reports
+          gh run download 38555458148 --repo hsdarestani/vestacutella --name vesta-cutella-mobile-lighthouse-after --dir reports
           ls -lh reports
       - name: Find LCP, CLS, and main-thread bottlenecks
         run: |
