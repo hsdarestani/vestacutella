@@ -1,3 +1,4 @@
+# Re-run public mobile Lighthouse after Vesta Cloudflare proxy activation (2026-10-14).
 # Lighthouse after offscreen product rendering: 2026-10-14
 # Final Lighthouse verification after 2026-10-14 guarded Owl CSS rollout
 name: Public mobile Lighthouse performance
