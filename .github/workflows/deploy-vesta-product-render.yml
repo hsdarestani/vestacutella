@@ -28,6 +28,7 @@ jobs:
           bash -n scripts/deploy-vesta-product-render.sh
           bash -n scripts/revert-vesta-product-render.sh
       - name: Apply mobile CSS with production smoke and local rollback
+        id: deploy
         env:
           HOST: ${{ secrets.HOST }}
           SSHPASS: ${{ secrets.PASS }}
@@ -37,8 +38,8 @@ jobs:
           sshpass -e ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" "bash /tmp/vc-vesta-product-render.sh"
       - name: Independent real mobile browser and scroll validation
         run: node scripts/verify-vesta-product-render.cjs
-      - name: Revert scoped plugin if deployment or browser validation fails
-        if: failure()
+      - name: Revert scoped plugin only if THIS run deployed it successfully
+        if: ${{ failure() && steps.deploy.outcome == 'success' }}
         env:
           HOST: ${{ secrets.HOST }}
           SSHPASS: ${{ secrets.PASS }}
