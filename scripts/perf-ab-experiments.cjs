@@ -1,11 +1,9 @@
 const puppeteer=require('puppeteer-core');
 const samples=[
- {id:'baseline_a',css:''},
- {id:'all_carousel_contain',css:'@media(max-width:767px){.wd-carousel-container:has(>.owl-carousel){contain:layout!important;}}'},
- {id:'baseline_b',css:''},
- {id:'all_owl_preinit_block',css:'@media(max-width:767px){.wd-carousel-container>.owl-carousel.wd-owl:not(.owl-loaded){display:block!important;}}'},
- {id:'baseline_c',css:''},
- {id:'post_content_visibility',css:'@media(max-width:767px){.wd-carousel-container.slider-type-post{content-visibility:auto;contain-intrinsic-size:auto 650px;}}'}
+ {id:'baseline_final1',css:''},
+ {id:'owl_preinit_block_final1',css:'@media(max-width:767px){.wd-carousel-container>.owl-carousel.wd-owl:not(.owl-loaded){display:block!important;}}'},
+ {id:'baseline_final2',css:''},
+ {id:'owl_preinit_block_final2',css:'@media(max-width:767px){.wd-carousel-container>.owl-carousel.wd-owl:not(.owl-loaded){display:block!important;}}'}
 ];
 (async()=>{
  for(const test of samples){
