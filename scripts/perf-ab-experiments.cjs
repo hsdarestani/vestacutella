@@ -1,11 +1,11 @@
 const puppeteer=require('puppeteer-core');
 const variants=[
- {id:'baseline_p1',css:''},
- {id:'product_visibility_p1',css:'@media(max-width:767px){.wd-carousel-container.slider-type-product .product-wrapper{content-visibility:auto;contain-intrinsic-size:auto 350px;}}'},
- {id:'baseline_p2',css:''},
- {id:'product_visibility_p2',css:'@media(max-width:767px){.wd-carousel-container.slider-type-product .product-wrapper{content-visibility:auto;contain-intrinsic-size:auto 350px;}}'},
- {id:'baseline_p3',css:''},
- {id:'product_visibility_p3',css:'@media(max-width:767px){.wd-carousel-container.slider-type-product .product-wrapper{content-visibility:auto;contain-intrinsic-size:auto 350px;}}'}
+ {id:'baseline_h1',css:''},
+ {id:'visibility_250_h1',css:'@media(max-width:767px){.wd-carousel-container.slider-type-product .product-wrapper{content-visibility:auto;contain-intrinsic-size:auto 250px;}}'},
+ {id:'baseline_h2',css:''},
+ {id:'visibility_260_h2',css:'@media(max-width:767px){.wd-carousel-container.slider-type-product .product-wrapper{content-visibility:auto;contain-intrinsic-size:auto 260px;}}'},
+ {id:'baseline_h3',css:''},
+ {id:'visibility_250_h3',css:'@media(max-width:767px){.wd-carousel-container.slider-type-product .product-wrapper{content-visibility:auto;contain-intrinsic-size:auto 250px;}}'}
 ];
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function test(v){
