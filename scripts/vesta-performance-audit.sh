@@ -289,3 +289,11 @@ else
   echo "STAGED_NGINX_DOWNLOAD_FAILED"
 fi
 rm -f "$test_nginx"
+
+
+echo "=== NGINX CACHE RELOAD FAILURE ROOT CAUSE ==="
+docker exec vc-nginx sh -c 'ls -ld /var/cache /var/cache/nginx /var/cache/nginx/vc-guest-pages 2>&1 || true'
+docker logs --since 35m vc-nginx 2>&1 | grep -Ei 'emerg|error|cache|mkdir|permission|signal|reload' | tail -65 || true
+echo "live_conf_sha=$(sha256sum /srv/vestacutella/repo/infra/nginx.conf | cut -d' ' -f1)"
+docker exec vc-nginx nginx -t || true
+echo "=== ROOT_CAUSE_DIAGNOSTIC_END ==="
