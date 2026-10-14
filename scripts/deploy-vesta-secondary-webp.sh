@@ -4,8 +4,8 @@ set -euo pipefail
 BASE=/srv/vestacutella/runtime/vesta
 CONTENT="$BASE/wp-content"
 MU="$CONTENT/mu-plugins"
-PLUGIN="$MU/vc-vesta-secondary-webp.php"
-STAMP=vc20261014b
+PLUGIN="$MU/vc-vesta-hero-webp.php"
+STAMP=vc20261014
 BACKUP="/srv/backups/vesta-secondary-webp-$(date -u +%Y%m%dT%H%M%SZ)"
 FILES="
 $CONTENT/uploads/2026/04/2-1.png
@@ -21,7 +21,7 @@ status() {
 echo "=== WebP secondary images preflight ==="
 [[ "$(status /)" == 200 ]] || exit 11
 [[ "$(docker exec vc-vesta php -r 'echo function_exists("imagewebp")?"yes":"no";')" == yes ]] || exit 12
-[[ ! -e "$PLUGIN" ]] || { echo "ABORT: image plugin exists";exit 13;}
+[[ -s "$PLUGIN" ]] || { echo "ABORT: existing hero plugin missing";exit 13; }
 for file in $FILES;do
  test -s "$file" || exit 14
  [[ ! -e "$file.$STAMP.webp" ]] || exit 15
@@ -29,6 +29,7 @@ done
 mkdir -p "$BACKUP" "$MU"
 chmod 700 "$BACKUP"
 echo "Original image files will never be modified."
+cp -p "$PLUGIN" "$BACKUP/hero-plugin.before.php"
 if [[ -d "$CONTENT/cache/wp-rocket/vesta-cosmetics.ir" ]];then
  mkdir -p "$BACKUP/home-cache"
  find "$CONTENT/cache/wp-rocket/vesta-cosmetics.ir" -maxdepth 1 -type f -name 'index*' -exec cp -p '{}' "$BACKUP/home-cache/" \;
@@ -39,7 +40,8 @@ rollback() {
  trap - EXIT
  if [[ "$modified" == 1 ]];then
   echo "Rollback because image or homepage verification failed, rc=$code"
-  rm -f "$PLUGIN"
+  cp -p "$BACKUP/hero-plugin.before.php" "$PLUGIN"
+  chown 33:33 "$PLUGIN"
   for f in $FILES;do rm -f "$f.$STAMP.webp";done
   if [[ -d "$BACKUP/home-cache" ]];then
    cp -p "$BACKUP/home-cache/"* "$CONTENT/cache/wp-rocket/vesta-cosmetics.ir/" 2>/dev/null || true
@@ -67,45 +69,28 @@ for file in $FILES;do
  chown 33:33 "$file.$STAMP.webp"
  chmod 644 "$file.$STAMP.webp"
 done
-cat > "$PLUGIN" <<'PHP'
-<?php
-/* Plugin Name: VC Vesta safe secondary-image WebP picture sources */
-if (!defined('ABSPATH')) exit;
-if (!function_exists('vc_secondary_picture_buffer')) {
- function vc_secondary_picture_buffer($html) {
-  if(!is_string($html)||stripos($html,'<img')===false)return $html;
-  $targets=array(
-   '/wp-content/uploads/2026/04/2-1.png',
-   '/wp-content/uploads/2026/04/4-1.png',
-   '/wp-content/uploads/2026/04/3-1.png',
-   '/wp-content/uploads/2026/04/1-1.png',
-   '/wp-content/uploads/2026/06/IMG_4060.jpeg'
-  );
-  try {
-   $out=preg_replace_callback('~<img\b[^>]*>~i',function($m)use($targets){
-    $tag=$m[0];
-    if(preg_match('~(?:data-)?srcset\s*=~i',$tag))return $tag;
-    if(!preg_match('~\bsrc\s*=\s*(["\x27])([^"\x27]+)\1~i',$tag,$a))return $tag;
-    $url=html_entity_decode($a[2],ENT_QUOTES,'UTF-8');
-    $path=wp_parse_url($url,PHP_URL_PATH);
-    if(!is_string($path)||!in_array($path,$targets,true))return $tag;
-    $webp=esc_url($url.'.vc20261014b.webp');
-    return '<picture><source type="image/webp" srcset="'.$webp.'">'.$tag.'</picture>';
-   },$html,30);
-   return is_string($out)?$out:$html;
-  }catch(Throwable $e){
-   error_log('VC safe picture: rendering fallback');
-   return $html;
-  }
- }
-}
-add_filter('rocket_buffer',function($html){
- return is_front_page()&&!is_admin()?vc_secondary_picture_buffer($html):$html;
-},1000);
-PHP
+echo "=== Extend original picture filter; do not install a second filter ==="
+PLUGIN_PATH="$PLUGIN" python3 - <<'PY'
+import os
+p=os.environ['PLUGIN_PATH']
+s=open(p,encoding='utf-8').read()
+anchor="'/wp-content/uploads/2026/05/A41F349F-B523-4FEA-8943-A1EAB187E4C5.png'"
+if anchor not in s:raise ValueError('Primary plugin image marker changed')
+for x in ['2-1.png','4-1.png','3-1.png','1-1.png','IMG_4060.jpeg']:
+ if x in s:raise ValueError('Secondary images already configured')
+extra=[
+ "'/wp-content/uploads/2026/04/2-1.png'",
+ "'/wp-content/uploads/2026/04/4-1.png'",
+ "'/wp-content/uploads/2026/04/3-1.png'",
+ "'/wp-content/uploads/2026/04/1-1.png'",
+ "'/wp-content/uploads/2026/06/IMG_4060.jpeg'",
+]
+s=s.replace(anchor,anchor+",\n   "+",\n   ".join(extra))
+with open(p,'w',encoding='utf-8') as w:w.write(s)
+PY
 chown 33:33 "$PLUGIN"
 chmod 644 "$PLUGIN"
-docker exec vc-vesta php -l /var/www/html/wp-content/mu-plugins/vc-vesta-secondary-webp.php
+docker exec vc-vesta php -l /var/www/html/wp-content/mu-plugins/vc-vesta-hero-webp.php
 echo "=== Validate new images ==="
 for file in $FILES;do
  path="$(printf '%s' "$file" | sed "s#^$BASE##")"
