@@ -99,7 +99,7 @@ done
 guest_headers=$(mktemp)
 private_headers=$(mktemp)
 query_headers=$(mktemp)
-trap 'rm -f "$guest_headers" "$private_headers" "$query_headers"; rollback_if_needed' EXIT
+# Preserve the original rollback trap's failing exit status.
 curl -kLsS --max-time 18 --resolve 'vesta-cosmetics.ir:443:127.0.0.1' \
   -D "$guest_headers" -o /dev/null https://vesta-cosmetics.ir/
 curl -kLsS --max-time 18 --resolve 'vesta-cosmetics.ir:443:127.0.0.1' \
@@ -111,6 +111,7 @@ grep -qi '^x-vc-guest-route: vesta-public-proxy' "$guest_headers"
 grep -qi 'x-vc-guest-cache: .*skip=0' "$guest_headers"
 grep -qi 'x-vc-guest-cache: .*skip=1' "$private_headers"
 grep -qi 'x-vc-guest-cache: .*skip=1' "$query_headers"
+rm -f "$guest_headers" "$private_headers" "$query_headers"
 echo "VERIFIED: anonymous home eligible; cookies and query bypass; app and checkout healthy"
 complete=1
 echo "VESTA_GUEST_ORIGIN_MICROCACHE_DEPLOYED backup=$BACKUP"
