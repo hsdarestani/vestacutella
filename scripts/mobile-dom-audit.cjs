@@ -1,33 +1,38 @@
-const puppeteer = require('puppeteer-core');
+const puppeteer=require('puppeteer-core');
 (async()=>{
  const browser=await puppeteer.launch({headless:true,executablePath:'/usr/bin/google-chrome',args:['--no-sandbox','--disable-dev-shm-usage']});
  const page=await browser.newPage();
  await page.setViewport({width:412,height:915,deviceScaleFactor:2,isMobile:true,hasTouch:true});
  await page.evaluateOnNewDocument(()=>{
-   window.__vc_shifts=[];
-   new PerformanceObserver(list=>{
-     for(const e of list.getEntries()){
-       if(e.hadRecentInput) continue;
-       const sources=(e.sources||[]).slice(0,5).map(s=>{
-         const n=s.node; let id='';
-         if(n){id=n.tagName?.toLowerCase()||''; if(n.id)id+='#'+n.id;if(n.className&&typeof n.className==='string')id+='.'+n.className.trim().split(/\s+/).slice(0,4).join('.')}
-         return {node:id,old:s.previousRect,new:s.currentRect};
-       });
-       window.__vc_shifts.push({value:e.value,time:Math.round(e.startTime),sources});
-     }
-   }).observe({type:'layout-shift',buffered:true});
+  const rect=n=>{const r=n?.getBoundingClientRect();return r?{x:Math.round(r.x),y:Math.round(r.y),w:Math.round(r.width),h:Math.round(r.height)}:null};
+  const desc=n=>n?{tag:n.tagName,cls:String(n.className||'').slice(0,110),id:n.id||'',rect:rect(n),style:{display:getComputedStyle(n).display,height:getComputedStyle(n).height,minHeight:getComputedStyle(n).minHeight,overflow:getComputedStyle(n).overflow}}:null;
+  window.__vc_shifts=[];
+  window.__vc_samples=[];
+  new PerformanceObserver(list=>{
+   for(const e of list.getEntries()){
+    if(e.hadRecentInput)continue;
+    window.__vc_shifts.push({time:Math.round(e.startTime),value:e.value,sources:(e.sources||[]).map(s=>({node:desc(s.node),parent:desc(s.node?.parentElement),grandparent:desc(s.node?.parentElement?.parentElement),previous:{x:s.previousRect?.x,y:s.previousRect?.y,w:s.previousRect?.width,h:s.previousRect?.height},current:{x:s.currentRect?.x,y:s.currentRect?.y,w:s.currentRect?.width,h:s.currentRect?.height}}))});
+   }
+  }).observe({type:'layout-shift',buffered:true});
+  let num=0;
+  const timer=setInterval(()=>{
+   const els=Array.from(document.querySelectorAll('.owl-carousel.wd-owl'));
+   const sample={t:Math.round(performance.now()),found:els.length,items:els.slice(0,18).map((el,index)=>({index,me:desc(el),parent:desc(el.parentElement),grandparent:desc(el.parentElement?.parentElement),childCount:el.children.length}))};
+   window.__vc_samples.push(sample);
+   if(++num>=35)clearInterval(timer);
+  },300);
  });
- await page.goto('https://vesta-cosmetics.ir/',{waitUntil:'domcontentloaded',timeout:70000});
- async function snapshot(label){
-  const data=await page.evaluate(()=>{
-   const sel=['#carousel-998','#carousel-998 > .owl-carousel','#carousel-998 .owl-stage','.wd-products','.whb-mobile-center','.main-wrapp-img','.wd-carousel-container','.wpb_wrapper > .owl-carousel'];
-   const arr=sel.map(q=>{let e=document.querySelector(q);if(!e)return {q,found:false};let a=getComputedStyle(e);let r=e.getBoundingClientRect();return {q,found:true,y:Math.round(r.y),h:Math.round(r.height),minHeight:a.minHeight,visibility:a.visibility,display:a.display,position:a.position,overflow:a.overflow,children:e.children.length}});
-   const shifts=window.__vc_shifts||[];
-   return {arr,shifts:shifts.slice(-12),sum:shifts.reduce((a,b)=>a+b.value,0),images:document.images.length,ready:document.readyState};
-  });
-  console.log('SNAPSHOT',label,JSON.stringify(data).slice(0,13500));
+ await page.goto('https://vesta-cosmetics.ir/',{waitUntil:'domcontentloaded',timeout:75000});
+ await new Promise(r=>setTimeout(r,9000));
+ const result=await page.evaluate(()=>{
+  const samples=window.__vc_samples||[];
+  const interesting=[600,1500,2400,3300,4200,5100,7500,9900,11000];
+  const selected=interesting.map(t=>samples.reduce((best,s)=>Math.abs(s.t-t)<Math.abs(best?.t-t??1e9)?s:best,null)).filter(Boolean);
+  return {shifts:window.__vc_shifts||[],samples:selected};
+ });
+ console.log('SHIFT_EVENTS',JSON.stringify(result.shifts).slice(0,23000));
+ for(const s of result.samples){
+  console.log('CAROUSEL_SAMPLE',s.t,s.found,JSON.stringify(s.items).slice(0,13000));
  }
- await snapshot('domloaded');
- for(const [ms,label] of [[1500,'t1.5'],[3500,'t5'],[6000,'t11'],[7000,'t18']]){await new Promise(r=>setTimeout(r,ms));await snapshot(label);}
  await browser.close();
 })().catch(e=>{console.error('DOM_AUDIT_ERROR',e.stack);process.exit(1)});
