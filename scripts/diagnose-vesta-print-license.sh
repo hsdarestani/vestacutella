@@ -28,4 +28,9 @@ global $wpdb;
 $names=$wpdb->get_col("SELECT option_name FROM {$wpdb->options}");
 foreach ($names as $name) if (preg_match("/license|invoice|print|factor/i",$name)) echo preg_replace("/[^a-zA-Z0-9_\\-]/","?",$name).PHP_EOL;
 ' 2>&1 | head -125
+echo '=== WordPress and server clocks ==='
+date -u
+docker exec vc-vesta php -r 'echo "runtime_utc=".gmdate("c")." timestamp=".time().PHP_EOL;'
+echo '=== Invoice component file names ==='
+find /srv/vestacutella/runtime/vesta/wp-content/plugins/woocommerce-invoice-pro1 -maxdepth 2 -type f -name '*.php' -printf '%P\n' | head -45
 echo "VESTA_PRINT_LICENSE_DIAGNOSTIC_COMPLETED"
