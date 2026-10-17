@@ -45,5 +45,5 @@ for name in core.php woocommerce-invoice-pro.php classes/helper.php; do
   fi
 done
 echo '=== License-related scheduled hook count ==='
-docker exec vc-vesta php -r 'require "/var/www/html/wp-load.php"; $a=get_option("cron");$n=0;foreach((array)$a as $e)if(is_array($e))foreach(array_keys($e) as $hook)if(preg_match("/invoice|pws|license|validat/i",$hook)){$n++;}echo "matching_hooks=".$n.PHP_EOL;'
+docker exec vc-vesta php -r 'require "/var/www/html/wp-load.php"; $a=get_option("cron");$n=0;foreach((array)$a as $e)if(is_array($e))foreach(array_keys($e) as $hook)if(preg_match("/invoice|pws|license|validat/i",$hook)){$n++;echo "hook=".$hook.PHP_EOL;}echo "matching_hooks=".$n.PHP_EOL;'
 echo "VESTA_PRINT_LICENSE_DIAGNOSTIC_COMPLETED"
