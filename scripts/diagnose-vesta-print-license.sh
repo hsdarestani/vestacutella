@@ -33,4 +33,6 @@ date -u
 docker exec vc-vesta php -r 'echo "runtime_utc=".gmdate("c")." timestamp=".time().PHP_EOL;'
 echo '=== Invoice component file names ==='
 find /srv/vestacutella/runtime/vesta/wp-content/plugins/woocommerce-invoice-pro1 -maxdepth 2 -type f -name '*.php' -printf '%P\n' | head -45
+echo "=== SOAP module ==="
+docker exec vc-vesta php -r 'echo extension_loaded("soap")?"soap_present\n":"soap_missing\n";'
 echo "VESTA_PRINT_LICENSE_DIAGNOSTIC_COMPLETED"
