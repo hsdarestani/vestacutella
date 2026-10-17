@@ -1,0 +1,43 @@
+name: Deploy passive Vesta invoice validation observer
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/deploy-vesta-invoice-observer.yml"
+      - "scripts/deploy-vesta-invoice-observer.sh"
+      - "infra/plugins/vesta-license-observer/**"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-invoice-validation-observer
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax checks
+        run: |
+          bash -n scripts/deploy-vesta-invoice-observer.sh
+          php -l infra/plugins/vesta-license-observer/vesta-license-observer.php
+      - name: Install remote client
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Deploy passive, self-expiring diagnostics with rollback
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          test -n "$HOST" && test -n "$SSHPASS"
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null infra/plugins/vesta-license-observer/vesta-license-observer.php "root@$HOST:/tmp/vc-vesta-license-observer.php"
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/deploy-vesta-invoice-observer.sh "root@$HOST:/tmp/vc-deploy-invoice-observer.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/vc-deploy-invoice-observer.sh'
+      - name: Confirm stores and app are available
+        run: |
+          for host in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir; do
+            code=$(curl -LfsS --max-time 35 -o /dev/null -w '%{http_code}' "https://$host/")
+            echo "$host status=$code"
+            test "$code" = 200
+          done
