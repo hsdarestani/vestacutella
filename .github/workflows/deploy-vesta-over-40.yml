@@ -1,0 +1,41 @@
+name: Deploy Vesta 40 percent deals safely
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/deploy-vesta-over-40.yml"
+      - "scripts/deploy-vesta-over-40.sh"
+      - "infra/plugins/vesta-over-40/**"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vc-vesta-offers-over40
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate code and shell script before live deployment
+        run: |
+          set -euo pipefail
+          php -l infra/plugins/vesta-over-40/vesta-over-40.php
+          bash -n scripts/deploy-vesta-over-40.sh
+      - name: Install SSH client
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Backup and deploy Vesta only with smoke and rollback
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          test -n "$HOST" && test -n "$SSHPASS"
+          sshpass -e scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null infra/plugins/vesta-over-40/vesta-over-40.php "root@$HOST:/tmp/vc-vesta-over-40.php"
+          sshpass -e scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/deploy-vesta-over-40.sh "root@$HOST:/tmp/vc-vesta-over-40-deploy.sh"
+          sshpass -e ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/vc-vesta-over-40-deploy.sh'
+      - name: Verify real public URL
+        run: |
+          set -euo pipefail
+          curl -LfsS --max-time 60 https://vesta-cosmetics.ir/off-40/ | grep -q 'data-vc-offer="over40"'
