@@ -38,4 +38,5 @@ jobs:
       - name: Verify real public URL
         run: |
           set -euo pipefail
-          curl -LfsS --max-time 60 https://vesta-cosmetics.ir/off-40/ | grep -q 'data-vc-offer="over40"'
+          curl -LfsS --max-time 60 https://vesta-cosmetics.ir/off-40/ -o /tmp/vesta-off-40-page.html
+          grep -q 'data-vc-offer="over40"' /tmp/vesta-off-40-page.html
