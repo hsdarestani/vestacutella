@@ -37,4 +37,13 @@ echo "=== SOAP module ==="
 docker exec vc-vesta php -r 'echo extension_loaded("soap")?"soap_present\n":"soap_missing\n";'
 echo '=== Invoice plugin source structure ==='
 find /srv/vestacutella/runtime/vesta/wp-content/plugins/woocommerce-invoice-pro1 -maxdepth 2 -type f -name '*.php' -printf '%P %s bytes\n' | head -35
+echo '=== Invoice code readability ==='
+for name in core.php woocommerce-invoice-pro.php classes/helper.php; do
+  f="/srv/vestacutella/runtime/vesta/wp-content/plugins/woocommerce-invoice-pro1/$name"
+  if test -f "$f"; then
+    if head -c 400 "$f" | grep -qi ioncube; then echo "$name:encoded"; else echo "$name:plain-or-unknown"; fi
+  fi
+done
+echo '=== License-related scheduled hook count ==='
+docker exec vc-vesta php -r 'require "/var/www/html/wp-load.php"; $a=get_option("cron");$n=0;foreach((array)$a as $e)if(is_array($e))foreach(array_keys($e) as $hook)if(preg_match("/invoice|pws|license|validat/i",$hook)){$n++;}echo "matching_hooks=".$n.PHP_EOL;'
 echo "VESTA_PRINT_LICENSE_DIAGNOSTIC_COMPLETED"
