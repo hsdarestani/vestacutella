@@ -116,9 +116,6 @@ function vc_vesta_offers_shortcode() {
 
     ob_start();
     echo '<section class="vc-vesta-offer-40" dir="rtl" data-vc-offer="over40">';
-    echo '<div class="vc-offer-heading"><h1>تخفیف‌های بالای ۴۰٪</h1>';
-    echo '<p>محصولات با بیش از ۴۰ درصد تخفیف واقعی، به‌صورت خودکار از فروشگاه وستا</p></div>';
-
     if ($ids) {
         // Use native WooCommerce / Woodmart cards with their stock and variation actions.
         $loop = new WP_Query(array(
@@ -173,9 +170,6 @@ add_action('wp_head', function () {
     }
     echo '<style id="vc-vesta-offer-css">';
     echo '.vc-vesta-offer-40{max-width:1250px;margin:30px auto 60px;padding:0 18px}';
-    echo '.vc-offer-heading{text-align:center;margin:22px 0 36px}';
-    echo '.vc-offer-heading h1{font-size:clamp(24px,4vw,38px);font-weight:800;margin-bottom:12px}';
-    echo '.vc-offer-heading p{color:#666;margin:0}';
     echo '.vc-offer-pagination{display:flex;justify-content:center;gap:10px;flex-wrap:wrap;margin:35px 0}';
     echo '.vc-offer-pagination a{display:inline-flex;min-width:40px;min-height:40px;align-items:center;justify-content:center;border:1px solid #ddd;border-radius:7px;padding:0 12px}';
     echo '.vc-offer-pagination .current{background:#282828;color:#fff;border-color:#282828}';
