@@ -40,3 +40,7 @@ jobs:
           set -euo pipefail
           curl -LfsS --max-time 60 https://vesta-cosmetics.ir/off-40/ -o /tmp/vesta-off-40-page.html
           grep -q 'data-vc-offer="over40"' /tmp/vesta-off-40-page.html
+          if grep -q 'vc-offer-heading' /tmp/vesta-off-40-page.html; then
+            echo "STALE_HEADING_DETECTED on canonical public URL"
+            exit 68
+          fi
