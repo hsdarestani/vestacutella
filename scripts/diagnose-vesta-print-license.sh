@@ -25,7 +25,7 @@ echo "=== Licensing-related option NAMES only ==="
 docker exec vc-vesta php -d display_errors=stderr -r '
 require "/var/www/html/wp-load.php";
 global $wpdb;
-$names=$wpdb->get_col("SELECT option_name FROM {$wpdb->options} WHERE (option_name LIKE \'%license%\' OR option_name LIKE \'%invoice%\' OR option_name LIKE \'%print%\' OR option_name LIKE \'%factor%\') LIMIT 120");
-foreach ($names as $name) echo preg_replace("/[^a-zA-Z0-9_\\-]/","?",$name).PHP_EOL;
+$names=$wpdb->get_col("SELECT option_name FROM {$wpdb->options}");
+foreach ($names as $name) if (preg_match("/license|invoice|print|factor/i",$name)) echo preg_replace("/[^a-zA-Z0-9_\\-]/","?",$name).PHP_EOL;
 ' 2>&1 | head -125
 echo "VESTA_PRINT_LICENSE_DIAGNOSTIC_COMPLETED"
