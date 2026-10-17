@@ -1,0 +1,47 @@
+name: Deploy Vesta independent printing safely
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/deploy-vesta-reliable-order-print.yml"
+      - "scripts/deploy-vesta-reliable-order-print.sh"
+      - "infra/plugins/vesta-reliable-order-print/**"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vc-vesta-independent-print
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate code and deployment helper BEFORE production
+        run: |
+          set -euo pipefail
+          php -l infra/plugins/vesta-reliable-order-print/vesta-reliable-order-print.php
+          bash -n scripts/deploy-vesta-reliable-order-print.sh
+          grep -q 'admin_post_vc_vesta_print_orders' infra/plugins/vesta-reliable-order-print/vesta-reliable-order-print.php
+          grep -q 'check_admin_referer' infra/plugins/vesta-reliable-order-print/vesta-reliable-order-print.php
+      - name: Install SSH client
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Deploy with preflight and rollback
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          test -n "$HOST" && test -n "$SSHPASS"
+          sshpass -e scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null infra/plugins/vesta-reliable-order-print/vesta-reliable-order-print.php "root@$HOST:/tmp/vc-vesta-reliable-print.php"
+          sshpass -e scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/deploy-vesta-reliable-order-print.sh "root@$HOST:/tmp/vc-vesta-reliable-print-deploy.sh"
+          sshpass -e ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/vc-vesta-reliable-print-deploy.sh'
+      - name: Public availability regression (no authenticated reads)
+        run: |
+          set -euo pipefail
+          for domain in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir; do
+            code=$(curl -LfsS --connect-timeout 10 --max-time 35 -o /dev/null -w '%{http_code}' "https://$domain/")
+            echo "$domain HTTP=$code"
+            test "$code" = 200
+          done
