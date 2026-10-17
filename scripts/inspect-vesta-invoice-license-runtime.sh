@@ -56,7 +56,7 @@ echo '=== Option names, lengths and safe value types ==='
 docker exec vc-vesta php -d display_errors=stderr -r '
 require "/var/www/html/wp-load.php";
 global $wpdb;
-$names=$wpdb->get_col("SELECT option_name FROM {$wpdb->options} WHERE option_name LIKE \\'%invoice%\\' OR option_name LIKE \\'%pws%\\' OR option_name LIKE \\'%factor%\\' OR option_name LIKE \\'%license%\\' OR option_name LIKE \\'%licence%\\'");
+$names=$wpdb->get_col("SELECT option_name FROM {$wpdb->options}");
 foreach ($names as $name) {
  $n=(string)$name;
  if (preg_match("/[A-Fa-f0-9]{16,}/",$n)) continue;
