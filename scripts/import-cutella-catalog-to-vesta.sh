@@ -92,6 +92,9 @@ for ident,rel in images.items():
 print(f"MEDIA_COPY_OK copied={count} missing={missing} referenced={len(images)}")
 if missing: raise SystemExit('Source image missing; import refused')
 PY
+# umask 077 protects backups but image directories must be traversable by Nginx.
+find "$BASE/runtime/vesta/wp-content/uploads/cutella-import" -type d -exec chmod 0755 {} +
+find "$BASE/runtime/vesta/wp-content/uploads/cutella-import" -type f -exec chmod 0644 {} +
 chown -R 33:33 "$BASE/runtime/vesta/wp-content/uploads/cutella-import"
 # All imported items stay in draft status until verify completes.
 docker exec vc-vesta php -d memory_limit=768M -r 'include "/tmp/vc-cutella-catalog-bridge.php";' -- import /tmp/vc-cutella-catalog.json
