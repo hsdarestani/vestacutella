@@ -16,11 +16,11 @@ echo "CATALOG_RUN_DIR=$RUN_DIR MODE=$MODE"
 for name in vc-cutella vc-vesta vc-db-cutella vc-db-vesta; do
   docker ps --filter name="^/$name$" --format '{{.Names}}' | grep -qx "$name"
 done
-docker cp "$BRIDGE" vc-cutella:/tmp/vc-cutella-catalog-bridge.php
-docker cp "$BRIDGE" vc-vesta:/tmp/vc-cutella-catalog-bridge.php
-docker exec vc-cutella php -l /tmp/vc-cutella-catalog-bridge.php
-docker exec vc-vesta php -l /tmp/vc-cutella-catalog-bridge.php
-docker exec vc-cutella php -d memory_limit=768M /tmp/vc-cutella-catalog-bridge.php export /tmp/vc-cutella-catalog.json
+echo "STEP_COPY_SOURCE"; docker cp "$BRIDGE" vc-cutella:/tmp/vc-cutella-catalog-bridge.php
+echo "STEP_COPY_DEST"; docker cp "$BRIDGE" vc-vesta:/tmp/vc-cutella-catalog-bridge.php
+echo "STEP_LINT_SOURCE"; docker exec vc-cutella php -l /tmp/vc-cutella-catalog-bridge.php
+echo "STEP_LINT_DEST"; docker exec vc-vesta php -l /tmp/vc-cutella-catalog-bridge.php
+echo "STEP_EXPORT_SOURCE"; docker exec vc-cutella php -d memory_limit=768M /tmp/vc-cutella-catalog-bridge.php export /tmp/vc-cutella-catalog.json
 docker cp vc-cutella:/tmp/vc-cutella-catalog.json "$RUN_DIR/catalog.json"
 docker cp "$RUN_DIR/catalog.json" vc-vesta:/tmp/vc-cutella-catalog.json
 docker exec vc-vesta php -d memory_limit=768M /tmp/vc-cutella-catalog-bridge.php preflight /tmp/vc-cutella-catalog.json
