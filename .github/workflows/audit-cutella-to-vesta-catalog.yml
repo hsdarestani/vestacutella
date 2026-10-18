@@ -1,0 +1,30 @@
+name: Audit Cutella catalog for Vesta migration
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/audit-cutella-to-vesta-catalog.sh"
+      - ".github/workflows/audit-cutella-to-vesta-catalog.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: cutella-to-vesta-catalog-audit
+  cancel-in-progress: false
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash -n scripts/audit-cutella-to-vesta-catalog.sh
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read only catalog preflight
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          test -n "$HOST" && test -n "$SSHPASS"
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/audit-cutella-to-vesta-catalog.sh "root@$HOST:/tmp/audit-cutella-to-vesta-catalog.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/audit-cutella-to-vesta-catalog.sh'
