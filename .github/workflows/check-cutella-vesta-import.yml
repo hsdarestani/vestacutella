@@ -1,0 +1,26 @@
+name: Inspect Cutella catalog import progress
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/check-cutella-vesta-import.sh"
+      - ".github/workflows/check-cutella-vesta-import.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash -n scripts/check-cutella-vesta-import.sh
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read only count migrated products
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/check-cutella-vesta-import.sh "root@$HOST:/tmp/check-cutella-vesta-import.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/check-cutella-vesta-import.sh'
