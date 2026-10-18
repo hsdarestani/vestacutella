@@ -1,11 +1,6 @@
 name: Move WordPress cron off requests
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "scripts/install-host-wp-cron.sh"
-      - ".github/workflows/install-host-wp-cron.yml"
   workflow_dispatch:
 
 permissions:
