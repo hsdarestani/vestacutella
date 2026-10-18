@@ -1,0 +1,30 @@
+name: Source Catalog Category Maintenance
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/cutella-remove-korean-food.php
+      - scripts/deploy-cutella-korean-food-cleanup.sh
+      - .github/workflows/deploy-cutella-korean-food-cleanup.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  maintain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - run: php -l scripts/cutella-remove-korean-food.php
+      - run: bash -n scripts/deploy-cutella-korean-food-cleanup.sh
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read-only source category preflight
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          test -n "$HOST" && test -n "$SSHPASS"
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/cutella-remove-korean-food.php "root@$HOST:/tmp/cutella-remove-korean-food.php"
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/deploy-cutella-korean-food-cleanup.sh "root@$HOST:/tmp/deploy-cutella-korean-food-cleanup.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/deploy-cutella-korean-food-cleanup.sh --dry-run'
