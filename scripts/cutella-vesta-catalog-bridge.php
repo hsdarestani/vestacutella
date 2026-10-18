@@ -248,12 +248,9 @@ function vc_apply_fields($obj,$p) {
 }
 if ($mode === 'import') {
     // All new products remain drafts until a separate verification and finalize phase.
-    $root=get_term_by('slug','cutella-products','product_cat');
-    if (!$root) {
-        $new=wp_insert_term('کیوتلا','product_cat',array('slug'=>'cutella-products','description'=>'محصولات کیوتلا'));
-        if (is_wp_error($new)) vc_fail('Cannot create root category '.$new->get_error_message());
-        $root=get_term((int)$new['term_id'],'product_cat');
-    }
+    // Source-brand category is deliberately forbidden. All transferred categories
+    // live directly within Vesta's existing taxonomy and can merge by exact name.
+    $root_id=0;
     $sourcecats=array(); foreach ($data['categories'] as $c) $sourcecats[(int)$c['id']]=$c;
     $map=array(); $created=0; $skipped=0; $variations=0;
     foreach ($data['attribute_taxonomies'] as $attr) vc_ensure_taxonomy($attr);
@@ -270,8 +267,11 @@ if ($mode === 'import') {
         if (!$obj) vc_fail('Unable to load imported product '.$sourceid);
         vc_apply_fields($obj,$p);
         $obj->set_status('draft');
-        $categories=array((int)$root->term_id);
-        foreach ($p['categories'] as $cid) $categories[]=vc_ensure_term((int)$cid,$map,$sourcecats,(int)$root->term_id);
+        $categories=array();
+        foreach ($p['categories'] as $cid) {
+            $mapped=vc_ensure_term((int)$cid,$map,$sourcecats,$root_id);
+            if ($mapped>0) $categories[]=$mapped;
+        }
         $obj->set_category_ids(array_unique($categories));
         if (!empty($p['tags'])) $obj->set_tag_ids(array());
         $attrs=array();
@@ -372,26 +372,7 @@ if ($mode==='finalize') {
             $obj->set_status('publish'); $obj->save(); $published++;
         }
     }
-    // Add a single navigable Cutella link only if the active main menu is known.
-    $root=get_term_by('slug','cutella-products','product_cat');
-    $locations=get_nav_menu_locations(); $menu_id=0;
-    foreach (array('main-menu','primary','main_menu','menu-primary','header-menu') as $loc) {
-        if (!empty($locations[$loc])) { $menu_id=(int)$locations[$loc]; break; }
-    }
-    if ($menu_id && $root) {
-        $present=false;
-        foreach ((array)wp_get_nav_menu_items($menu_id) as $item) {
-            if ($item->object==='product_cat' && (int)$item->object_id===(int)$root->term_id) $present=true;
-        }
-        if (!$present) {
-            $menuitem=wp_update_nav_menu_item($menu_id,0,array(
-                'menu-item-title'=>'کیوتلا','menu-item-object'=>'product_cat',
-                'menu-item-object-id'=>(int)$root->term_id,'menu-item-type'=>'taxonomy',
-                'menu-item-status'=>'publish'));
-            if (is_wp_error($menuitem)) echo "MENU_INSERT_WARNING ".$menuitem->get_error_message()."\n";
-            else echo "MENU_INSERTED id=$menuitem\n";
-        }
-    } else echo "MENU_NOT_CONFIGURED site categories still browseable\n";
+    // Never reintroduce storefront branding or a source-store menu item.
     if (function_exists('wc_delete_product_transients')) wc_delete_product_transients();
-    echo "FINALIZE_OK newly_published=$published site_products=".count($products)." category_url=".($root?get_term_link($root):'missing')."\n";
+    echo "FINALIZE_OK newly_published=$published site_products=".count($products)." branding=none\n";
 }
