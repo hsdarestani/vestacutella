@@ -1,0 +1,36 @@
+name: Transfer Cutella in-stock catalog to Vesta
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/transfer-cutella-catalog.yml"
+      - "scripts/import-cutella-catalog-to-vesta.sh"
+      - "scripts/cutella-vesta-catalog-bridge.php"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vc-cutella-vesta-catalog
+  cancel-in-progress: false
+jobs:
+  transfer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check syntax
+        run: |
+          set -euo pipefail
+          php -l scripts/cutella-vesta-catalog-bridge.php
+          bash -n scripts/import-cutella-catalog-to-vesta.sh
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Transfer preflight and dry run (no writes)
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          test -n "$HOST" && test -n "$SSHPASS"
+          sshpass -e scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/cutella-vesta-catalog-bridge.php "root@$HOST:/tmp/cutella-vesta-catalog-bridge.php"
+          sshpass -e scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/import-cutella-catalog-to-vesta.sh "root@$HOST:/tmp/import-cutella-catalog-to-vesta.sh"
+          sshpass -e ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/import-cutella-catalog-to-vesta.sh --dry-run'
