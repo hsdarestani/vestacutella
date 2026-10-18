@@ -120,6 +120,15 @@ for path in / /shop/ /my-account/; do
   echo "VESTA_AFTER $path $code"
   [[ "$code" == 200 ]]
 done
+# Verify real category archive and one newly published product (not just homepage).
+category_url="$(docker exec vc-vesta php -r 'require "/var/www/html/wp-load.php"; $term=get_term_by("slug","cutella-products","product_cat"); echo ($term && !is_wp_error($term))?get_term_link($term):"";' | tail -1)"
+product_url="$(docker exec vc-vesta php -r 'require "/var/www/html/wp-load.php"; global $wpdb; $id=(int)$wpdb->get_var("SELECT post_id FROM {$wpdb->postmeta} WHERE meta_key=\"_vc_cutella_source_product_id\" LIMIT 1"); echo $id?get_permalink($id):"";' | tail -1)"
+for url in "$category_url" "$product_url"; do
+  [[ "$url" == https://vesta-cosmetics.ir/* || "$url" == http://vesta-cosmetics.ir/* ]] || { echo "Invalid catalog URL: $url";exit 18; }
+  code="$(curl -kLsS --max-time 60 -o /dev/null -w '%{http_code}' "$url")"
+  echo "VESTA_CATALOG_URL status=$code url=$url"
+  [[ "$code" == 200 ]] || exit 19
+done
 NEEDS_PUBLIC_ROLLBACK=no
 trap - EXIT
 echo 'CUTELLA_TO_VESTA_IMPORT_SUCCESS'
