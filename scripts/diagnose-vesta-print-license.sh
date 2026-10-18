@@ -46,4 +46,35 @@ for name in core.php woocommerce-invoice-pro.php classes/helper.php; do
 done
 echo '=== License-related scheduled hook count ==='
 docker exec vc-vesta php -r 'require "/var/www/html/wp-load.php"; $a=get_option("cron");$n=0;foreach((array)$a as $e)if(is_array($e))foreach(array_keys($e) as $hook)if(preg_match("/invoice|pws|license|validat/i",$hook)){$n++;echo "hook=".$hook.PHP_EOL;}echo "matching_hooks=".$n.PHP_EOL;'
+
+echo '=== Observer installed and dated events in Apache logs (observer lines only) ==='
+OBSERVER="$RUNTIME/wp-content/mu-plugins/vc-vesta-license-observer.php"
+test -f "$OBSERVER" && echo 'observer=present' || echo 'observer=missing'
+docker logs --since 96h vc-vesta 2>&1 | grep -F '[vesta-invoice-validation]' | tail -120 || true
+echo '=== Observer events in WordPress PHP logs, if available (observer lines only) ==='
+for lf in "$RUNTIME/wp-content/debug.log" "$RUNTIME/wp-content/vc-debug.log"; do
+  if [[ -f "$lf" ]]; then
+    grep -F '[vesta-invoice-validation]' "$lf" | tail -60 || true
+  fi
+done
+echo '=== Validator schedule (timestamps only) ==='
+docker exec vc-vesta php -r '
+require "/var/www/html/wp-load.php";
+echo "now_utc=".gmdate("c").PHP_EOL;
+$cron = get_option("cron", array());
+foreach ((array) $cron as $stamp => $events) {
+ if (!is_numeric($stamp) || !is_array($events)) continue;
+ foreach (array("wip-guard-reg_daily_validator", "popup_maker_license_status_check") as $hook) {
+  if (isset($events[$hook])) {
+    foreach ((array)$events[$hook] as $instance) {
+      $schedule = isset($instance["schedule"]) ? preg_replace("/[^a-z0-9_-]/i","",(string)$instance["schedule"]) : "single";
+      echo "cron=".$hook." next_utc=".gmdate("c", (int)$stamp)." recurrence=".$schedule.PHP_EOL;
+    }
+  }
+ }
+}
+foreach (array("wip-guard-reg_daily_validator", "popup_maker_license_status_check") as $h) {
+ echo "registered_hook=".$h." callbacks=".(has_action($h)===false?"no":"yes").PHP_EOL;
+}
+' 2>&1 | grep -E '^(now_utc=|cron=|registered_hook=|PHP |Fatal error:)' | head -60
 echo "VESTA_PRINT_LICENSE_DIAGNOSTIC_COMPLETED"
