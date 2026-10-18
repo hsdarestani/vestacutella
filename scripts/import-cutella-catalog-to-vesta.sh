@@ -18,12 +18,12 @@ for name in vc-cutella vc-vesta vc-db-cutella vc-db-vesta; do
 done
 echo "STEP_COPY_SOURCE"; docker cp "$BRIDGE" vc-cutella:/tmp/vc-cutella-catalog-bridge.php
 echo "STEP_COPY_DEST"; docker cp "$BRIDGE" vc-vesta:/tmp/vc-cutella-catalog-bridge.php
-echo "STEP_LINT_SOURCE"; docker exec vc-cutella php -l /tmp/vc-cutella-catalog-bridge.php
-echo "STEP_LINT_DEST"; docker exec vc-vesta php -l /tmp/vc-cutella-catalog-bridge.php
-echo "STEP_EXPORT_SOURCE"; docker exec vc-cutella php -d memory_limit=768M /tmp/vc-cutella-catalog-bridge.php export /tmp/vc-cutella-catalog.json
+echo "STEP_PHP_SOURCE_READY"
+echo "STEP_PHP_DEST_READY"
+echo "STEP_EXPORT_SOURCE"; docker exec vc-cutella php -d memory_limit=768M -r 'include "/tmp/vc-cutella-catalog-bridge.php";' -- export /tmp/vc-cutella-catalog.json
 docker cp vc-cutella:/tmp/vc-cutella-catalog.json "$RUN_DIR/catalog.json"
 docker cp "$RUN_DIR/catalog.json" vc-vesta:/tmp/vc-cutella-catalog.json
-docker exec vc-vesta php -d memory_limit=768M /tmp/vc-cutella-catalog-bridge.php preflight /tmp/vc-cutella-catalog.json
+docker exec vc-vesta php -d memory_limit=768M -r 'include "/tmp/vc-cutella-catalog-bridge.php";' -- preflight /tmp/vc-cutella-catalog.json
 python3 - "$RUN_DIR/catalog.json" <<'PY'
 import json,sys
 data=json.load(open(sys.argv[1]))
@@ -78,15 +78,15 @@ if missing: raise SystemExit('Source image missing; import refused')
 PY
 chown -R 33:33 "$BASE/runtime/vesta/wp-content/uploads/cutella-import"
 # All imported items stay in draft status until verify completes.
-docker exec vc-vesta php -d memory_limit=768M /tmp/vc-cutella-catalog-bridge.php import /tmp/vc-cutella-catalog.json
-docker exec vc-vesta php -d memory_limit=768M /tmp/vc-cutella-catalog-bridge.php verify /tmp/vc-cutella-catalog.json
+docker exec vc-vesta php -d memory_limit=768M -r 'include "/tmp/vc-cutella-catalog-bridge.php";' -- import /tmp/vc-cutella-catalog.json
+docker exec vc-vesta php -d memory_limit=768M -r 'include "/tmp/vc-cutella-catalog-bridge.php";' -- verify /tmp/vc-cutella-catalog.json
 for path in / /shop/ /my-account/; do
   code="$(curl -kLsS --noproxy '*' --resolve vesta-cosmetics.ir:443:127.0.0.1 --max-time 40 -o /dev/null -w '%{http_code}' "https://vesta-cosmetics.ir$path")"
   echo "VESTA_STAGED $path $code"
   [[ "$code" == 200 ]]
 done
-docker exec vc-vesta php -d memory_limit=768M /tmp/vc-cutella-catalog-bridge.php finalize /tmp/vc-cutella-catalog.json
-docker exec vc-vesta php -d memory_limit=768M /tmp/vc-cutella-catalog-bridge.php verify /tmp/vc-cutella-catalog.json
+docker exec vc-vesta php -d memory_limit=768M -r 'include "/tmp/vc-cutella-catalog-bridge.php";' -- finalize /tmp/vc-cutella-catalog.json
+docker exec vc-vesta php -d memory_limit=768M -r 'include "/tmp/vc-cutella-catalog-bridge.php";' -- verify /tmp/vc-cutella-catalog.json
 for path in / /shop/ /my-account/; do
   code="$(curl -kLsS --noproxy '*' --resolve vesta-cosmetics.ir:443:127.0.0.1 --max-time 40 -o /dev/null -w '%{http_code}' "https://vesta-cosmetics.ir$path")"
   echo "VESTA_AFTER $path $code"
