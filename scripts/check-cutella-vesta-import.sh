@@ -3,6 +3,7 @@
 set -euo pipefail
 set -a; source /srv/vestacutella/.env; set +a
 echo "=== product/variation progress ==="
+echo "observed_at_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 docker exec vc-db-vesta mariadb -uroot -p"$VESTA_DB_ROOT_PASSWORD" vestacos_m -N -e "
 SELECT 'imported_parents',COUNT(DISTINCT post_id) FROM wp_postmeta WHERE meta_key='_vc_cutella_source_product_id';
 SELECT 'imported_variations',COUNT(DISTINCT post_id) FROM wp_postmeta WHERE meta_key='_vc_cutella_source_variation_id';
