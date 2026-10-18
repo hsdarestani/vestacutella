@@ -1,11 +1,5 @@
 name: Source Catalog Category Maintenance
 on:
-  push:
-    branches: [main]
-    paths:
-      - scripts/cutella-remove-korean-food.php
-      - scripts/deploy-cutella-korean-food-cleanup.sh
-      - .github/workflows/deploy-cutella-korean-food-cleanup.yml
   workflow_dispatch:
 permissions:
   contents: read
