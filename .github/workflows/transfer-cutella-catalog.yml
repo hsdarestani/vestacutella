@@ -1,11 +1,5 @@
-name: Transfer Cutella in-stock catalog to Vesta
+name: One-time catalog migration (manual only)
 on:
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/transfer-cutella-catalog.yml"
-      - "scripts/import-cutella-catalog-to-vesta.sh"
-      - "scripts/cutella-vesta-catalog-bridge.php"
   workflow_dispatch:
 permissions:
   contents: read
