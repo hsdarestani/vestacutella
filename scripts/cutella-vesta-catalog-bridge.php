@@ -98,7 +98,7 @@ if ($mode === 'export') {
     }
     $items=array(); $page=1; $variants=0;
     do {
-        $batch=wc_get_products(array('type'=>array('simple','variable','grouped','external'),'status'=>'publish',
+        $batch=wc_get_products(array('status'=>'publish',
             'limit'=>100, 'page'=>$page, 'orderby'=>'ID', 'order'=>'ASC'));
         foreach ($batch as $p) {
             if ($p->get_stock_status() !== 'instock') continue;
