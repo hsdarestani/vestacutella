@@ -126,4 +126,19 @@ foreach ((array)$names as $name) {
 }
 echo "state_key_matches=".$count.PHP_EOL;
 ' 2>&1 | head -95
+
+echo '=== Active cron launch method (read-only) ==='
+if [[ -f /etc/cron.d/vestacutella-wp-cron ]]; then
+  grep -E '^[^#].*vc-(vesta|cutella).*wp-cron.php' /etc/cron.d/vestacutella-wp-cron |
+    sed -E 's/.*(docker exec vc-(vesta|cutella) php \/var\/www\/html\/wp-cron.php).*/method=\1/'
+else
+  echo 'host_cron_file=absent'
+fi
+docker exec vc-vesta php -r '
+require "/var/www/html/wp-config.php";
+echo "DISABLE_WP_CRON=".(defined("DISABLE_WP_CRON") && DISABLE_WP_CRON?"true":"false").PHP_EOL;
+echo "CLI_HTTP_HOST=".(isset($_SERVER["HTTP_HOST"])?"present":"absent").PHP_EOL;
+echo "CLI_SERVER_NAME=".(isset($_SERVER["SERVER_NAME"])?"present":"absent").PHP_EOL;
+echo "CLI_HTTPS=".(isset($_SERVER["HTTPS"])?"present":"absent").PHP_EOL;
+'
 echo "VESTA_PRINT_LICENSE_DIAGNOSTIC_COMPLETED"
