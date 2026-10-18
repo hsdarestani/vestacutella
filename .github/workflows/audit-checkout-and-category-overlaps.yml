@@ -1,0 +1,26 @@
+name: Audit Vesta checkout number and category overlap
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/audit-checkout-and-category-overlaps.sh"
+      - ".github/workflows/audit-checkout-and-category-overlaps.yml"
+  workflow_dispatch:
+permissions: 
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash -n scripts/audit-checkout-and-category-overlaps.sh
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Anonymized production diagnostics
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/audit-checkout-and-category-overlaps.sh "root@$HOST:/tmp/audit-checkout-and-category-overlaps.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/audit-checkout-and-category-overlaps.sh'
