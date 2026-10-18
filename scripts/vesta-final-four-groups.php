@@ -114,6 +114,13 @@ foreach($cosmetics as $pid=>$termid){
 }
 vcdel(1769);
 echo "COSMETIC_IMPORT_CATEGORY_REMOVED product_count=".count($cosmetics).PHP_EOL;
+// Three misplaced imported grocery products do not belong to the four approved groups.
+// Keep them recoverable in Trash; never touch unrelated Vesta food products.
+foreach(array(102061,102068,102070) as $pid){
+ $item=wp_trash_post($pid);
+ if(!$item)vcfail('Unable to unpublish imported grocery item '.$pid);
+ echo 'IMPORTED_GROCERY_PRODUCT_TRASHED id='.$pid.PHP_EOL;
+}
 
 // Keep the 55+ pre-existing Vesta Korean items untouched pending explicit scope confirmation.
 // Remove the newly imported Korean item(s) from public sale using reversible Trash.
