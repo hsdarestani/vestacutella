@@ -1,0 +1,27 @@
+name: Audit Vesta catalog media and DigiPay phone
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/audit-catalog-images-digipay.sh"
+      - ".github/workflows/audit-catalog-images-digipay.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash -n scripts/audit-catalog-images-digipay.sh
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read only catalog and gateway diagnostic
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          test -n "$HOST" && test -n "$SSHPASS"
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/audit-catalog-images-digipay.sh "root@$HOST:/tmp/audit-catalog-images-digipay.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/audit-catalog-images-digipay.sh'
