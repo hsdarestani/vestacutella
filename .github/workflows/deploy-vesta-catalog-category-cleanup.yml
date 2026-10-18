@@ -1,0 +1,36 @@
+name: Remove Cutella branding from Vesta storefront
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/vesta-flatten-catalog-categories.php"
+      - "scripts/deploy-vesta-catalog-category-cleanup.sh"
+      - ".github/workflows/deploy-vesta-catalog-category-cleanup.yml"
+  workflow_dispatch:
+permissions: 
+  contents: read
+concurrency:
+  group: vesta-category-cleanup
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 22
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax
+        run: |
+          set -euo pipefail
+          php -l scripts/vesta-flatten-catalog-categories.php
+          bash -n scripts/deploy-vesta-catalog-category-cleanup.sh
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Backup and flatten root category into storefront categories
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          test -n "$HOST" && test -n "$SSHPASS"
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/vesta-flatten-catalog-categories.php "root@$HOST:/tmp/vesta-flatten-catalog-categories.php"
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/deploy-vesta-catalog-category-cleanup.sh "root@$HOST:/tmp/deploy-vesta-catalog-category-cleanup.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/deploy-vesta-catalog-category-cleanup.sh'
