@@ -24,7 +24,7 @@ jobs:
           php -l scripts/cutella-vesta-catalog-bridge.php
           bash -n scripts/import-cutella-catalog-to-vesta.sh
       - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
-      - name: Transfer preflight and dry run (no writes)
+      - name: Backup and transfer Cutella in-stock products with safe staging
         env:
           HOST: ${{ secrets.HOST }}
           SSHPASS: ${{ secrets.PASS }}
@@ -33,4 +33,4 @@ jobs:
           test -n "$HOST" && test -n "$SSHPASS"
           sshpass -e scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/cutella-vesta-catalog-bridge.php "root@$HOST:/tmp/cutella-vesta-catalog-bridge.php"
           sshpass -e scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/import-cutella-catalog-to-vesta.sh "root@$HOST:/tmp/import-cutella-catalog-to-vesta.sh"
-          sshpass -e ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/import-cutella-catalog-to-vesta.sh --dry-run'
+          sshpass -e ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/import-cutella-catalog-to-vesta.sh --apply'
