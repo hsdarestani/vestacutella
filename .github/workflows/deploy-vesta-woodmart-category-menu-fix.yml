@@ -1,0 +1,29 @@
+name: Update Vesta product category navigation
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/fix-vesta-woodmart-categories-menu.php
+      - scripts/deploy-vesta-woodmart-category-menu-fix.sh
+      - .github/workflows/deploy-vesta-woodmart-category-menu-fix.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - run: php -l scripts/fix-vesta-woodmart-categories-menu.php
+      - run: bash -n scripts/deploy-vesta-woodmart-category-menu-fix.sh
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Verify and deploy existing product category links
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/fix-vesta-woodmart-categories-menu.php "root@$HOST:/tmp/fix-vesta-woodmart-categories-menu.php"
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/deploy-vesta-woodmart-category-menu-fix.sh "root@$HOST:/tmp/deploy-vesta-woodmart-category-menu-fix.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/deploy-vesta-woodmart-category-menu-fix.sh'
