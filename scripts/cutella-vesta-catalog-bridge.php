@@ -117,7 +117,7 @@ if ($mode === 'export') {
     echo "EXPORT_OK products=".count($items)." variations=".$variants." categories=".count($categories)."\n";
     exit(0);
 }
-if (!in_array($mode,array('preflight','import','verify','finalize'),true)) vc_fail('Unsupported mode');
+if (!in_array($mode,array('preflight','import','verify','finalize','rollback'),true)) vc_fail('Unsupported mode');
 $data=json_decode(file_get_contents($path),true);
 if (!is_array($data) || ($data['version']??0)!==1 || empty($data['products'])) vc_fail('Invalid/empty catalog JSON');
 if (($data['currency']??'')!==get_woocommerce_currency()) vc_fail('Currency mismatch');
@@ -143,6 +143,11 @@ if ($mode === 'preflight') {
     foreach (array_slice($existing_names,0,12) as $name) echo "TITLE_OVERLAP ".mb_substr($name,0,100)."\n";
     exit(0);
 }
+// Keep product grids responsive without generating dozens of unused theme image variants.
+function vc_catalog_sizes($sizes) {
+    return array_intersect_key($sizes,array_flip(array('thumbnail','medium','woocommerce_thumbnail','woocommerce_single')));
+}
+add_filter('intermediate_image_sizes_advanced','vc_catalog_sizes',99,1);
 function vc_ensure_image($image) {
     if (!$image || empty($image['id']) || empty($image['relative'])) return 0;
     $id=(int)$image['id'];
@@ -340,6 +345,19 @@ foreach ($products as $p) {
     }
 }
 if ($missing) vc_fail('Missing imports: '.implode(',',array_slice($missing,0,30)),7);
+if ($mode==='rollback') {
+    $reverted=0;
+    foreach ($products as $p) {
+        $id=vc_origin_id((int)$p['id']);
+        if (!$id || get_post_status($id)!=='publish') continue;
+        $obj=wc_get_product($id);
+        $obj->set_status('draft');
+        $obj->save();
+        $reverted++;
+    }
+    echo "ROLLED_BACK_TO_DRAFT count=$reverted\n";
+    exit(0);
+}
 if ($mode==='verify') {
     echo "VERIFY_OK staged=$staged published=$public source_products=".count($products)."\n";
     exit(0);
