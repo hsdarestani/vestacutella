@@ -31,7 +31,7 @@ done
 
 echo "=== install reliable host cron ==="
 cat >/etc/cron.d/vestacutella-wp-cron <<'CRON'
-* * * * * root flock -n /run/lock/vesta-wp-cron.lock docker exec vc-vesta php /var/www/html/wp-cron.php >/dev/null 2>&1
+* * * * * root flock -n /run/lock/vesta-wp-cron.lock curl --silent --show-error --fail --connect-timeout 10 --max-time 110 --resolve vesta-cosmetics.ir:443:127.0.0.1 https://vesta-cosmetics.ir/wp-cron.php >/dev/null 2>>/var/log/vesta-wp-cron-errors.log
 * * * * * root flock -n /run/lock/cutella-wp-cron.lock docker exec vc-cutella php /var/www/html/wp-cron.php >/dev/null 2>&1
 CRON
 chmod 644 /etc/cron.d/vestacutella-wp-cron
@@ -41,7 +41,7 @@ if command -v systemctl >/dev/null 2>&1; then
 fi
 
 echo "=== run once now ==="
-flock -n /run/lock/vesta-wp-cron.lock docker exec vc-vesta php /var/www/html/wp-cron.php >/dev/null 2>&1 || true
+flock -n /run/lock/vesta-wp-cron.lock curl --silent --show-error --fail --connect-timeout 10 --max-time 110 --resolve vesta-cosmetics.ir:443:127.0.0.1 https://vesta-cosmetics.ir/wp-cron.php >/dev/null 2>>/var/log/vesta-wp-cron-errors.log || true
 flock -n /run/lock/cutella-wp-cron.lock docker exec vc-cutella php /var/www/html/wp-cron.php >/dev/null 2>&1 || true
 
 echo "=== verify ==="
