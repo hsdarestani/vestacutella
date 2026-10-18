@@ -101,6 +101,18 @@ for path in / /shop/ /my-account/; do
   echo "VESTA_STAGED $path $code"
   [[ "$code" == 200 ]]
 done
+# Only a successful staging + verification can reach public publication.
+NEEDS_PUBLIC_ROLLBACK=yes
+undo_publication() {
+  code=$?
+  trap - EXIT
+  if [[ "$NEEDS_PUBLIC_ROLLBACK" == yes && "$code" != 0 ]]; then
+    echo "ROLLBACK_PUBLICATION begin code=$code"
+    docker exec vc-vesta php -d memory_limit=768M -r 'include "/tmp/vc-cutella-catalog-bridge.php";' -- rollback /tmp/vc-cutella-catalog.json || true
+  fi
+  exit "$code"
+}
+trap undo_publication EXIT
 docker exec vc-vesta php -d memory_limit=768M -r 'include "/tmp/vc-cutella-catalog-bridge.php";' -- finalize /tmp/vc-cutella-catalog.json
 docker exec vc-vesta php -d memory_limit=768M -r 'include "/tmp/vc-cutella-catalog-bridge.php";' -- verify /tmp/vc-cutella-catalog.json
 for path in / /shop/ /my-account/; do
@@ -108,4 +120,6 @@ for path in / /shop/ /my-account/; do
   echo "VESTA_AFTER $path $code"
   [[ "$code" == 200 ]]
 done
+NEEDS_PUBLIC_ROLLBACK=no
+trap - EXIT
 echo 'CUTELLA_TO_VESTA_IMPORT_SUCCESS'
