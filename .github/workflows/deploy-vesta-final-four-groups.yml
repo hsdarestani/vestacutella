@@ -22,7 +22,7 @@ jobs:
           php -l scripts/vesta-final-four-groups.php
           bash -n scripts/deploy-vesta-final-four-groups.sh
       - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
-      - name: Validate planned category changes without writes
+      - name: Backup and apply final Vesta category restructuring
         env:
           HOST: ${{ secrets.HOST }}
           SSHPASS: ${{ secrets.PASS }}
@@ -31,4 +31,4 @@ jobs:
           test -n "$HOST" && test -n "$SSHPASS"
           sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/vesta-final-four-groups.php "root@$HOST:/tmp/vesta-final-four-groups.php"
           sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/deploy-vesta-final-four-groups.sh "root@$HOST:/tmp/deploy-vesta-final-four-groups.sh"
-          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/deploy-vesta-final-four-groups.sh --dry-run'
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/deploy-vesta-final-four-groups.sh --apply'
