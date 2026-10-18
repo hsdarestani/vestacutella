@@ -96,19 +96,19 @@ if ($mode === 'export') {
         $attributes[]=array('name'=>$a->attribute_name,'label'=>$a->attribute_label,
             'type'=>$a->attribute_type,'order_by'=>$a->attribute_orderby,'public'=>$a->attribute_public);
     }
-    $items=array(); $page=1; $variants=0;
-    do {
-        $batch=wc_get_products(array('status'=>'publish',
-            'limit'=>100, 'page'=>$page, 'orderby'=>'ID', 'order'=>'ASC'));
-        foreach ($batch as $p) {
-            if ($p->get_stock_status() !== 'instock') continue;
-            if (!in_array($p->get_type(),array('simple','variable'),true)) continue;
-            $record=vc_export_product($p);
-            $variants += count($record['variations']);
-            $items[]=$record;
-        }
-        $page++;
-    } while (count($batch)===100);
+    $items=array(); $variants=0;
+    // Query wp_posts directly: older Cutella has 112 in-stock posts without a
+    // product_type taxonomy relationship; wc_get_products silently omits them.
+    $source_ids=get_posts(array('post_type'=>'product','post_status'=>'publish',
+        'posts_per_page'=>-1,'fields'=>'ids','orderby'=>'ID','order'=>'ASC','suppress_filters'=>true));
+    foreach ($source_ids as $source_id) {
+        $p=wc_get_product((int)$source_id);
+        if (!$p || $p->get_stock_status() !== 'instock') continue;
+        if (!in_array($p->get_type(),array('simple','variable'),true)) continue;
+        $record=vc_export_product($p);
+        $variants += count($record['variations']);
+        $items[]=$record;
+    }
     $output=array('version'=>1,'source_site'=>home_url(), 'exported_at'=>gmdate('c'),
         'currency'=>get_woocommerce_currency(),'categories'=>$categories,
         'attribute_taxonomies'=>$attributes,'products'=>$items);
