@@ -1,0 +1,26 @@
+name: Verify Vesta catalog public images and DigiPay repair
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/verify-vesta-import-images-and-menu.sh"
+      - ".github/workflows/verify-vesta-import-images-and-menu.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash -n scripts/verify-vesta-import-images-and-menu.sh
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Public image requests, menus and phone compatibility read-only
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/verify-vesta-import-images-and-menu.sh "root@$HOST:/tmp/verify-vesta-import-images-and-menu.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/verify-vesta-import-images-and-menu.sh'
