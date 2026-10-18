@@ -77,4 +77,53 @@ foreach (array("wip-guard-reg_daily_validator", "popup_maker_license_status_chec
  echo "registered_hook=".$h." callbacks=".(has_action($h)===false?"no":"yes").PHP_EOL;
 }
 ' 2>&1 | grep -E '^(now_utc=|cron=|registered_hook=|PHP |Fatal error:)' | head -60
+
+echo '=== Identify daily validator callback owners (read-only) ==='
+docker exec vc-vesta php -r '
+require "/var/www/html/wp-load.php";
+foreach(array("wip-guard-reg_daily_validator", "popup_maker_license_status_check") as $hook) {
+ global $wp_filter;
+ echo "event=".$hook.PHP_EOL;
+ if (empty($wp_filter[$hook])) continue;
+ foreach ($wp_filter[$hook]->callbacks as $priority=>$callbacks) {
+  foreach ($callbacks as $item) {
+   $cb=$item["function"];
+   try {
+    if (is_array($cb)) {
+     $ref=new ReflectionMethod($cb[0],$cb[1]);
+     $name=(is_object($cb[0])?get_class($cb[0]):$cb[0])."::".$cb[1];
+    } elseif (is_string($cb)) {
+     $ref=new ReflectionFunction($cb);
+     $name=$cb;
+    } else {
+     $ref=new ReflectionFunction($cb);
+     $name="anonymous";
+    }
+    $filename=$ref->getFileName();
+    $owner=is_string($filename) ? str_replace("/var/www/html/wp-content/", "", $filename) : "unknown";
+    echo "callback=".substr(preg_replace("/[^a-zA-Z0-9_.:\\-]/","",$name),0,120)." source=".substr($owner,0,180)." priority=".(int)$priority.PHP_EOL;
+   } catch (Exception $e) { echo "callback_unreadable".PHP_EOL; }
+  }
+ }
+}
+' 2>&1 | head -60
+echo '=== Relevant option names and transient expiry metadata (never values) ==='
+docker exec vc-vesta php -r '
+require "/var/www/html/wp-load.php";
+global $wpdb;
+$names=$wpdb->get_col("SELECT option_name FROM {$wpdb->options}");
+$count=0;
+foreach ((array)$names as $name) {
+ if(!preg_match("/wip.guard|wip_guard|invoice.pro|invoice_pro|licen|validator|_transient_timeout_/i",$name)) continue;
+ if(strlen($name)>100 || preg_match("/[a-f0-9]{18,}/i",$name)) continue;
+ if(++$count>80) break;
+ $value=get_option($name);
+ if (preg_match("/^_transient_timeout_/",$name) && is_numeric($value)) {
+   echo "expiry_option=".$name." date_utc=".gmdate("c",(int)$value).PHP_EOL;
+ } else {
+   echo "state_option=".$name." data_type=".gettype($value).PHP_EOL;
+ }
+}
+echo "state_key_matches=".$count.PHP_EOL;
+' 2>&1 | head -95
 echo "VESTA_PRINT_LICENSE_DIAGNOSTIC_COMPLETED"
