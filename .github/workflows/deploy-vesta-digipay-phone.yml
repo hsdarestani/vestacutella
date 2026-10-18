@@ -1,0 +1,36 @@
+name: Deploy Vesta DigiPay mobile validation repair
+on:
+  push:
+    branches: [main]
+    paths:
+      - "infra/plugins/vesta-digipay-mobile/**"
+      - "scripts/deploy-vesta-digipay-phone.sh"
+      - ".github/workflows/deploy-vesta-digipay-phone.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-digipay-phone
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax tests
+        run: |
+          set -euo pipefail
+          bash -n scripts/deploy-vesta-digipay-phone.sh
+          php -l infra/plugins/vesta-digipay-mobile/vesta-digipay-mobile.php
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Deploy phone normalization, test checkout compatibility and rollback on error
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          test -n "$HOST" && test -n "$SSHPASS"
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null infra/plugins/vesta-digipay-mobile/vesta-digipay-mobile.php "root@$HOST:/tmp/vc-vesta-digipay-mobile.php"
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/deploy-vesta-digipay-phone.sh "root@$HOST:/tmp/deploy-vesta-digipay-phone.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/deploy-vesta-digipay-phone.sh'
