@@ -25,12 +25,28 @@ docker cp vc-cutella:/tmp/vc-cutella-catalog.json "$RUN_DIR/catalog.json"
 docker cp "$RUN_DIR/catalog.json" vc-vesta:/tmp/vc-cutella-catalog.json
 docker exec vc-vesta php -d memory_limit=768M -r 'include "/tmp/vc-cutella-catalog-bridge.php";' -- preflight /tmp/vc-cutella-catalog.json
 python3 - "$RUN_DIR/catalog.json" <<'PY'
-import json,sys
+import json,sys,os
 data=json.load(open(sys.argv[1]))
 n=len(data['products'])
 v=sum(len(p.get('variations',[])) for p in data['products'])
 if n<1 or n>5000: raise SystemExit('Unreasonable count')
 print(f"CATALOG_VALIDATED products={n} variations={v} categories={len(data['categories'])}")
+for a in data['attribute_taxonomies']:
+    print("ATTRIBUTE_DEFINITION name="+a['name']+" label="+a['label'])
+src=os.path.realpath('/srv/vestacutella/runtime/cutella/wp-content/uploads')
+photos={}
+for cat in data['categories']:
+    if cat.get('image'): photos[cat['image']['id']]=cat['image']['relative']
+for p in data['products']:
+    for rec in [p]+p.get('variations',[]):
+        for im in rec.get('images',[]): photos[im['id']]=im['relative']
+missing=[]
+for ident,rel in photos.items():
+    file=os.path.realpath(os.path.join(src,rel))
+    if not file.startswith(src+os.sep) or not os.path.isfile(file):
+        missing.append(ident)
+print(f"MEDIA_PREFLIGHT referenced={len(photos)} missing={len(missing)}")
+if missing: raise SystemExit('Missing source image originals, examples: '+str(missing[:10]))
 PY
 if [[ "$MODE" == "--dry-run" ]]; then
   echo "CATALOG_DRY_RUN_OK no production changes"
