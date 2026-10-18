@@ -14,7 +14,7 @@ foreach(array(101583) as $id) {
  $shape=substr($ascii,0,2)==="09"?"09":(substr($ascii,0,2)==="98"?"98":(substr($ascii,0,4)==="0098"?"0098":"other"));
  echo "ORDER ".$id." gateway=".$o->get_payment_method()." raw_bytes=".strlen($s).
  " ascii_digits=".strlen($ascii)." persian_digits=".($fa?"yes":"no").
- " arabic_digits=".($ar?"yes":"no")." prefix_shape=".$shape.PHP_EOL;
+ " arabic_digits=".($ar?"yes":"no")." prefix_shape=".$shape." leading098=".(strpos($ascii,"098")===0?"yes":"no")." leading0098=".(strpos($ascii,"0098")===0?"yes":"no").PHP_EOL;
 }
 '
 echo "=== top-level category collisions and menu (no customer data) ==="
