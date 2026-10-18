@@ -1,11 +1,5 @@
 name: Deploy approved Vesta category groups
 on:
-  push:
-    branches: [main]
-    paths:
-      - scripts/vesta-final-four-groups.php
-      - scripts/deploy-vesta-final-four-groups.sh
-      - .github/workflows/deploy-vesta-final-four-groups.yml
   workflow_dispatch:
 permissions:
   contents: read
