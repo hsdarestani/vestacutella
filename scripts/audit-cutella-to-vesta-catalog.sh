@@ -52,4 +52,14 @@ SELECT t.name,tt.parent,tt.count FROM wp_terms t
 JOIN wp_term_taxonomy tt ON tt.term_id=t.term_id
 WHERE tt.taxonomy='product_cat' AND tt.count>0
 ORDER BY tt.count DESC LIMIT 60;"
+echo "=== source WooCommerce CLI smoke (read only) ==="
+timeout 50 docker exec vc-cutella php -d memory_limit=512M -r 'require "/var/www/html/wp-load.php"; echo "woocommerce=".(class_exists("WooCommerce")?"yes":"no")." version=".(defined("WC_VERSION")?WC_VERSION:"unknown").PHP_EOL; $p=wc_get_products(array("status"=>"publish","limit"=>1)); foreach($p as $x) echo "one_product_type=".$x->get_type().PHP_EOL;' 2>&1 | tail -20 || echo "SOURCE_PHP_CLI_NOT_READY"
+echo "=== destination WooCommerce CLI smoke (read only) ==="
+timeout 50 docker exec vc-vesta php -d memory_limit=512M -r 'require "/var/www/html/wp-load.php"; echo "woocommerce=".(class_exists("WooCommerce")?"yes":"no")." version=".(defined("WC_VERSION")?WC_VERSION:"unknown").PHP_EOL; $p=wc_get_products(array("status"=>"publish","limit"=>1)); foreach($p as $x) echo "one_product_type=".$x->get_type().PHP_EOL;' 2>&1 | tail -20 || echo "DEST_PHP_CLI_NOT_READY"
+echo "=== source product attribute taxonomies ==="
+sql_cutella "SELECT 'attribute_taxonomies',COUNT(*) FROM wp_woocommerce_attribute_taxonomies;"
+echo "=== source term count by product attributes ==="
+sql_cutella "SELECT taxonomy,COUNT(*) FROM wp_term_taxonomy WHERE taxonomy LIKE 'pa_%' GROUP BY taxonomy ORDER BY COUNT(*) DESC LIMIT 20;"
+echo "=== destination relevant menu names (no settings) ==="
+sql_vesta "SELECT t.name,tt.term_id FROM wp_terms t JOIN wp_term_taxonomy tt ON tt.term_id=t.term_id WHERE tt.taxonomy='nav_menu' LIMIT 20;"
 echo "CUTELLA_TO_VESTA_READONLY_AUDIT_OK"
