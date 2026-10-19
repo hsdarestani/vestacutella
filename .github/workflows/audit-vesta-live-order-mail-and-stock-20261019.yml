@@ -1,0 +1,26 @@
+name: Audit new order mail and low stock Telegram
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/audit-vesta-live-order-mail-and-stock-20261019.sh
+      - .github/workflows/audit-vesta-live-order-mail-and-stock-20261019.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash -n scripts/audit-vesta-live-order-mail-and-stock-20261019.sh
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read only order mail and stock notification diagnosis
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/audit-vesta-live-order-mail-and-stock-20261019.sh "root@$HOST:/tmp/audit-vesta-live-order-mail-and-stock-20261019.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/audit-vesta-live-order-mail-and-stock-20261019.sh'
