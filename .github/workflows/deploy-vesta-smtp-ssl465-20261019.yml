@@ -1,0 +1,29 @@
+name: Fix Vesta SMTP STARTTLS mismatch using SSL 465
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/deploy-vesta-smtp-ssl465-20261019.sh
+      - .github/workflows/deploy-vesta-smtp-ssl465-20261019.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-live-smtp-transport-fix
+  cancel-in-progress: false
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash -n scripts/deploy-vesta-smtp-ssl465-20261019.sh
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Switch SSL to verified 465 and submit one admin test message
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/deploy-vesta-smtp-ssl465-20261019.sh "root@$HOST:/tmp/deploy-vesta-smtp-ssl465-20261019.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/deploy-vesta-smtp-ssl465-20261019.sh'
