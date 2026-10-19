@@ -1,0 +1,20 @@
+name: Vesta homepage mobile CLS first-row A/B lab
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/lab-vesta-nomarg-reservation-20261019.cjs
+      - .github/workflows/lab-vesta-nomarg-reservation-20261019.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  experiment:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          command -v google-chrome
+          npm install --no-save puppeteer-core@24 --no-audit --no-fund
+      - run: node scripts/lab-vesta-nomarg-reservation-20261019.cjs
