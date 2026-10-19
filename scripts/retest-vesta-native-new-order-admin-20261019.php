@@ -1,5 +1,5 @@
 <?php
-// Resend exactly one real processing order to its existing admin recipient.
+// Reverify exactly one recent real WooCommerce new-order admin email after the SSL465 fix.
 // No customer mail, no fake order; marker prevents replay on CI retry.
 if (PHP_SAPI !== 'cli') exit(95);
 require '/var/www/html/wp-load.php';
@@ -8,6 +8,9 @@ $emails=WC()->mailer()->get_emails();
 $new=null;
 foreach($emails as $email)if(($email->id??'')==='new_order')$new=$email;
 if (!$new || !$new->is_enabled())exit(21);
+$cfg=get_option('wp_mail_smtp',array());
+$sm=(array)($cfg['smtp']??array());
+if(($sm['encryption']??'')!=='ssl' || (int)($sm['port']??0)!==465)exit(26);
 $to=array_values(array_filter(array_map('trim',explode(',',$new->get_recipient())),'is_email'));
 if(count($to)!==1){echo "ABORT_RECIPIENT_CHANGED\n";exit(22);}
 echo "RECIPIENT_DOMAIN=".substr(strrchr($to[0],'@'),1)."\n";
