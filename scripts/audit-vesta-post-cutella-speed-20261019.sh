@@ -57,3 +57,32 @@ echo "=== RECENT_RUNTIME_FATAL_COUNTS ==="
 docker logs --since 15m vc-vesta 2>&1 | grep -Eic 'PHP Fatal error|Allowed memory size|Out of memory|Maximum execution time|AH[0-9]+:.*error' || true
 docker exec vc-nginx nginx -t 2>&1 | tail -2 || true
 echo "AUDIT_READ_ONLY_COMPLETED"
+
+
+echo "=== REDIS_EVICTION_AND_HIT_RATE ==="
+docker exec vc-redis redis-cli info stats 2>/dev/null | grep -E '^(evicted_keys|keyspace_hits|keyspace_misses|expired_keys|total_error_replies):' || true
+docker exec vc-redis redis-cli info keyspace 2>/dev/null | grep '^db[01]:' || true
+echo "=== POST_IMPORT_STATUS_AND_RECENT_ACTIONS ==="
+if test -r /srv/vestacutella/.env; then
+  set -a; source /srv/vestacutella/.env; set +a
+  docker exec vc-db-vesta mariadb -uroot -p"$VESTA_DB_ROOT_PASSWORD" vestacos_m -N -e "
+SELECT 'imported_product_publication_status',p.post_status,COUNT(*)
+  FROM wp_posts p JOIN wp_postmeta pm ON p.ID=pm.post_id
+ WHERE pm.meta_key='_vc_cutella_source_product_id' GROUP BY p.post_status;
+SELECT 'actions_created_last_48h',status,COUNT(*)
+  FROM wp_actionscheduler_actions WHERE scheduled_date_gmt >= UTC_TIMESTAMP() - INTERVAL 48 HOUR
+ GROUP BY status;
+" 2>&1 | grep -v -iE '(password on the command line|denied)' || true
+  unset VESTA_DB_ROOT_PASSWORD
+fi
+echo "=== HOME_HTML_COMPONENT_COUNTS ==="
+tmp=$(mktemp)
+curl -kLsS --noproxy '*' --max-time 20 --resolve vesta-cosmetics.ir:443:127.0.0.1 "https://vesta-cosmetics.ir/" -o "$tmp"
+python3 - "$tmp" <<'PY'
+import sys,re
+s=open(sys.argv[1],encoding='utf-8',errors='replace').read()
+for name,regex in [('html_bytes',r'(?s)^.*$'),('img_elements',r'<img\b'),('webp_picture_sources',r'<source\b[^>]+image/webp'),('lazy_img',r'<img\b[^>]+loading=["\x27]lazy'),('cutella_image_links',r'cutella-import/'),('products_markup',r'\bproduct-wrapper\b'),('script_src',r'<script[^>]+src='),('stylesheet_links',r'<link[^>]+stylesheet')]:
+ print(name,len(s.encode()) if name=='html_bytes' else len(re.findall(regex,s,re.I)))
+PY
+rm -f "$tmp"
+echo "AUDIT_FOLLOWUP_READONLY_COMPLETED"
