@@ -1,0 +1,37 @@
+name: Deploy Vesta reliable order mail and stock bot
+on:
+  push:
+    branches: [main]
+    paths:
+      - infra/plugins/vesta-order-mail-watchdog/vesta-order-mail-watchdog.php
+      - infra/plugins/vesta-stock-telegram/vesta-stock-telegram.php
+      - scripts/deploy-vesta-order-mail-stock-bot-20261019.sh
+      - .github/workflows/deploy-vesta-order-mail-stock-bot-20261019.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-order-mail-and-stock-bot-production
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 13
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate PHP and deployment
+        run: |
+          php -l infra/plugins/vesta-order-mail-watchdog/vesta-order-mail-watchdog.php
+          php -l infra/plugins/vesta-stock-telegram/vesta-stock-telegram.php
+          bash -n scripts/deploy-vesta-order-mail-stock-bot-20261019.sh
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Install guarded admin mail watchdog and low stock notifications
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null infra/plugins/vesta-order-mail-watchdog/vesta-order-mail-watchdog.php "root@$HOST:/tmp/vc-vesta-order-mail-watchdog.php"
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null infra/plugins/vesta-stock-telegram/vesta-stock-telegram.php "root@$HOST:/tmp/vc-vesta-stock-telegram.php"
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/deploy-vesta-order-mail-stock-bot-20261019.sh "root@$HOST:/tmp/deploy-vesta-order-mail-stock-bot-20261019.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/deploy-vesta-order-mail-stock-bot-20261019.sh'
