@@ -1,0 +1,33 @@
+name: Safely stabilize Vesta first mobile product row
+on:
+  push:
+    branches: [main]
+    paths:
+      - infra/plugins/vesta-new-products-reserve/vesta-new-products-reserve.php
+      - scripts/deploy-vesta-first-row-cls-20261019.sh
+      - .github/workflows/deploy-vesta-first-row-cls-20261019.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-first-mobile-row
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          bash -n scripts/deploy-vesta-first-row-cls-20261019.sh
+          php -l infra/plugins/vesta-new-products-reserve/vesta-new-products-reserve.php
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Deploy tested CSS and smoke check
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null infra/plugins/vesta-new-products-reserve/vesta-new-products-reserve.php "root@$HOST:/tmp/vc-vesta-new-products-reserve.php"
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/deploy-vesta-first-row-cls-20261019.sh "root@$HOST:/tmp/deploy-vesta-first-row-cls-20261019.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/deploy-vesta-first-row-cls-20261019.sh'
