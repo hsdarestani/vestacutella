@@ -64,13 +64,22 @@ for f in $FILES;do
  [[ "$resp" == "200 image/webp" ]] || exit 31
 done
 docker exec vc-vesta php -r 'require "/var/www/html/wp-load.php";if(function_exists("rocket_clean_home")){rocket_clean_home();echo "HOME_CACHE_REFRESHED\n";}'
-# Nginx serves anonymous entry pages for 12 seconds.
+# Nginx can return a stale entry during its background cache update.
+# Poll verified public HTML rather than assuming a single request is fresh.
 sleep 14
 tmp="$(mktemp)"
-curl --noproxy '*' -kLsS --max-time 35 --resolve vesta-cosmetics.ir:443:127.0.0.1 -o "$tmp" https://vesta-cosmetics.ir/
-grep -q 'id="vc-oct-banner-preload"' "$tmp" || { echo "FAIL missing preload";exit 32; }
-grep -q 'class="vc-oct-banner-mobile-webp"' "$tmp" || { echo "FAIL missing picture";exit 33; }
-for f in $FILES;do grep -q "$f.vc20261019-mobile.webp" "$tmp" || { echo "FAIL missing WebP $f";exit 34; };done
+fresh=0
+for attempt in 1 2 3 4 5 6 7 8;do
+ curl --noproxy '*' -kLsS --max-time 35 --resolve vesta-cosmetics.ir:443:127.0.0.1 -o "$tmp" https://vesta-cosmetics.ir/
+ preload=no;picture=no
+ grep -q 'id="vc-oct-banner-preload"' "$tmp" && preload=yes
+ grep -q 'class="vc-oct-banner-mobile-webp"' "$tmp" && picture=yes
+ echo "HTML_FRESHNESS attempt=$attempt preload=$preload picture=$picture"
+ if [[ "$preload" == yes && "$picture" == yes ]];then fresh=1;break;fi
+ sleep 4
+done
+[[ "$fresh" == 1 ]] || { echo "FAIL optimized HTML never appeared";rm -f "$tmp";exit 32; }
+for f in $FILES;do grep -q "$f.vc20261019-mobile.webp" "$tmp" || { echo "FAIL missing WebP $f";rm -f "$tmp";exit 34; };done
 rm -f "$tmp"
 sha256sum -c "$BACKUP/originals.sha256" || exit 35
 for d in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
