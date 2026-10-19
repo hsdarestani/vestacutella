@@ -1,0 +1,42 @@
+name: Safely increase Vesta Redis cache headroom
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/deploy-vesta-redis-headroom-20261019.sh
+      - infra/docker-compose.yml
+      - .github/workflows/deploy-vesta-redis-headroom-20261019.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-redis-capacity-deploy
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax and safety checks
+        run: |
+          bash -n scripts/deploy-vesta-redis-headroom-20261019.sh
+          python3 - <<'PY'
+          from pathlib import Path
+          c=Path("infra/docker-compose.yml").read_text()
+          assert c.count('"--maxmemory", "256mb"')==1
+          assert c.count('mem_limit: 384m')==1
+          s=Path("scripts/deploy-vesta-redis-headroom-20261019.sh").read_text()
+          assert 'docker compose up' not in s
+          assert 'CONFIG SET maxmemory' in s
+          assert 'REDIS_HEADROOM_ROLLBACK' in s
+          PY
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Upload and run guarded production cache tuning
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/deploy-vesta-redis-headroom-20261019.sh "root@$HOST:/tmp/deploy-vesta-redis-headroom-20261019.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/deploy-vesta-redis-headroom-20261019.sh'
