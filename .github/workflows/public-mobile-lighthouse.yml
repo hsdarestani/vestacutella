@@ -1,4 +1,4 @@
-# 2026-10-19 baseline after Cutella import, before Redis cache tuning.
+# 2026-10-19 post Redis headroom and October mobile hero WebP rollout verification.
 # Lighthouse after offscreen product rendering: 2026-10-14
 # Final Lighthouse verification after 2026-10-14 guarded Owl CSS rollout
 name: Public mobile Lighthouse performance
