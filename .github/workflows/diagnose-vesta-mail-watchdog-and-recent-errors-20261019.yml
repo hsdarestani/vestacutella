@@ -1,0 +1,26 @@
+name: Inspect Vesta new order delivery state
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/diagnose-vesta-mail-watchdog-and-recent-errors-20261019.sh
+      - .github/workflows/diagnose-vesta-mail-watchdog-and-recent-errors-20261019.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash -n scripts/diagnose-vesta-mail-watchdog-and-recent-errors-20261019.sh
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Audit order notifications and classify recent SMTP failures
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/diagnose-vesta-mail-watchdog-and-recent-errors-20261019.sh "root@$HOST:/tmp/diagnose-vesta-mail-watchdog-and-recent-errors-20261019.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/diagnose-vesta-mail-watchdog-and-recent-errors-20261019.sh'
