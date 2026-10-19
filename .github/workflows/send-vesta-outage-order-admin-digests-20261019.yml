@@ -1,0 +1,34 @@
+name: Backfill Vesta missed admin order notices
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/vesta-order-outage-admin-digests-20261019.php
+      - scripts/send-vesta-outage-order-admin-digests-20261019.sh
+      - .github/workflows/send-vesta-outage-order-admin-digests-20261019.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-admin-mail-outage-recovery
+  cancel-in-progress: false
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate backup mail scripts
+        run: |
+          bash -n scripts/send-vesta-outage-order-admin-digests-20261019.sh
+          php -l scripts/vesta-order-outage-admin-digests-20261019.php
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Replay outage orders as daily recovery emails to store admin
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/vesta-order-outage-admin-digests-20261019.php "root@$HOST:/tmp/vesta-order-outage-admin-digests-20261019.php"
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/send-vesta-outage-order-admin-digests-20261019.sh "root@$HOST:/tmp/send-vesta-outage-order-admin-digests-20261019.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/send-vesta-outage-order-admin-digests-20261019.sh'
