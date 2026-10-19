@@ -1,0 +1,29 @@
+name: Restore Vesta WooCommerce order notification mail
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/deploy-vesta-smtp-starttls-20261019.sh
+      - .github/workflows/deploy-vesta-smtp-starttls-20261019.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-order-smtp-repair
+  cancel-in-progress: false
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash -n scripts/deploy-vesta-smtp-starttls-20261019.sh
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Apply TLS-only mail setting and submit one admin test message
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/deploy-vesta-smtp-starttls-20261019.sh "root@$HOST:/tmp/deploy-vesta-smtp-starttls-20261019.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/deploy-vesta-smtp-starttls-20261019.sh'
