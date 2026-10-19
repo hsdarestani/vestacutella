@@ -1,0 +1,26 @@
+name: Check Vesta mail TLS certificate trust
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/check-vesta-public-mail-cert-20261019.sh
+      - .github/workflows/check-vesta-public-mail-cert-20261019.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash -n scripts/check-vesta-public-mail-cert-20261019.sh
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Inspect secure SMTP certificates without logging in
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/check-vesta-public-mail-cert-20261019.sh "root@$HOST:/tmp/check-vesta-public-mail-cert-20261019.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/check-vesta-public-mail-cert-20261019.sh'
