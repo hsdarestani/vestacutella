@@ -1,0 +1,26 @@
+name: Test actual Vesta new order admin email once
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/retest-vesta-native-new-order-admin-20261019.php
+      - .github/workflows/retest-vesta-native-new-order-admin-20261019.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: php -l scripts/retest-vesta-native-new-order-admin-20261019.php
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Submit one existing real order notification to configured admin only
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/retest-vesta-native-new-order-admin-20261019.php "root@$HOST:/tmp/retest-vesta-native-new-order-admin-20261019.php"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker cp /tmp/retest-vesta-native-new-order-admin-20261019.php vc-vesta:/tmp/retest-vesta-native-new-order-admin-20261019.php && docker exec vc-vesta php -d display_errors=0 /tmp/retest-vesta-native-new-order-admin-20261019.php; r=$?; docker exec vc-vesta rm -f /tmp/retest-vesta-native-new-order-admin-20261019.php; exit $r'
