@@ -32,8 +32,12 @@ if (count($recipients) !== 1 || strpos($recipients[0], '@gmail.com') === false) 
 }
 echo "RECOVERY_RECIPIENT_CONFIRMED count=1 domain=gmail.com\n";
 $t = $wpdb->prefix . 'wc_orders';
-if ($wpdb->get_var($wpdb->prepare("SHOW TABLES LIKE %s", $t)) !== $t) {
-    fwrite(STDERR, "HPOS_ORDER_TABLE_MISSING_ABORT\n"); exit(15);
+$useHpos = $wpdb->get_var($wpdb->prepare("SHOW TABLES LIKE %s", $t)) === $t;
+if (!$useHpos) {
+    $t = $wpdb->posts;
+    echo "ORDER_STORAGE=legacy_wordpress_posts\n";
+} else {
+    echo "ORDER_STORAGE=woocommerce_hpos\n";
 }
 $allowed = array('wc-pending', 'wc-processing', 'wc-completed', 'wc-on-hold', 'wc-failed', 'wc-cancelled', 'wc-refunded');
 $first = '2026-10-11';
@@ -52,10 +56,10 @@ foreach ($range as $date) {
     $end = $date->modify('+1 day')->format('Y-m-d') . ' 00:00:00';
     $start = $day . ' 00:00:00';
     if ($day === $last) $end = $finalCutoff;
-    $ids = $wpdb->get_col($wpdb->prepare(
-        "SELECT id FROM {$t} WHERE type='shop_order' AND date_created_gmt >= %s AND date_created_gmt < %s AND status IN ('wc-pending','wc-processing','wc-completed','wc-on-hold','wc-failed','wc-cancelled','wc-refunded') ORDER BY date_created_gmt ASC, id ASC LIMIT 700",
-        $start, $end
-    ));
+    $sql = $useHpos
+        ? "SELECT id FROM {$t} WHERE type='shop_order' AND date_created_gmt >= %s AND date_created_gmt < %s AND status IN ('wc-pending','wc-processing','wc-completed','wc-on-hold','wc-failed','wc-cancelled','wc-refunded') ORDER BY date_created_gmt ASC, id ASC LIMIT 700"
+        : "SELECT ID FROM {$t} WHERE post_type='shop_order' AND post_date_gmt >= %s AND post_date_gmt < %s AND post_status IN ('wc-pending','wc-processing','wc-completed','wc-on-hold','wc-failed','wc-cancelled','wc-refunded') ORDER BY post_date_gmt ASC, ID ASC LIMIT 700";
+    $ids = $wpdb->get_col($wpdb->prepare($sql, $start, $end));
     $rows = array();
     foreach ($ids as $id) {
         $order = wc_get_order((int)$id);
