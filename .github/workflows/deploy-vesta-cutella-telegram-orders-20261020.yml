@@ -1,0 +1,32 @@
+name: Deploy Vesta Cutella Telegram order alerts
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/deploy-vesta-cutella-telegram-orders-20261020.sh
+      - .github/workflows/deploy-vesta-cutella-telegram-orders-20261020.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-cutella-telegram-order-notices
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 13
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          php -l scripts/vesta-cutella-telegram-order-worker-20261020.php
+          bash -n scripts/deploy-vesta-cutella-telegram-orders-20261020.sh
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Deploy existing Telegram bot Cutella order notices and backfill safely
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/vesta-cutella-telegram-order-worker-20261020.php "root@$HOST:/tmp/vesta-cutella-telegram-order-worker-20261020.php"
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/deploy-vesta-cutella-telegram-orders-20261020.sh "root@$HOST:/tmp/deploy-vesta-cutella-telegram-orders-20261020.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/deploy-vesta-cutella-telegram-orders-20261020.sh'
