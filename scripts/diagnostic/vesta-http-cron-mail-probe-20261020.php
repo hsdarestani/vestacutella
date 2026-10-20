@@ -30,6 +30,9 @@ add_action('vc_vesta_internal_mail_context_probe_20261020', function () {
         $r['mailer_user_matches_option']=hash_equals($expU,(string)$mail->Username)?'yes':'no';
         $r['mailer_password_matches_decrypted_option']=is_string($expected)&&hash_equals($expected,(string)$mail->Password)?'yes':'no';
         $r['mailer_autotls']=$mail->SMTPAutoTLS?'yes':'no';
+        $r['mailer_auth_type']=(string)$mail->AuthType;
+        $r['mailer_smtp_options_present']=empty($mail->SMTPOptions)?'no':'yes';
+        $r['mailer_php_version']=PHP_VERSION;
     };
     $failed=function($e) use (&$r){
         $m=strtolower($e->get_error_message());
@@ -51,6 +54,27 @@ add_action('vc_vesta_internal_mail_context_probe_20261020', function () {
         remove_action('phpmailer_init',$capture,PHP_INT_MAX);
         remove_action('wp_mail_failed',$failed,10);
         remove_action('wp_mail_succeeded',$success,10);
+    }
+    // One independent login-only handshake from the SAME HTTP/FPM process,
+    // using the same decrypted credentials; no second email is sent.
+    $direct=new \PHPMailer\PHPMailer\PHPMailer(true);
+    $direct->isSMTP();
+    $direct->Host=(string)($s['host']??'');
+    $direct->Port=(int)($s['port']??0);
+    $direct->SMTPSecure=\PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_SMTPS;
+    $direct->SMTPAutoTLS=false;
+    $direct->SMTPAuth=true;
+    $direct->Username=$expU;
+    $direct->Password=(string)$expected;
+    $direct->Timeout=10;
+    $direct->SMTPOptions=array('ssl'=>array('verify_peer'=>true,'verify_peer_name'=>true,'allow_self_signed'=>false));
+    try {
+        $auth=$direct->smtpConnect();
+        $r['direct_auth_from_http']=$auth?'success':'failed';
+        if($auth)$direct->smtpClose();
+    }catch(Throwable $e){
+        $err=strtolower($e->getMessage());
+        $r['direct_auth_from_http']=preg_match('/authenticat|535|invalid credential/',$err)?'failed_auth':(preg_match('/starttls|ssl|tls|certificate|crypto/',$err)?'failed_tls':'failed_other');
     }
     $r['state']='finished';
     update_option($key,$r,false);
