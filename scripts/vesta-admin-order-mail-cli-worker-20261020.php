@@ -21,7 +21,7 @@ if(!$mail||!$mail->is_enabled()){echo "MAIL_CLI_ADMIN_NOTIFICATION_DISABLED\n";e
 $rec=array_values(array_filter(array_map('trim',explode(',',(string)$mail->get_recipient())),'is_email'));
 if(count($rec)!==1){echo "MAIL_CLI_RECIPIENT_CHANGED_ABORT\n";exit(15);}
 $dry=(getenv('VC_VESTA_MAIL_DRY_RUN')==='1');
-$all=wc_get_orders(array('type'=>'shop_order','limit'=>180,'status'=>array('processing','completed','on-hold'),'orderby'=>'date','order'=>'ASC'));
+$all=wc_get_orders(array('type'=>'shop_order','limit'=>180,'status'=>array('processing','completed','on-hold'),'orderby'=>'date','order'=>'DESC'));
 $eligible=array();
 foreach($all as $order){
  if(!$order || !$order->get_date_created())continue;
@@ -33,6 +33,7 @@ foreach($all as $order){
  if($last && time()-$last<180)continue;
  $eligible[]=$order;
 }
+$eligible=array_reverse($eligible);
 echo "MAIL_CLI mode=".($dry?'dry':'send')." eligible=".count($eligible)." admin_count=1\n";
 if($dry){echo "MAIL_CLI_DRY_RUN_COMPLETE\n";exit(0);}
 $maxPerRun=2;$sent=0;$failed=0;$processed=0;
