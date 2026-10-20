@@ -1,0 +1,26 @@
+name: Audit Cutella-containing Vesta order Telegram notifications
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/audit-telegram-cutella-order-gap-20261020.sh
+      - .github/workflows/audit-telegram-cutella-order-gap-20261020.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash -n scripts/audit-telegram-cutella-order-gap-20261020.sh
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Inspect order hooks and imported item coverage without customer data
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/audit-telegram-cutella-order-gap-20261020.sh "root@$HOST:/tmp/audit-telegram-cutella-order-gap-20261020.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/audit-telegram-cutella-order-gap-20261020.sh'
