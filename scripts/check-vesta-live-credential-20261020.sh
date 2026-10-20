@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
-docker exec vc-vesta php -d display_errors=0 -r '
+for VC_USER in www-data root; do
+  echo "AUTH_PROCESS_USER=$VC_USER"
+  docker exec -u "$VC_USER" vc-vesta php -d display_errors=0 -r '
 require "/var/www/html/wp-load.php";
 $o=get_option("wp_mail_smtp",[]);$s=(array)($o["smtp"]??[]);
 if(($s["host"]??"")!=="server135s.irwebspace.com"){echo "ABORT_UNEXPECTED_HOST\n";exit(11);}
@@ -9,7 +11,7 @@ $stored=(string)($s["pass"]??"");$u=(string)($s["user"]??"");
 $p=\WPMailSMTP\Helpers\Crypto::decrypt($stored);
 if(!$u||!is_string($p)||$p===""){echo "NO_VALID_SAVED_CREDENTIAL\n";exit(13);}
 echo "SAVED_CREDENTIAL_FORMAT user_is_email=".(strpos($u,"@")!==false?"yes":"no")." pass_nonempty=yes\n";
-foreach([[465,\PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_SMTPS],[587,\PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_STARTTLS]] as $c){
+foreach([[465,\PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_SMTPS]] as $c){
  [$port,$secure]=$c;
  $m=new \PHPMailer\PHPMailer\PHPMailer(true);
  $m->isSMTP();$m->Host="server135s.irwebspace.com";$m->Port=$port;$m->SMTPSecure=$secure;$m->SMTPAutoTLS=($port==587);
@@ -26,4 +28,5 @@ foreach([[465,\PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_SMTPS],[587,\PHPMailer\
  }
 }
 ';
+done
 echo "SAVED_CREDENTIAL_LOGIN_ONLY_CHECK_COMPLETE"
