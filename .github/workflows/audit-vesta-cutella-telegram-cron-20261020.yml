@@ -1,0 +1,26 @@
+name: Verify Vesta Cutella Telegram order retry cycles
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/audit-vesta-cutella-telegram-cron-20261020.sh
+      - .github/workflows/audit-vesta-cutella-telegram-cron-20261020.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash -n scripts/audit-vesta-cutella-telegram-cron-20261020.sh
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Confirm unattended order notifications to existing bot chats
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/audit-vesta-cutella-telegram-cron-20261020.sh "root@$HOST:/tmp/audit-vesta-cutella-telegram-cron-20261020.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/audit-vesta-cutella-telegram-cron-20261020.sh'
