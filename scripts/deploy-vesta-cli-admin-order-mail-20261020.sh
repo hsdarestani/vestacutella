@@ -54,7 +54,7 @@ cat >"$CRON" <<'CRONTAB'
 * * * * * root /usr/bin/flock -n /run/lock/vesta-admin-order-mail-cli.lock /usr/bin/timeout 100 /bin/bash -c '/usr/bin/docker exec -u www-data -i vc-vesta php -d display_errors=0 < /srv/vestacutella/repo/scripts/vesta-admin-order-mail-cli-worker-20261020.php' >>/var/log/vesta-admin-order-mail-cli.log 2>&1
 CRONTAB
 chmod 644 "$CRON"
-grep -q '^\\* \\* \\* \\* \\* root /usr/bin/flock' "$CRON"
+grep -Fq '* * * * * root /usr/bin/flock' "$CRON"
 systemctl reload cron 2>/dev/null || systemctl restart cron
 # Initial no-op smoke test; only eligible orders created after activation may send.
 docker exec -u www-data -i vc-vesta php -d display_errors=0 < "$DEST"
