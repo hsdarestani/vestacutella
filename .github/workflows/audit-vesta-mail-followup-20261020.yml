@@ -1,0 +1,26 @@
+name: Diagnose Vesta undelivered order mail Oct 20
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/audit-vesta-mail-followup-20261020.sh
+      - .github/workflows/audit-vesta-mail-followup-20261020.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnostic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash -n scripts/audit-vesta-mail-followup-20261020.sh
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Run read-only mail incident audit, no sends or changes
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/audit-vesta-mail-followup-20261020.sh "root@$HOST:/tmp/audit-vesta-mail-followup-20261020.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/audit-vesta-mail-followup-20261020.sh'
