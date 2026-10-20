@@ -1,0 +1,29 @@
+name: Diagnose Vesta private HTTP SMTP mailer
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/run-vesta-private-http-mail-probe-20261020.sh
+      - .github/workflows/run-vesta-private-http-mail-probe-20261020.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          bash -n scripts/run-vesta-private-http-mail-probe-20261020.sh
+          php -l scripts/diagnostic/vesta-http-cron-mail-probe-20261020.php
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Compare live effective mailer config through authenticated HTTP request
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/diagnostic/vesta-http-cron-mail-probe-20261020.php "root@$HOST:/tmp/vesta-http-cron-mail-probe-20261020.php"
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/run-vesta-private-http-mail-probe-20261020.sh "root@$HOST:/tmp/run-vesta-private-http-mail-probe-20261020.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/run-vesta-private-http-mail-probe-20261020.sh'
