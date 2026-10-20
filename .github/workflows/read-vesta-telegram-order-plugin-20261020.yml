@@ -1,0 +1,26 @@
+name: Inspect Vesta Telegram order plugin source
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/read-vesta-telegram-order-plugin-20261020.sh
+      - .github/workflows/read-vesta-telegram-order-plugin-20261020.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  read:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash -n scripts/read-vesta-telegram-order-plugin-20261020.sh
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read plugin code and limited nonsecret options
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/read-vesta-telegram-order-plugin-20261020.sh "root@$HOST:/tmp/read-vesta-telegram-order-plugin-20261020.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/read-vesta-telegram-order-plugin-20261020.sh'
