@@ -1,0 +1,26 @@
+name: Canary actual Vesta Cutella order Telegram notification
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/vesta-cutella-telegram-order-worker-20261020.php
+      - .github/workflows/canary-vesta-cutella-telegram-order-20261020.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: php -l scripts/vesta-cutella-telegram-order-worker-20261020.php
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Validate imported orders and send only one existing order to configured chats
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/vesta-cutella-telegram-order-worker-20261020.php "root@$HOST:/tmp/vesta-cutella-telegram-order-worker-20261020.php"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'set -e; docker exec -u www-data -i vc-vesta php -d display_errors=0 -- --dry-run < /tmp/vesta-cutella-telegram-order-worker-20261020.php; docker exec -u www-data -i vc-vesta php -d display_errors=0 -- --canary < /tmp/vesta-cutella-telegram-order-worker-20261020.php'
