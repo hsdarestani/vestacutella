@@ -1,0 +1,35 @@
+name: Deploy Vesta admin order email CLI fallback
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/vesta-admin-order-mail-cli-worker-20261020.php
+      - scripts/deploy-vesta-cli-admin-order-mail-20261020.sh
+      - .github/workflows/deploy-vesta-cli-admin-order-mail-20261020.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-cli-admin-mail-live
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate worker and rollback deployment script
+        run: |
+          php -l scripts/vesta-admin-order-mail-cli-worker-20261020.php
+          bash -n scripts/deploy-vesta-cli-admin-order-mail-20261020.sh
+          grep -Fq 'vc_vesta_cli_admin_mail_start_20261020' scripts/vesta-admin-order-mail-cli-worker-20261020.php
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Install safe Vesta-only minute scheduled admin notifications
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/vesta-admin-order-mail-cli-worker-20261020.php "root@$HOST:/tmp/vesta-admin-order-mail-cli-worker-20261020.php"
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/deploy-vesta-cli-admin-order-mail-20261020.sh "root@$HOST:/tmp/deploy-vesta-cli-admin-order-mail-20261020.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/deploy-vesta-cli-admin-order-mail-20261020.sh'
