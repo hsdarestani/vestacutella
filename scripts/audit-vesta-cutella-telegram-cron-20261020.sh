@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 echo "AUDIT_UTC=$(date -u +%FT%TZ)"
+# Second check after at least one retry window for transient Telegram transport errors.
 test -s /etc/cron.d/vesta-cutella-telegram-orders
 echo "ORDER_BOT_CRON_PRESENT=yes"
 systemctl is-active --quiet cron
