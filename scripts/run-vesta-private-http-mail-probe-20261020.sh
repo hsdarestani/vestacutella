@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Exactly one admin-only email from real WordPress HTTP PHP runtime.
+# Exactly one admin-only email plus one login-only probe from live WordPress HTTP runtime.
 set -euo pipefail
 umask 077
 SRC=/tmp/vesta-http-cron-mail-probe-20261020.php
