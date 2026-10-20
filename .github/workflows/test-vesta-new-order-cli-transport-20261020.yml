@@ -1,0 +1,26 @@
+name: Test CLI-backed Vesta real order mail
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/test-vesta-new-order-cli-transport-20261020.php
+      - .github/workflows/test-vesta-new-order-cli-transport-20261020.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: php -l scripts/test-vesta-new-order-cli-transport-20261020.php
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Send one missed admin order email through www-data PHP CLI
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/test-vesta-new-order-cli-transport-20261020.php "root@$HOST:/tmp/test-vesta-new-order-cli-transport-20261020.php"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -u www-data -i vc-vesta php -d display_errors=0 < /tmp/test-vesta-new-order-cli-transport-20261020.php'
