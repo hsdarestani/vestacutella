@@ -101,8 +101,6 @@ foreach($eligible as $selection){
  foreach($chats as $chat){
   $hash=hash('sha256',$chat);
   if(!empty($sent[$hash]))continue;
-  $last=(int)$o->get_meta('_vc_cutella_telegram_last_attempt_v1',true);
-  if($last && time()-$last<70 && $mode!=='--canary'){ $all=false;continue; }
   $o->update_meta_data('_vc_cutella_telegram_last_attempt_v1',time());
   $o->save_meta_data();
   $result=wp_remote_post('https://api.telegram.org/bot'.$token.'/sendMessage',array(
@@ -117,7 +115,8 @@ foreach($eligible as $selection){
     $o->save_meta_data();
   }else{
     $all=false;$failedChats++;
-    echo "CUTELLA_TG_SEND chat=failed http=$http\n";
+    $errorCode=is_wp_error($result)?preg_replace('/[^a-z0-9_-]/i','',$result->get_error_code()):'none';
+    echo "CUTELLA_TG_SEND chat=failed http=$http transport=$errorCode\n";
   }
  }
  $attemptedOrders++;
