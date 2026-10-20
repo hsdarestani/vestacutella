@@ -1,89 +1,73 @@
 #!/usr/bin/env bash
-# Aggregated, read-only Vesta WooCommerce order-source report. Never outputs customer or order details.
+# Aggregates only, read-only SQL against Vesta's MariaDB. No personal/order rows logged.
 set -euo pipefail
-docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=512M -d max_execution_time=0 <<'PHP'
-<?php
-error_reporting(E_ERROR | E_PARSE);
-$_SERVER['HTTP_HOST'] = 'vesta-cosmetics.ir';
-require '/var/www/html/wp-load.php';
-if (!function_exists('wc_get_orders')) { fwrite(STDERR, "WC_UNAVAILABLE\n"); exit(2); }
-$start='2026-04-21'; $end='2026-10-21';
-$metaKeys=array('_wc_order_attribution_source_type','_wc_order_attribution_utm_source','_wc_order_attribution_utm_medium','_wc_order_attribution_referrer','_wc_order_attribution_session_entry','_wc_order_attribution_utm_campaign');
-$presence=array_fill_keys($metaKeys,0);
-$statuses=array(); $channels=array(); $monthly=array(); $methods=array(); $originTypes=array();
-$matched=0; $qualified=0; $other=0; $unknown=0; $qualifiedRevenue=0.0;
-$max=50000; $perPage=150; $page=1;
-function bucket_source($sourceType,$utm,$medium,$referrer,$entry,$via) {
-  $signals=strtolower(trim($utm.' '.$referrer.' '.$entry));
-  if (preg_match('~instagram\\.com|instagr\\.am|(^|[^a-z])instagram([^a-z]|$)|l\\.instagram\\.com|ig\\.me~i',$signals)) return 'Instagram';
-  if (preg_match('~(^|[^a-z])snapp([^a-z]|$)|snappmarket|snappfood|snappshop~i',$signals)) return 'Snapp';
-  if (preg_match('~(^|[^a-z])google([^a-z]|$)|google\\.|gclid|googleads~i',$signals)) return 'Google';
-  if (preg_match('~(^|[^a-z])facebook([^a-z]|$)|facebook\\.com|fb\\.com|l\\.facebook~i',$signals)) return 'Facebook';
-  if (preg_match('~(^|[^a-z])torob([^a-z]|$)|torob\\.com|torob\\.ir~i',$signals)) return 'Torob';
-  if (preg_match('~emalls|e-malls~i',$signals)) return 'Emalls';
-  if (preg_match('~t\\.me/|telegram|telegram\\.me~i',$signals)) return 'Telegram';
-  if (preg_match('~digikala|digistyle~i',$signals)) return 'Digikala';
-  if (preg_match('~bing\\.|yahoo\\.|duckduckgo\\.|yandex\\.~i',$signals)) return 'Other search';
-  if (preg_match('~(^|[^a-z])email([^a-z]|$)|newsletter~i',strtolower($utm.' '.$medium))) return 'Email';
-  if (preg_match('~(^|[^a-z])direct([^a-z]|$)~i',trim($utm)) || in_array(strtolower($sourceType),array('typein','direct'),true)) return 'Direct / typed';
-  if ($via === 'admin') return 'Admin created / unknown';
-  if ($via === 'rest-api') return 'API created / unknown';
-  if (in_array(strtolower($sourceType),array('social','search','referral','utm','organic'),true) || trim($utm.$referrer.$entry) !== '') return 'Other attributed';
-  return 'Unknown / untracked';
-}
-function add_metric(&$target,$key,$total) {
-  if (!isset($target[$key])) $target[$key]=array('orders'=>0,'amount'=>0.0);
-  $target[$key]['orders']++; $target[$key]['amount']+=$total;
-}
-do {
-  $res=wc_get_orders(array('type'=>'shop_order','status'=>array_keys(wc_get_order_statuses()),'limit'=>$perPage,'page'=>$page,'orderby'=>'date','order'=>'ASC','date_created'=>$start.'...'.$end,'paginate'=>true));
-  if (!is_object($res) || !isset($res->orders)) { fwrite(STDERR,"UNEXPECTED_QUERY_RESPONSE\n"); exit(3); }
-  foreach ($res->orders as $order) {
-    if (!$order) continue;
-    $created=$order->get_date_created(); if (!$created) continue;
-    $d=$created->date('Y-m-d'); if ($d<$start || $d>$end) continue;
-    $matched++;
-    $status=$order->get_status(); $statuses[$status]=($statuses[$status]??0)+1;
-    if (!in_array($status,array('processing','completed'),true)) { $other++; continue; }
-    $qualified++;
-    $net=max(0,(float)$order->get_total()-(float)$order->get_total_refunded());
-    $qualifiedRevenue+=$net;
-    $values=array();
-    foreach ($metaKeys as $key) {
-      $v=$order->get_meta($key,true);
-      $values[$key]=is_scalar($v)?trim((string)$v):'';
-      if ($values[$key]!=='') $presence[$key]++;
-    }
-    $sourceType=$values['_wc_order_attribution_source_type'];
-    $utm=$values['_wc_order_attribution_utm_source'];
-    $medium=$values['_wc_order_attribution_utm_medium'];
-    $referrer=$values['_wc_order_attribution_referrer'];
-    $entry=$values['_wc_order_attribution_session_entry'];
-    $via=(string)$order->get_created_via();
-    $bucket=bucket_source($sourceType,$utm,$medium,$referrer,$entry,$via);
-    if ($bucket==='Unknown / untracked') $unknown++;
-    add_metric($channels,$bucket,$net);
-    add_metric($monthly[$created->date('Y-m')],$bucket,$net);
-    $pay=(string)$order->get_payment_method();
-    $pay=preg_replace('/[^a-z0-9_-]/i','',strtolower($pay));
-    add_metric($methods,$pay!==''?$pay:'unknown',$net);
-    $type=preg_replace('/[^a-z0-9_-]/i','',strtolower($sourceType));
-    add_metric($originTypes,$type!==''?$type:'missing',$net);
-  }
-  if ($matched >= $max) break;
-  $pages=(int)$res->max_num_pages;
-  $page++;
-} while ($page <= $pages);
-echo "REPORT_RANGE|$start|$end\n";
-echo "SUMMARY|scanned=$matched|processing_completed=$qualified|other_status=$other|processing_completed_net_total=".round($qualifiedRevenue,2)."|untracked=$unknown|truncated=".($matched>=$max?'yes':'no')."\n";
-ksort($statuses); foreach ($statuses as $key=>$n) echo "STATUS|$key|$n\n";
-foreach($presence as $key=>$n) echo "ATTR_META|$key|$n\n";
-uasort($channels,function($a,$b){return $b['orders']<=>$a['orders'];});
-foreach($channels as $key=>$v) echo "CHANNEL|$key|".$v['orders']."|".round($v['amount'],2)."\n";
-ksort($monthly); foreach($monthly as $month=>$items) { ksort($items); foreach($items as $key=>$v) echo "MONTH_CHANNEL|$month|$key|".$v['orders']."|".round($v['amount'],2)."\n"; }
-uasort($methods,function($a,$b){return $b['orders']<=>$a['orders'];});
-foreach($methods as $key=>$v) echo "PAYMENT_GATEWAY|$key|".$v['orders']."|".round($v['amount'],2)."\n";
-uasort($originTypes,function($a,$b){return $b['orders']<=>$a['orders'];});
-foreach($originTypes as $key=>$v) echo "SOURCE_TYPE|$key|".$v['orders']."|".round($v['amount'],2)."\n";
-echo "REPORT_DONE\n";
-PHP
+q() { printf '%s\n' "$1" | docker exec -i vc-db-vesta sh -c 'exec mariadb -u"$MARIADB_USER" -p"$MARIADB_PASSWORD" "$MARIADB_DATABASE" --batch --raw --skip-column-names'; }
+prefix=$(q "SELECT LEFT(p.table_name,CHAR_LENGTH(p.table_name)-5) FROM information_schema.tables p WHERE p.table_schema=DATABASE() AND p.table_name LIKE '%posts' AND EXISTS(SELECT 1 FROM information_schema.tables x WHERE x.table_schema=DATABASE() AND x.table_name=CONCAT(LEFT(p.table_name,CHAR_LENGTH(p.table_name)-5),'postmeta')) ORDER BY p.table_name LIMIT 1;")
+[[ "$prefix" =~ ^[a-zA-Z0-9_]+$ ]] || { echo SCHEMA_UNAVAILABLE; exit 2; }
+currency=$(q "SELECT option_value FROM ${prefix}options WHERE option_name='woocommerce_currency' LIMIT 1;")
+hpos_exists=$(q "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='${prefix}wc_orders';")
+hpos_count=0
+if [[ "$hpos_exists" == 1 ]]; then
+  hpos_count=$(q "SELECT COUNT(*) FROM ${prefix}wc_orders WHERE type='shop_order' AND date_created_gmt>='2026-04-20 20:30:00' AND date_created_gmt<'2026-10-21 20:30:00';")
+fi
+if (( hpos_count > 0 )); then
+ mode=HPOS
+ raw="SELECT o.id oid, MAX(DATE_FORMAT(DATE_ADD(o.date_created_gmt,INTERVAL 210 MINUTE),'%Y-%m')) mon,
+ MAX(o.status) st, MAX(o.total_amount) amount, MAX(o.payment_method) gateway,
+ MAX(CASE WHEN m.meta_key='_wc_order_attribution_source_type' THEN LEFT(m.meta_value,255) ELSE '' END) source_type,
+ MAX(CASE WHEN m.meta_key='_wc_order_attribution_utm_source' THEN LEFT(m.meta_value,255) ELSE '' END) utm,
+ MAX(CASE WHEN m.meta_key='_wc_order_attribution_utm_medium' THEN LEFT(m.meta_value,255) ELSE '' END) medium,
+ MAX(CASE WHEN m.meta_key='_wc_order_attribution_referrer' THEN LEFT(m.meta_value,1024) ELSE '' END) referrer,
+ MAX(CASE WHEN m.meta_key='_wc_order_attribution_session_entry' THEN LEFT(m.meta_value,1024) ELSE '' END) entry
+ FROM ${prefix}wc_orders o LEFT JOIN ${prefix}wc_orders_meta m ON m.order_id=o.id AND m.meta_key IN ('_wc_order_attribution_source_type','_wc_order_attribution_utm_source','_wc_order_attribution_utm_medium','_wc_order_attribution_referrer','_wc_order_attribution_session_entry')
+ WHERE o.type='shop_order' AND o.date_created_gmt>='2026-04-20 20:30:00' AND o.date_created_gmt<'2026-10-21 20:30:00' GROUP BY o.id"
+else
+ mode=LEGACY
+ raw="SELECT o.ID oid, MAX(DATE_FORMAT(o.post_date,'%Y-%m')) mon,MAX(o.post_status) st,
+ MAX(CASE WHEN m.meta_key='_order_total' THEN CAST(m.meta_value AS DECIMAL(20,2)) ELSE 0 END) amount,
+ MAX(CASE WHEN m.meta_key='_payment_method' THEN LEFT(m.meta_value,100) ELSE '' END) gateway,
+ MAX(CASE WHEN m.meta_key='_wc_order_attribution_source_type' THEN LEFT(m.meta_value,255) ELSE '' END) source_type,
+ MAX(CASE WHEN m.meta_key='_wc_order_attribution_utm_source' THEN LEFT(m.meta_value,255) ELSE '' END) utm,
+ MAX(CASE WHEN m.meta_key='_wc_order_attribution_utm_medium' THEN LEFT(m.meta_value,255) ELSE '' END) medium,
+ MAX(CASE WHEN m.meta_key='_wc_order_attribution_referrer' THEN LEFT(m.meta_value,1024) ELSE '' END) referrer,
+ MAX(CASE WHEN m.meta_key='_wc_order_attribution_session_entry' THEN LEFT(m.meta_value,1024) ELSE '' END) entry
+ FROM ${prefix}posts o LEFT JOIN ${prefix}postmeta m ON m.post_id=o.ID AND m.meta_key IN ('_order_total','_payment_method','_wc_order_attribution_source_type','_wc_order_attribution_utm_source','_wc_order_attribution_utm_medium','_wc_order_attribution_referrer','_wc_order_attribution_session_entry')
+ WHERE o.post_type='shop_order' AND o.post_date>='2026-04-21 00:00:00' AND o.post_date<'2026-10-22 00:00:00' GROUP BY o.ID"
+fi
+echo "RANGE|2026-04-21|2026-10-21"
+echo "CONFIG|$mode|$currency"
+sql="WITH raw_orders AS ($raw),
+c AS (SELECT mon,st,COALESCE(amount,0) amount,
+CASE
+WHEN LOWER(CONCAT_WS(' ',utm,referrer,entry)) REGEXP 'instagram|instagr.am|ig.me' THEN 'Instagram'
+WHEN LOWER(CONCAT_WS(' ',utm,referrer,entry)) REGEXP 'snapp' THEN 'Snapp'
+WHEN LOWER(CONCAT_WS(' ',utm,referrer,entry)) REGEXP 'google|gclid' THEN 'Google'
+WHEN LOWER(CONCAT_WS(' ',utm,referrer,entry)) REGEXP 'facebook|fb.com' THEN 'Facebook'
+WHEN LOWER(CONCAT_WS(' ',utm,referrer,entry)) REGEXP 'torob' THEN 'Torob'
+WHEN LOWER(CONCAT_WS(' ',utm,referrer,entry)) REGEXP 'emalls' THEN 'Emalls'
+WHEN LOWER(CONCAT_WS(' ',utm,referrer,entry)) REGEXP 'telegram|t.me/' THEN 'Telegram'
+WHEN LOWER(CONCAT_WS(' ',utm,referrer,entry)) REGEXP 'digikala' THEN 'Digikala'
+WHEN LOWER(CONCAT_WS(' ',utm,referrer,entry)) REGEXP 'bing.|yahoo.|duckduckgo.|yandex.' THEN 'Other search'
+WHEN LOWER(CONCAT_WS(' ',utm,medium)) REGEXP 'email|newsletter' THEN 'Email'
+WHEN LOWER(source_type) IN ('direct','typein') OR LOWER(utm)='direct' THEN 'Direct'
+WHEN source_type<>'' OR CONCAT(utm,referrer,entry)<>'' THEN 'Other attributed'
+ELSE 'Unknown / untracked' END channel,
+CASE WHEN LOWER(source_type) REGEXP '^[a-z0-9_-]{1,30}$' THEN LOWER(source_type) ELSE 'missing' END stype,
+CASE WHEN LOWER(gateway) REGEXP '^[a-z0-9_-]{1,40}$' THEN LOWER(gateway) ELSE 'missing' END gateway,
+(source_type<>'') has_type,(utm<>'') has_utm,(referrer<>'') has_ref,(entry<>'') has_entry
+FROM raw_orders)
+SELECT tag,category,n,total FROM (
+SELECT 'SUMMARY' tag,'all' category,COUNT(*) n,ROUND(COALESCE(SUM(amount),0),2) total FROM c
+UNION ALL SELECT 'SUMMARY','active_orders',COUNT(*),ROUND(COALESCE(SUM(amount),0),2) FROM c WHERE st IN ('wc-processing','wc-completed')
+UNION ALL SELECT 'STATUS',st,COUNT(*),ROUND(COALESCE(SUM(amount),0),2) FROM c GROUP BY st
+UNION ALL SELECT 'CHANNEL',channel,COUNT(*),ROUND(COALESCE(SUM(amount),0),2) FROM c WHERE st IN ('wc-processing','wc-completed') GROUP BY channel
+UNION ALL SELECT 'MONTH_CHANNEL',CONCAT(mon,'|',channel),COUNT(*),ROUND(COALESCE(SUM(amount),0),2) FROM c WHERE st IN ('wc-processing','wc-completed') GROUP BY mon,channel
+UNION ALL SELECT 'SOURCE_TYPE',stype,COUNT(*),ROUND(COALESCE(SUM(amount),0),2) FROM c WHERE st IN ('wc-processing','wc-completed') GROUP BY stype
+UNION ALL SELECT 'PAYMENT',gateway,COUNT(*),ROUND(COALESCE(SUM(amount),0),2) FROM c WHERE st IN ('wc-processing','wc-completed') GROUP BY gateway
+UNION ALL SELECT 'CAPTURED','source_type',COALESCE(SUM(has_type),0),0 FROM c WHERE st IN ('wc-processing','wc-completed')
+UNION ALL SELECT 'CAPTURED','utm_source',COALESCE(SUM(has_utm),0),0 FROM c WHERE st IN ('wc-processing','wc-completed')
+UNION ALL SELECT 'CAPTURED','referrer',COALESCE(SUM(has_ref),0),0 FROM c WHERE st IN ('wc-processing','wc-completed')
+UNION ALL SELECT 'CAPTURED','session_entry',COALESCE(SUM(has_entry),0),0 FROM c WHERE st IN ('wc-processing','wc-completed')
+) report ORDER BY tag,category;"
+q "$sql" | sed $'s/\t/|/g'
+echo REPORT_DONE
