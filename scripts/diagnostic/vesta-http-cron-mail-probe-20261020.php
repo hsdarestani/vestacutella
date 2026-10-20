@@ -55,3 +55,16 @@ add_action('vc_vesta_internal_mail_context_probe_20261020', function () {
     $r['state']='finished';
     update_option($key,$r,false);
 },10,0);
+
+add_action('init', function () {
+    if (($_SERVER['REQUEST_METHOD']??'') !== 'POST' || !isset($_GET['vc_mail_context_probe'])) return;
+    $expected=(string)get_option('vc_vesta_mail_probe_token_20261020','');
+    $actual=(string)($_SERVER['HTTP_X_VC_MAIL_PROBE_TOKEN']??'');
+    if (strlen($expected) !== 48 || !hash_equals($expected,$actual)) {
+        status_header(403);exit;
+    }
+    do_action('vc_vesta_internal_mail_context_probe_20261020');
+    nocache_headers();
+    echo 'PROBE_EXECUTED';
+    exit;
+}, 99);
