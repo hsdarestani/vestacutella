@@ -1,0 +1,30 @@
+name: Read-only Vesta order source report
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/report-vesta-order-sources-20261021.sh
+      - .github/workflows/report-vesta-order-sources-20261021.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check shell syntax
+        run: bash -n scripts/report-vesta-order-sources-20261021.sh
+      - name: Install SSH tool
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Aggregate Vesta order sources without customer data
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          test -n "$HOST"
+          test -n "$SSHPASS"
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/report-vesta-order-sources-20261021.sh "root@$HOST:/tmp/report-vesta-order-sources-20261021.sh"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/report-vesta-order-sources-20261021.sh'
