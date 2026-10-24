@@ -1,0 +1,26 @@
+name: Diagnose Vesta recurring load 20261024
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/diag-vesta-recurring-load-20261024.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: SSH helper
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read-only high-load root cause capture
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -e
+          test -n "$HOST" && test -n "$SSHPASS"
+          timeout 65 sshpass -e scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/diag-vesta-recurring-load-20261024.sh "root@$HOST:/tmp/diag-vesta-recurring-load-20261024.sh"
+          timeout 200 sshpass -e ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/diag-vesta-recurring-load-20261024.sh'
