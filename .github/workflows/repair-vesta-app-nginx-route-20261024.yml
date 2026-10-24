@@ -1,0 +1,40 @@
+name: Repair Vesta app stale Nginx upstream
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/repair-vesta-app-nginx-route-20261024.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Safely reload Nginx DNS upstream and smoke test all sites
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -e
+          test -n "$HOST" && test -n "$SSHPASS"
+          timeout 125 sshpass -e ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REPAIR'
+          set -Eeuo pipefail
+          echo "== PRECHECK STANDALONE SHOP =="
+          code=$(curl -ksS --connect-timeout 4 --max-time 16 --resolve vesta-cosmetics.ir:443:127.0.0.1 -o /dev/null -w '%{http_code}' https://vesta-cosmetics.ir/)
+          test "$code" = 200
+          echo "== RESOLVE APP PROXY =="
+          docker inspect --format 'app_web_ip={{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' vc-vestaapp-web
+          test "$(docker inspect --format '{{.State.Running}}' vc-vestaapp-web)" = true
+          docker exec vc-nginx nginx -t
+          docker exec vc-nginx nginx -s reload
+          sleep 3
+          for d in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir; do
+            code=$(curl -ksS --connect-timeout 4 --max-time 18 --resolve "$d:443:127.0.0.1" -o /dev/null -w '%{http_code}' "https://$d/" || true)
+            echo "LOCAL $d HTTP=$code"
+            if [ "$d" != app.vesta-cosmetics.ir ]; then test "$code" = 200;fi
+          done
+          echo "== NGINX_RELOAD_APPLIED =="
+          REPAIR
