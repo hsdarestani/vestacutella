@@ -1,0 +1,24 @@
+name: Scan all Vesta MyISAM tables for corruption
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/scan-all-vesta-myisam-medium-20261024.yml"
+permissions:
+  contents: read
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 14
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Check every MyISAM table medium mode without writes
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -e
+          test -n "$HOST" && test -n "$SSHPASS"
+          timeout 60 sshpass -e scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/scan-all-vesta-myisam-medium-20261024.sh "root@$HOST:/tmp/scan-all-vesta-myisam-medium-20261024.sh"
+          timeout 690 sshpass -e ssh -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/scan-all-vesta-myisam-medium-20261024.sh'
