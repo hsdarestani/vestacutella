@@ -1,0 +1,31 @@
+name: Inspect active Ubuntu upgrade status
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/check-vesta-upgrade-status-20261024.yml"]
+permissions:
+  contents: read
+jobs:
+  status:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read progress and integrity without modifying packages
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -e
+          timeout 95 sshpass -e ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set +e
+          date -Is
+          echo "KERNEL";uname -r
+          echo "UPGRADE_STATE";cat /srv/backups/ubuntu-maintenance-20261024/status 2>/dev/null || true
+          echo "APT_RUNNING";ps -eo pid,etime,%cpu,%mem,comm,args | grep -E "apt-get|dpkg|update-initramfs|grub|linux-image" | grep -v grep | head -14 | cut -c1-180
+          echo "APT_LAST_LINES";tail -n 25 /srv/backups/ubuntu-maintenance-20261024/apt-full-upgrade.log 2>/dev/null | cut -c1-210
+          echo "DISK";df -h / | tail -1
+          echo "IO";cat /proc/pressure/io
+          echo STATUS_CHECK_COMPLETE
+          REMOTE
