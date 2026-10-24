@@ -3,6 +3,11 @@ services:
     image: redis:7.4-alpine
     container_name: vc-redis
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "4"
     command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
     mem_limit: 384m
     networks: [backend]
@@ -16,6 +21,11 @@ services:
     image: mariadb:10.11
     container_name: vc-db-cutella
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "4"
     environment:
       MARIADB_DATABASE: vestacos_cutella
       MARIADB_USER: vestacos_cutella
@@ -35,6 +45,11 @@ services:
     image: mariadb:10.11
     container_name: vc-db-vesta
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "4"
     environment:
       MARIADB_DATABASE: vestacos_m
       MARIADB_USER: vestacos_m
@@ -56,6 +71,12 @@ services:
     image: vestacutella-wordpress:php8.1-ioncube
     container_name: vc-cutella
     restart: unless-stopped
+    mem_limit: 1500m
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "4"
     depends_on:
       db-cutella:
         condition: service_healthy
@@ -69,6 +90,12 @@ services:
     image: vestacutella-wordpress:php7.4-ioncube
     container_name: vc-vesta
     restart: unless-stopped
+    mem_limit: 2900m
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "4"
     depends_on:
       db-vesta:
         condition: service_healthy
@@ -80,6 +107,11 @@ services:
     image: nginx:1.27-alpine
     container_name: vc-nginx
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "4"
     depends_on: [cutella, vesta]
     ports:
       - "80:80"
