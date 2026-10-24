@@ -1,0 +1,28 @@
+name: Benchmark Vesta Ubuntu apt mirrors read only
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/check-vesta-ubuntu-mirror-speed-20261024.yml"]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Compare fresh Ubuntu mirror response at server
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -e
+          timeout 90 sshpass -e ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set +e
+          for url in             http://de.archive.ubuntu.com/ubuntu/dists/noble-updates/InRelease             https://repo.linuxmirrors.ir/ubuntu/dists/noble-updates/InRelease             https://mirrors.pardisco.co/ubuntu/dists/noble-updates/InRelease             https://mirror.iranserver.com/ubuntu/dists/noble-updates/InRelease; do
+            echo "SOURCE=$url"
+            timeout 13 curl -kLsS --connect-timeout 4 --max-time 12 -o /dev/null -w 'STATUS=%{http_code} TOTAL=%{time_total}s SPEED=%{speed_download}bytes_s REMOTE=%{remote_ip}\n' "$url" || true
+          done
+          echo MIRROR_PROBE_COMPLETE
+          REMOTE
