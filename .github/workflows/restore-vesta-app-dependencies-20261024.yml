@@ -1,0 +1,24 @@
+name: Restore existing Vesta app dependencies
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/restore-vesta-app-dependencies-20261024.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Recover existing app backend containers
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -e
+          test -n "$HOST" && test -n "$SSHPASS"
+          timeout 65 sshpass -e scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/restore-vesta-app-dependencies-20261024.sh "root@$HOST:/tmp/restore-vesta-app-dependencies-20261024.sh"
+          timeout 185 sshpass -e ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/restore-vesta-app-dependencies-20261024.sh'
