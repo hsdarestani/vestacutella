@@ -72,3 +72,20 @@ A separate licence-free print flow was successfully deployed as a **must-use plu
 
 The new `admin-post.php` action requires an authenticated WooCommerce order manager plus a WordPress nonce; it never serves order data to anonymous visitors and sends no-store headers. The rollout takes a file-level backup under `/srv/backups/vesta-order-print-*` and automatically restores the old file if verification fails. There are no container restarts, WooCommerce order/database changes, site configuration changes, or changes to Cutella and app.vesta. CI confirmed PHP lint, WP/WooCommerce bootstrap and hook registration, synthetic (non-customer) address rendering, blocked anonymous access, origin store pages and the three public site homepages. An interactive logged-in bulk-print browser test with real orders has **not** been run. The original licence-dependent print button remains subject to the vendor error.
 
+
+
+## Production resource safeguards (24 October 2026)
+
+After the outage and VPS upgrade (5.8 GiB usable RAM), the following live protections were applied with a backup and origin smoke tests. See workflow `.github/workflows/apply-vesta-stability-20261024.yml`.
+
+- Apache prefork Vesta: `MaxRequestWorkers 12`, Cutella: `6`. Both use `StartServers 2`, `MinSpareServers 2`, `MaxSpareServers 4`, and `MaxConnectionsPerChild 400`.
+- Current containers: Vesta `docker update --memory 3040870400 --memory-swap 3670016000`; Cutella `--memory 1572864000 --memory-swap 1939865600`. These protect the host while leaving MariaDB uncapped for transactional safety.
+- Apache configs persisted on host under `/srv/vestacutella/runtime/guards/`. `/usr/local/sbin/vesta-runtime-limits-enforcer` checks and restores settings every five minutes from `/etc/cron.d/vesta-runtime-limits`; source is `scripts/vesta-runtime-limits-enforcer-20261024.sh`.
+- Future WordPress image builds include matching `mpm-prefork-guard.conf`. Docker Compose production memory settings and rotating json-file logs (20 MiB x 4 files) were validated and persisted without forcing container recreation; the rotation options take effect as containers are recreated.
+- `/usr/local/sbin/vesta-resource-watchdog`, scheduled by `/etc/cron.d/vesta-resource-watchdog`, checks available memory (warn below 1 GiB), used swap (above 512 MiB), load (18+), disk (85%+), container states, and local storefront HTTP. Alerts use the existing administrative Telegram chat IDs configured in Vesta WordPress; log rotation for the monitor is under `/etc/logrotate.d/vesta-resource-watchdog`. Alerts have a 30-minute cooldown.
+- External public availability is also monitored hourly through a conditional ChatGPT task, which notifies only on verified 5xx, timeouts or 523.
+- App `vc-vestaapp-account` and `vc-vestaapp-market` were restarted after host upgrade. The app proxy required an Nginx reload due to a stale upstream Docker IP; the three hosts subsequently passed HTTP 200 checks.
+- The live monitoring test delivered to all three configured admin Telegram recipients. Do not log or expose the stored Telegram bot token and chat IDs.
+- WooCommerce order databases, WP uploads, order status, payment settings, cron jobs, and checkout sessions were not intentionally changed. Existing host WP-Cron remains separately locked and scheduled; do not arbitrarily disable or slow it.
+
+To verify: rerun `.github/workflows/vesta-resource-baseline-20261024.yml`, inspect `/var/log/vesta-resource-watchdog.log` and `/var/log/vesta-runtime-limits-errors.log`, and smoke test storefront, cart, checkout, login and app. The live Apache rollback snapshot was created under `/srv/backups/vesta-stability-20261024T155737Z`. The future Compose persistence backup is under `/srv/backups/vesta-compose-logcaps-20261024T160718Z`. Never restore or modify DB volumes as part of memory tuning.
