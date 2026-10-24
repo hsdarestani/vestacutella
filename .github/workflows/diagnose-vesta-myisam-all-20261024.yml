@@ -1,0 +1,25 @@
+name: Diagnose all Vesta MyISAM tables after backup failure
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/diagnose-vesta-myisam-all-20261024.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Inspect MyISAM tables and medium-check known corruption read only
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -e
+          test -n "$HOST" && test -n "$SSHPASS"
+          timeout 60 sshpass -e scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/diagnose-vesta-myisam-all-20261024.sh "root@$HOST:/tmp/diagnose-vesta-myisam-all-20261024.sh"
+          timeout 360 sshpass -e ssh -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/diagnose-vesta-myisam-all-20261024.sh'
