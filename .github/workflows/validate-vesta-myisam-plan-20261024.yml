@@ -1,0 +1,35 @@
+name: Validate Vesta repair plan only
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/validate-vesta-myisam-plan-20261024.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+      - name: Script syntax validation
+        run: bash -n scripts/repair-vesta-myisam-safely-20261024.sh
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Verify MariaDB safe repair prerequisites read only
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -e
+          test -n "$HOST" && test -n "$SSHPASS"
+          timeout 70 sshpass -e ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'CHECK'
+          set -e
+          echo '=== MariaDB client capability ==='
+          docker exec vc-db-vesta mariadb --help | grep -E -- '--unbuffered|--batch' | head -5
+          echo '=== Current backup disk space ==='
+          df -h /srv/backups
+          echo '=== Existing repaired or incomplete backups (filenames only) ==='
+          find /srv/backups -maxdepth 2 -type f -name '*repaired.sql.gz' -printf '%f\n' | head -8
+          echo '=== Safe validation completed ==='
+          CHECK
