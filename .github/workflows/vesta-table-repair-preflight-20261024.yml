@@ -1,0 +1,25 @@
+name: Inspect damaged Vesta MariaDB tables
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/vesta-table-repair-preflight-20261024.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Inspect table storage engines and integrity
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -e
+          test -n "$HOST" && test -n "$SSHPASS"
+          timeout 65 sshpass -e scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/vesta-table-repair-preflight-20261024.sh "root@$HOST:/tmp/vesta-table-repair-preflight-20261024.sh"
+          timeout 200 sshpass -e ssh -o ConnectTimeout=15 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/vesta-table-repair-preflight-20261024.sh'
