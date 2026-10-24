@@ -1,0 +1,26 @@
+name: Vesta resource baseline 2026-10-24
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/vesta-resource-baseline-20261024.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up SSH helper
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Audit production resources read-only
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -e
+          test -n "$HOST" && test -n "$SSHPASS"
+          timeout 55 sshpass -e scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/read-vesta-resources-20261024.sh "root@$HOST:/tmp/read-vesta-resources-20261024.sh"
+          timeout 200 sshpass -e ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/read-vesta-resources-20261024.sh'
