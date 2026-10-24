@@ -1,0 +1,24 @@
+name: Validate production Compose log rotation and caps after parser fix
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/persist-vesta-compose-guards-retry-20261024.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Patch production Compose with backup and validate only
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -e
+          test -n "$HOST" && test -n "$SSHPASS"
+          timeout 65 sshpass -e scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/persist-vesta-compose-guards-20261024.sh "root@$HOST:/tmp/persist-vesta-compose-guards-20261024.sh"
+          timeout 175 sshpass -e ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/persist-vesta-compose-guards-20261024.sh'
