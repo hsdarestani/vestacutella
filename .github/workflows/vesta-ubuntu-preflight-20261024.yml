@@ -1,0 +1,25 @@
+name: Vesta Ubuntu OS upgrade preflight
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/vesta-ubuntu-preflight-20261024.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Inspect kernel and simulate safe Ubuntu upgrade
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -e
+          test -n "$HOST" && test -n "$SSHPASS"
+          timeout 80 sshpass -e scp -o ConnectTimeout=20 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/vesta-ubuntu-preflight-20261024.sh "root@$HOST:/tmp/vesta-ubuntu-preflight-20261024.sh"
+          timeout 310 sshpass -e ssh -o ConnectTimeout=20 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/vesta-ubuntu-preflight-20261024.sh'
