@@ -86,6 +86,10 @@ for d in vesta-cosmetics.ir cutellashop.ir; do
  done
 done
 echo "== PERSISTENT REAPPLICATION SCRIPT =="
+mkdir -p /srv/vestacutella/runtime/guards
+chmod 700 /srv/vestacutella/runtime/guards
+install -m 600 "$BACKUP/vc-vesta.new.conf" /srv/vestacutella/runtime/guards/vc-vesta.conf
+install -m 600 "$BACKUP/vc-cutella.new.conf" /srv/vestacutella/runtime/guards/vc-cutella.conf
 install -m 700 /tmp/vesta-runtime-limits-enforcer-20261024.sh /usr/local/sbin/vesta-runtime-limits-enforcer
 mkdir -p /etc/cron.d
 cat > /etc/cron.d/vesta-runtime-limits <<'CRON'
