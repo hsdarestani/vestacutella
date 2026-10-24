@@ -1,0 +1,23 @@
+name: Verify MariaDB lock client compatibility
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/verify-vesta-lock-client-20261024.yml"
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Check existing client accepts lock-session switches without locking tables
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -e
+          test -n "$HOST" && test -n "$SSHPASS"
+          timeout 70 sshpass -e ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec vc-db-vesta sh -c '\''MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb --unbuffered --batch --skip-column-names -uroot "$MARIADB_DATABASE" -e "SELECT 1;"'\''' 
