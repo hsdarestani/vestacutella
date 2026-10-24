@@ -1,0 +1,42 @@
+name: Reboot and verify upgraded Vesta Ubuntu kernel
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-production-os-maintenance
+  cancel-in-progress: false
+jobs:
+  reboot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 16
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Schedule guarded OS reboot after completed apt update
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -e
+          test -n "$HOST" && test -n "$SSHPASS"
+          timeout 55 sshpass -e scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/vesta-ubuntu-scheduled-reboot-20261024.sh "root@$HOST:/tmp/vesta-ubuntu-scheduled-reboot-20261024.sh"
+          timeout 75 sshpass -e ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/vesta-ubuntu-scheduled-reboot-20261024.sh'
+      - name: Verify updated boot, Docker and three stores
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -u
+          sleep 65
+          for attempt in $(seq 1 22); do
+            echo "POSTBOOT_PROBE attempt=$attempt"
+            if timeout 130 sshpass -e ssh -o ConnectTimeout=12 -o ConnectionAttempts=1 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' < scripts/verify-vesta-after-ubuntu-reboot-20261024.sh; then
+              echo POSTBOOT_VERIFIED
+              exit 0
+            fi
+            echo POSTBOOT_NOT_YET_HEALTHY
+            sleep 20
+          done
+          echo POSTBOOT_FAILED_AFTER_RETRIES
+          exit 42
