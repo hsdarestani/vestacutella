@@ -1,0 +1,17 @@
+name: Check Vesta edge versus origin from outside Iran
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/vesta-external-route-probe-20261024.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - name: Public Cloudflare and pinned-origin comparison
+        run: bash scripts/vesta-external-route-probe-20261024.sh
