@@ -1,0 +1,26 @@
+name: Vesta MyISAM controlled repair
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-db-recovery
+  cancel-in-progress: false
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 26
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash -n scripts/repair-vesta-myisam-safely-20261024.sh
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Backup and repair two MyISAM tables
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -e
+          test -n "$HOST" && test -n "$SSHPASS"
+          timeout 75 sshpass -e scp -o ConnectTimeout=18 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/repair-vesta-myisam-safely-20261024.sh "root@$HOST:/tmp/repair-vesta-myisam-safely-20261024.sh"
+          timeout 1280 sshpass -e ssh -o ConnectTimeout=18 -o ServerAliveInterval=15 -o ServerAliveCountMax=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/repair-vesta-myisam-safely-20261024.sh'
