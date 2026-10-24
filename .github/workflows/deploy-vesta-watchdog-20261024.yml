@@ -1,0 +1,33 @@
+name: Install Vesta five-minute resource alerts
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/deploy-vesta-watchdog-20261024.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: SSH helper
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Copy monitoring files to upgraded Vesta host
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -e
+          test -n "$HOST" && test -n "$SSHPASS"
+          for f in vesta-health-watchdog-20261024.sh vesta-resource-telegram-20261024.php deploy-vesta-watchdog-20261024.sh; do
+            timeout 55 sshpass -e scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "scripts/$f" "root@$HOST:/tmp/$f"
+          done
+      - name: Install and verify monitoring
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -e
+          timeout 250 sshpass -e ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/deploy-vesta-watchdog-20261024.sh'
