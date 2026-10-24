@@ -1,0 +1,24 @@
+name: Back up remaining Vesta DB before Action Scheduler repair
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/vesta-action-scheduler-backup-gate-20261024.yml"
+permissions:
+  contents: read
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Secure production SQL backup without changing data
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -e
+          test -n "$HOST" && test -n "$SSHPASS"
+          timeout 75 sshpass -e scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/vesta-action-scheduler-backup-gate-20261024.sh "root@$HOST:/tmp/vesta-action-scheduler-backup-gate-20261024.sh"
+          timeout 750 sshpass -e ssh -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/vesta-action-scheduler-backup-gate-20261024.sh'
