@@ -40,7 +40,7 @@ for site in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir; do
 done
 echo "=== VERIFY TARGETS ARE MYISAM ==="
 for table in wp_commentmeta wp_wsal_metadata; do
-  engine=$(timeout 14 docker exec vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot --batch --skip-column-names "$MARIADB_DATABASE" -e "SHOW TABLE STATUS LIKE '\'''$table''\''"' | awk 'NR==1 {print $2}')
+  engine=$(timeout 14 docker exec vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot --batch --skip-column-names "$MARIADB_DATABASE" -e "SHOW TABLE STATUS"' | awk -v t="$table" '$1==t {print $2}')
   echo "$table ENGINE=$engine"
   test "$engine" = MyISAM || { echo ABORT_UNEXPECTED_ENGINE; exit 25; }
 done
@@ -90,9 +90,9 @@ echo "MYISAM_RAW_BACKUP_VERIFIED"
 echo "=== TARGETED REPAIR MYISAM TABLES ==="
 for table in wp_commentmeta wp_wsal_metadata;do
   echo "REPAIRING $table"
-  timeout 450 docker exec vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot --batch "$MARIADB_DATABASE" -e "REPAIR TABLE \`'$table'\`;"' | tee "$backup/$table.repair-result.txt"
+  timeout 450 docker exec vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot --batch "$MARIADB_DATABASE" -e "REPAIR TABLE $1;"' sh "$table" | tee "$backup/$table.repair-result.txt"
   if grep -Eiq 'error|failed|corrupt|crashed' "$backup/$table.repair-result.txt";then echo "REPAIR_REPORTED_ERROR $table";exit 29;fi
-  timeout 120 docker exec vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot --batch "$MARIADB_DATABASE" -e "CHECK TABLE \`'$table'\` EXTENDED;"' | tee "$backup/$table.check-result.txt"
+  timeout 120 docker exec vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot --batch "$MARIADB_DATABASE" -e "CHECK TABLE $1 EXTENDED;"' sh "$table" | tee "$backup/$table.check-result.txt"
   grep -Eqi '[[:space:]]OK[[:space:]]*$' "$backup/$table.check-result.txt" || { echo "CHECK_DID_NOT_PASS $table";exit 30; }
 done
 echo "=== NEW COMPLETE VESTA SQL BACKUP ==="
