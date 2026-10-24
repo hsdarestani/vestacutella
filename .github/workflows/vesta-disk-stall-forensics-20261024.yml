@@ -1,0 +1,25 @@
+name: Vesta ext4 disk stall incident forensics
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/vesta-disk-stall-forensics-20261024.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  forensic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read-only kernel IO and virtio block diagnostics
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -e
+          test -n "$HOST" && test -n "$SSHPASS"
+          timeout 65 sshpass -e scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/vesta-disk-stall-forensics-20261024.sh "root@$HOST:/tmp/vesta-disk-stall-forensics-20261024.sh"
+          timeout 155 sshpass -e ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/vesta-disk-stall-forensics-20261024.sh'
