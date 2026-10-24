@@ -1,0 +1,59 @@
+name: Emergency Vesta host recovery 2026-10-24
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/emergency-vesta-recover-20261024.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - name: SSH lightweight diagnostics and guarded Docker recovery
+        shell: bash
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -uo pipefail
+          if [[ -z "${HOST:-}" || -z "${SSHPASS:-}" ]]; then echo "Missing SSH configuration"; exit 1; fi
+          sudo apt-get update -qq >/dev/null 2>&1 || true
+          sudo apt-get install -y -qq sshpass >/dev/null 2>&1 || true
+          export SSHPASS
+          timeout 750 sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=25 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "root@$HOST" 'bash -s' <<'RECOVERY'
+          set +e
+          echo "==== HOST START ===="
+          date -Is
+          uptime
+          timeout 8 free -h
+          timeout 8 df -h /
+          timeout 8 df -ih /
+          timeout 8 systemctl is-active docker
+          timeout 8 ss -lntp | grep -E '(:22 |:80 |:443 )' | head -16
+          echo "==== DOCKER CHECK ===="
+          timeout 16 docker ps --format '{{.Names}} {{.Status}}'
+          docker_status=$?
+          echo "DOCKER_PS_RC=$docker_status"
+          if [ "$docker_status" -ne 0 ]; then
+            echo "==== GUARDED DOCKER RESTART ===="
+            timeout 90 systemctl restart docker
+            restart_rc=$?
+            echo "DOCKER_RESTART_RC=$restart_rc"
+            sleep 7
+          fi
+          echo "==== AFTER ===="
+          timeout 12 docker ps --format '{{.Names}} {{.Status}}'
+          echo "DOCKER_AFTER_RC=$?"
+          timeout 12 ss -lntp | grep -E '(:80 |:443 )' | head -12
+          for host in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir; do
+            timeout 13 curl -skS --connect-timeout 5 --max-time 11 --resolve "$host:443:127.0.0.1" -o /dev/null -w "HOST_LOCAL_HTTPS $host http=%{http_code} ttfb=%{time_starttransfer} total=%{time_total}\n" "https://$host/" || true
+          done
+          echo "==== SYSTEM LOGS ===="
+          timeout 12 journalctl -u docker -n 28 --no-pager -o short-iso 2>&1 | tail -28
+          echo "==== HOST END ===="
+          RECOVERY
