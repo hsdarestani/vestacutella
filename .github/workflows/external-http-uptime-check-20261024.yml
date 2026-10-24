@@ -1,0 +1,29 @@
+name: External HTTP uptime check for Vesta services
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/external-http-uptime-check-20261024.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: External network HTTP probes with one retry
+        shell: bash
+        run: |
+          for url in https://vesta-cosmetics.ir/ https://cutellashop.ir/ https://app.vesta-cosmetics.ir/; do
+            echo "=== CHECK $url ==="
+            for attempt in 1 2; do
+              set +e
+              result=$(curl --location --silent --show-error --output /dev/null --connect-timeout 12 --max-time 25 --write-out 'http=%{http_code} ip=%{remote_ip} total=%{time_total} effective=%{url_effective}' "$url" 2>&1)
+              rc=$?
+              set -e
+              echo "ATTEMPT=$attempt EXIT=$rc $result"
+              if [ "$rc" = 0 ] && [[ "$result" =~ http=([0-9]{3}) ]] && [ "${BASH_REMATCH[1]}" -ge 200 ] && [ "${BASH_REMATCH[1]}" -lt 500 ]; then break; fi
+              [ "$attempt" = 1 ] && sleep 3
+            done
+          done
