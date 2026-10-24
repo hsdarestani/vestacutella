@@ -19,4 +19,5 @@ RUN set -eux; \
     php -v; \
     php -m | grep -i ionCube
 
+COPY mpm-prefork-guard.conf /etc/apache2/mods-available/mpm_prefork.conf
 COPY zz-performance.ini /usr/local/etc/php/conf.d/zz-performance.ini
