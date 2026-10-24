@@ -1,0 +1,30 @@
+name: Upgrade Vesta Ubuntu 24.04 OS and kernel
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/vesta-ubuntu-full-update-20261024.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-production-os-maintenance
+  cancel-in-progress: false
+jobs:
+  upgrade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate controlled maintenance script
+        run: bash -n scripts/vesta-ubuntu-full-update-20261024.sh
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Verify live SQL backups and install security/kernel updates
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -e
+          test -n "$HOST" && test -n "$SSHPASS"
+          timeout 65 sshpass -e scp -o ConnectTimeout=18 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/vesta-ubuntu-full-update-20261024.sh "root@$HOST:/tmp/vesta-ubuntu-full-update-20261024.sh"
+          timeout 1460 sshpass -e ssh -o ConnectTimeout=18 -o ServerAliveInterval=15 -o ServerAliveCountMax=6 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/vesta-ubuntu-full-update-20261024.sh'
