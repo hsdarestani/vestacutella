@@ -1,0 +1,26 @@
+name: Recover Vesta after server upgrade
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/recover-vesta-after-upgrade-20261024.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 16
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SSH helper
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Run bounded existing-container recovery
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -e
+          test -n "$HOST" && test -n "$SSHPASS"
+          timeout 130 sshpass -e scp -o ConnectTimeout=18 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/recover-vesta-after-upgrade-20261024.sh "root@$HOST:/tmp/recover-vesta-after-upgrade-20261024.sh"
+          timeout 550 sshpass -e ssh -o ConnectTimeout=18 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/recover-vesta-after-upgrade-20261024.sh'
