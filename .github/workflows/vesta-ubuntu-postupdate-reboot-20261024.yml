@@ -1,5 +1,8 @@
 name: Reboot and verify upgraded Vesta Ubuntu kernel
 on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/vesta-ubuntu-postupdate-reboot-20261024.yml"]
   workflow_dispatch:
 permissions:
   contents: read
