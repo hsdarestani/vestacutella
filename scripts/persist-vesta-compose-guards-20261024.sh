@@ -18,7 +18,7 @@ for name in names:
     x='    container_name: vc-'+name
     if s.count(x)!=1:raise SystemExit("ABORT compose drift "+name)
     start=s.index(x)
-    next_service=re.search(r"(?m)^  [A-Za-z0-9_-]+:\\s*$",s[start+len(x):])
+    next_service=re.search(r"(?m)^  [A-Za-z0-9_-]+:\s*$",s[start+len(x):])
     ending=start+len(x)+next_service.start() if next_service else len(s)
     chunk=s[start:ending]
     if '    logging:' not in chunk:
