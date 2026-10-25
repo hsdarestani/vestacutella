@@ -1,0 +1,44 @@
+name: Vesta incident reboot and outage forensics 2026-10-25
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/vesta-incident-reboot-forensics-20261025.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  forensic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Prepare SSH
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass >/dev/null
+      - name: Read-only forensics of unexpected reboot
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          test -n "$HOST" && test -n "$SSHPASS"
+          export SSHPASS
+          timeout 240 sshpass -e ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'CHECK'
+          set +e
+          export LC_ALL=C
+          echo "=== CURRENT ==="; date -Is; uptime -s; uptime; uname -r
+          echo "=== BOOT HISTORY ==="; journalctl --list-boots --no-pager | tail -12
+          echo "=== REBOOT AND SHUTDOWN UTMP ==="; last -x 2>/dev/null | grep -E '^reboot|^shutdown' | head -18
+          echo "=== PREVIOUS BOOT LAST KERNEL MESSAGES ==="; timeout 15 journalctl -k -b -1 -n 85 --no-pager -o short-iso 2>&1 | tail -85 | cut -c 1-280
+          echo "=== PREVIOUS BOOT OOM PANIC HANG REBOOT ==="; timeout 15 journalctl -b -1 --no-pager -o short-iso 2>&1 | grep -Ei 'oom|out of memory|killed process|panic|reboot|shutting down|shutdown.target|reached target power|watchdog|hung task|blocked for more|EXT4-fs error|I/O error|systemd-shutdown|unattended.*upgrade|hardware error|machine check' | tail -85 | cut -c 1-260
+          echo "=== CURRENT BOOT STARTUP ==="; timeout 12 journalctl -b -n 60 --no-pager -o short-iso 2>&1 | grep -Ei 'recover|error|fail|reboot|watchdog|oom|docker|start|database|redis' | tail -40 | cut -c 1-260
+          echo "=== PREVIOUS BOOT LAST LOGS ==="; timeout 12 journalctl -b -1 -n 32 --no-pager -o short-iso 2>&1 | tail -32 | cut -c 1-260
+          echo "=== UNATTENDED UPGRADES REBOOT CONFIG ==="; grep -hE 'Automatic-Reboot|AutoFixInterruptedDpkg|Unattended-Upgrade|APT::Periodic' /etc/apt/apt.conf.d/20auto-upgrades /etc/apt/apt.conf.d/50unattended-upgrades 2>/dev/null | grep -vE '^[[:space:]]*//' | head -30
+          echo "=== UNATTENDED UPGRADES RECENT ACTION ==="; timeout 5 tail -40 /var/log/unattended-upgrades/unattended-upgrades.log 2>/dev/null | grep -Ei 'upgrade|reboot|install|error|shutdown|run|package' | tail -25 | cut -c 1-220
+          echo "=== RECENT APT HISTORY ==="; timeout 5 tail -35 /var/log/apt/history.log 2>/dev/null | cut -c 1-220
+          echo "=== RESOURCE WATCHDOG ==="; timeout 5 tail -15 /var/log/vesta-resource-watchdog.log 2>/dev/null | cut -c 1-240
+          echo "=== PERSISTENT SYSTEMD TIMERS ==="; timeout 8 systemctl list-timers --all --no-pager | grep -Ei 'reboot|restart|shutdown|apt|unattended|upgrade' | head -18
+          echo "=== DOCKER CONTAINER RESTART AND HEALTH ==="; timeout 12 docker ps -a --format '{{.Names}}|{{.Status}}'
+          echo "=== LOCAL ORIGIN CHECKS ==="
+          for domain in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir; do
+            timeout 12 curl -ksS --connect-timeout 5 --max-time 10 --resolve "$domain:443:127.0.0.1" -o /dev/null -w "$domain status=%{http_code} total=%{time_total} time_starttransfer=%{time_starttransfer}\n" "https://$domain/" || true
+          done
+          CHECK
