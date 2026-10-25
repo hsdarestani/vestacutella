@@ -27,3 +27,4 @@ jobs:
               [ "$attempt" = 1 ] && sleep 3
             done
           done
+# Recheck external routes 2026-10-25 recurrent downtime
