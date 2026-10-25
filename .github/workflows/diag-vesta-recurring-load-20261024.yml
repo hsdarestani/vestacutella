@@ -24,3 +24,4 @@ jobs:
           test -n "$HOST" && test -n "$SSHPASS"
           timeout 65 sshpass -e scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/diag-vesta-recurring-load-20261024.sh "root@$HOST:/tmp/diag-vesta-recurring-load-20261024.sh"
           timeout 200 sshpass -e ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/diag-vesta-recurring-load-20261024.sh'
+# Incident recheck 2026-10-25: read-only inspection after renewed storefront outage
