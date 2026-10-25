@@ -1,5 +1,7 @@
 name: External HTTP uptime check for Vesta services
 on:
+  schedule:
+    - cron: '*/5 * * * *'
   push:
     branches: [main]
     paths:
@@ -7,24 +9,38 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: vesta-external-watch
+  cancel-in-progress: false
 jobs:
   probe:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: External network HTTP probes with one retry
+      - name: Check three storefronts from an independent network
         shell: bash
         run: |
-          for url in https://vesta-cosmetics.ir/ https://cutellashop.ir/ https://app.vesta-cosmetics.ir/; do
-            echo "=== CHECK $url ==="
+          failed=0
+          for domain in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir; do
+            echo "=== EXTERNAL $domain ==="
+            healthy=0
             for attempt in 1 2; do
-              set +e
-              result=$(curl --location --silent --show-error --output /dev/null --connect-timeout 12 --max-time 25 --write-out 'http=%{http_code} ip=%{remote_ip} total=%{time_total} effective=%{url_effective}' "$url" 2>&1)
-              rc=$?
-              set -e
-              echo "ATTEMPT=$attempt EXIT=$rc $result"
-              if [ "$rc" = 0 ] && [[ "$result" =~ http=([0-9]{3}) ]] && [ "${BASH_REMATCH[1]}" -ge 200 ] && [ "${BASH_REMATCH[1]}" -lt 500 ]; then break; fi
-              [ "$attempt" = 1 ] && sleep 3
+              code=$(curl -4 -sS --connect-timeout 7 --max-time 18 -o /dev/null -w '%{http_code}' "https://$domain/" 2>/dev/null) || code=000
+              echo "ATTEMPT=$attempt DOMAIN=$domain EDGE_HTTP=$code"
+              case "$code" in
+                200|301|302) healthy=1; break ;;
+              esac
+              sleep 8
             done
+            if [ "$healthy" = 0 ]; then
+              origin_code=$(curl -4 -k -sS --connect-timeout 6 --max-time 16 --resolve "$domain:443:193.177.242.64" -o /dev/null -w '%{http_code}' "https://$domain/" 2>/dev/null) || origin_code=000
+              echo "::error::DOMAIN=$domain EDGE_HTTP=$code DIRECT_ORIGIN_HTTP=$origin_code"
+              case "$origin_code" in
+                200|301|302) echo "CAUSE_HINT=edge or routing; reboot of VPS would be inappropriate" ;;
+                *) echo "CAUSE_HINT=origin unavailable; inspect VPS incident journal" ;;
+              esac
+              failed=1
+            fi
           done
-# Recheck external routes 2026-10-25 recurrent downtime
+          if [ "$failed" -eq 1 ]; then exit 1; fi
+          echo "EXTERNAL_ALL_HEALTHY"
