@@ -21,12 +21,22 @@ both=0
 if ((vf==1 && cf==1));then both=$(( $(readnum "$STATE/both")+1 ));fi
 echo "$both" >"$STATE/both"
 logger -t vesta-recovery "Degraded: vesta=$v cutella=$c consecutive=$fail simultaneous=$both"
+notify(){
+  local message="$1"
+  logger -t vesta-recovery "ALERT: $message"
+  if [ "$DRY" != 1 ] && [ -r /usr/local/lib/vesta-resource-telegram.php ];then
+    timeout 22 docker exec -e VESTA_RESOURCE_ALERT_TEXT="$message" -u www-data -i vc-vesta php -d display_errors=0 < /usr/local/lib/vesta-resource-telegram.php >/dev/null 2>&1 || true
+  fi
+}
 if ((fail==2 || both==3 || both==6));then
   p="$STATE/incidents/$(date -u +%Y%m%dT%H%M%SZ)"
   mkdir -p "$p";chmod 700 "$p"
-  (date -Is;uptime;free -h;df -h /;cat /proc/pressure/io;ps -eo stat,pcpu,rss,wchan:20,comm | head -50;timeout 6 docker ps -a) >"$p/host.txt" 2>&1
+  (date -Is;uptime;free -h;df -h /;cat /proc/pressure/io;ps -eo stat,pcpu,rss,wchan:20,comm | head -50;timeout 6 docker ps -a;timeout 8 docker stats --no-stream;timeout 7 iostat -dx 1 2) >"$p/host.txt" 2>&1
   timeout 8 journalctl -k -n 80 --no-pager >"$p/kernel.txt" 2>&1 || true
+  timeout 8 journalctl -u docker -n 80 --no-pager >"$p/docker.txt" 2>&1 || true
+  logger -t vesta-recovery "EVIDENCE_SAVED $p"
 fi
+if ((fail==2));then notify "Vesta outage detected. Origin response Vesta=$v Cutella=$c. Host evidence saved $(date -u +%FT%TZ)";fi
 if ((fail>=3 && both==0));then
   for entry in "vc-vesta:$vf" "vc-cutella:$cf";do
     name=${entry%%:*};bad=${entry#*:}
@@ -36,12 +46,14 @@ if ((fail>=3 && both==0));then
     if ((now-last>=1800));then
       echo "$now" >"$marker"
       logger -t vesta-recovery "Container restart planned: $name"
+      notify "Vesta staged recovery: restarting $name after repeated failed origin checks"
       if [ "$DRY" != 1 ];then timeout 30 docker restart -t 15 "$name" >/dev/null 2>&1 || true;fi
     fi
   done
 fi
 if ((both==3));then
   logger -t vesta-recovery "Reverse proxy restart planned"
+  notify "Vesta incident: two shops unavailable 3 checks, Nginx restart attempted"
   if [ "$DRY" != 1 ];then timeout 30 docker restart -t 15 vc-nginx >/dev/null 2>&1 || true;fi
 fi
 if ((both>=6));then
@@ -56,6 +68,7 @@ if ((both>=6));then
       case "$v2:$c2" in 200:*|301:*|302:*|*:200|*:301|*:302) exit 0;; esac
       if [ "$DRY" = 1 ];then logger -t vesta-recovery "DRY_RUN_WOULD_REBOOT";exit 0;fi
       echo "$now" >"$STATE/reboot_at";sync
+      notify "Vesta incident: both shop origins failed 6 consecutive checks. Graceful VPS reboot requested."
       logger -t vesta-recovery "Host reboot requested after six confirmed origin failures"
       systemctl reboot --no-block
     fi
