@@ -1,0 +1,39 @@
+name: Investigate orderly Vesta poweroff trigger 2026-10-25
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/vesta-shutdown-trigger-20261025.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  investigate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Install SSH
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass >/dev/null
+      - name: Inspect shutdown trigger from system journal
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          test -n "$HOST" && test -n "$SSHPASS"
+          export SSHPASS
+          timeout 190 sshpass -e ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'CHECK'
+          set +e
+          export LC_ALL=C
+          echo "=== SHUTDOWN INITIATION WINDOW - SYS ==="
+          timeout 20 journalctl -b -1 --since '2026-10-25 20:11:05' --until '2026-10-25 20:11:35' -o short-iso --no-pager 2>&1 | grep -Ev 'UFW BLOCK|CRON\[' | head -145 | cut -c 1-245
+          echo "=== AUTH AND LOGIN ACTIONS BEFORE POWER OFF ==="
+          timeout 15 journalctl -b -1 --since '2026-10-25 20:00:00' --until '2026-10-25 20:11:33' -o short-iso --no-pager 2>&1 | grep -Ei '(sudo\[|polkit|systemd-logind|systemctl.*(poweroff|shutdown|reboot)|power button|power key|requested shutdown|requesting power|requested reboot|shutting down|qemu.*agent|reboot.*authorized)' | grep -vE 'UFW BLOCK|CRON\[' | tail -55 | cut -c 1-245
+          echo "=== SHUTDOWN SERVICE LOG ==="
+          timeout 10 journalctl -b -1 -u systemd-logind -u ssh -u qemu-guest-agent -o short-iso --no-pager --since '2026-10-25 20:05' --until '2026-10-25 20:11:35' 2>&1 | tail -60 | cut -c 1-245
+          echo "=== DANGEROUS SCHEDULED COMMAND LOCATIONS (filenames only) ==="
+          timeout 12 grep -RliE '\b(systemctl[[:space:]]+(poweroff|reboot)|shutdown[[:space:]]+-[hrP]|init[[:space:]]+[06])\b' /etc/cron.d /etc/crontab /etc/systemd/system /usr/local/sbin 2>/dev/null | head -25
+          echo "=== SYSTEM TIME CORRECTION ==="
+          timedatectl show -p NTPSynchronized -p Timezone -p LocalRTC -p NTP
+          echo "=== HOST SHUTDOWN LOG SIGNAL ==="
+          timeout 10 journalctl -b -1 -o short-iso --no-pager --since '2026-10-25 20:11:20' --until '2026-10-25 20:11:34' 2>&1 | grep -Ei 'poweroff|reboot|shutdown|stopping|session|logind|docker|container|received' | head -72 | cut -c 1-245
+          CHECK
