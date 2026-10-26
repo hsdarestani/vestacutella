@@ -1,4 +1,5 @@
 name: External HTTP uptime check for Vesta services
+# Manual independent-network incident recheck on 2026-10-26
 on:
   schedule:
     - cron: '*/5 * * * *'
