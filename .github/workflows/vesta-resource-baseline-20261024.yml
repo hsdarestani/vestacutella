@@ -1,4 +1,5 @@
 name: Vesta resource baseline 2026-10-24
+# Read-only incident recheck requested 2026-10-26
 on:
   push:
     branches: [main]
