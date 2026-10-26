@@ -1,0 +1,50 @@
+name: Vesta overnight incident evidence 2026-10-26
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/vesta-overnight-incident-20261026.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - name: Install remote audit utility
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass >/dev/null
+      - name: Inspect historical recovery events without modifying production
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          test -n "$HOST" && test -n "$SSHPASS"
+          export SSHPASS
+          timeout 230 sshpass -e ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new "root@$HOST" 'bash -s' <<'CHECK'
+          set +e
+          export LC_ALL=C
+          START='2026-10-25 18:00:00'
+          END='2026-10-26 10:00:00'
+          echo '=== CURRENT ==='; date -Is; uptime -s; uptime
+          echo '=== BOOT TIME HISTORY ==='; journalctl --list-boots --no-pager | tail -8
+          echo '=== SHUTDOWNS/REBOOTS ==='; last -x -F 2>/dev/null | grep -E '^reboot|^shutdown' | head -12
+          echo '=== AUTOMATIC RECOVERY LOG ==='
+          timeout 12 journalctl -t vesta-recovery --since "$START" --until "$END" -o short-iso --no-pager 2>&1 | grep -Ei 'Degraded|ALERT|restart|reboot|EVIDENCE_SAVED|BOOT_GRACE|failed|healthy' | tail -95 | cut -c 1-250
+          echo '=== MONITOR ALERTS IN WINDOW ==='
+          timeout 5 awk '$0 ~ /2026-10-25|2026-10-26/ && $0 ~ /ALERT|WARN|UNHEALTHY|CRITICAL|FAIL|DEGRADED/ {print}' /var/log/vesta-resource-watchdog.log 2>/dev/null | tail -65 | cut -c 1-240
+          echo '=== HOST-LEVEL POWER AND ERROR SIGNALS ==='
+          timeout 12 journalctl --since "$START" --until "$END" --no-pager -o short-iso 2>&1 | grep -Ei 'guest-shutdown|hypervisor initiated|system is powering|system is rebooting|oom-kill|out of memory|killed process|kernel panic|ext4-fs error|I/O error|blocked for more|host reboot requested|vesta-recovery.*(Degraded|ALERT|restart|reboot|EVIDENCE_SAVED)' | tail -90 | cut -c 1-255
+          echo '=== INCIDENT EVIDENCE DIRECTORIES ==='
+          if test -d /var/lib/vesta-guarded-recovery/incidents; then find /var/lib/vesta-guarded-recovery/incidents -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | tail -15; fi
+          echo '=== RECOVERY STATE (nonsecret integers) ==='
+          for f in fail both reboot_at restart_vc-vesta restart_vc-cutella; do if [ -f /var/lib/vesta-guarded-recovery/"$f" ]; then printf '%s=' "$f"; head -c 16 /var/lib/vesta-guarded-recovery/"$f"; echo; fi; done
+          echo '=== CONTAINER LIFECYCLE ==='
+          for c in vc-vesta vc-cutella vc-nginx vc-db-vesta vc-db-cutella vc-redis; do timeout 4 docker inspect --format '{{.Name}} started={{.State.StartedAt}} status={{.State.Status}} restarts={{.RestartCount}} oom={{.State.OOMKilled}}' "$c" 2>/dev/null; done
+          echo '=== AUTOMATION INSTALL ==='
+          test -x /usr/local/sbin/vesta-guarded-recovery && echo script_installed=yes || echo script_installed=no
+          test -f /etc/cron.d/vesta-guarded-recovery && echo cron_installed=yes || echo cron_installed=no
+          echo '=== ORIGIN NOW ==='
+          for d in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir; do timeout 12 curl -ksS --noproxy '*' --connect-timeout 3 --max-time 10 --resolve "$d:443:127.0.0.1" -o /dev/null -w "$d http=%{http_code} total=%{time_total}\n" "https://$d/" || true; done
+          echo '=== READ ONLY INSPECTION COMPLETE ==='
+          CHECK
