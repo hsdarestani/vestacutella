@@ -1,0 +1,52 @@
+name: Read-only Vesta product stock snapshot
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/export-vesta-stock-readonly-20261028.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  stock:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Install SSH client
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Query only product inventory metadata from Vesta MariaDB
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "$HOST" && test -n "$SSHPASS"
+          cat > stock.sql <<'SQL'
+          SELECT p.ID AS product_id,
+                 p.post_parent AS parent_id,
+                 p.post_type,
+                 p.post_status,
+                 COALESCE(MAX(CASE WHEN pm.meta_key='_manage_stock' THEN pm.meta_value END),'') AS manage_stock,
+                 COALESCE(MAX(CASE WHEN pm.meta_key='_stock' THEN pm.meta_value END),'') AS stock_quantity,
+                 COALESCE(MAX(CASE WHEN pm.meta_key='_stock_status' THEN pm.meta_value END),'') AS stock_status,
+                 COALESCE(MAX(CASE WHEN pm.meta_key='_sku' THEN pm.meta_value END),'') AS sku
+          FROM wp_posts p
+          LEFT JOIN wp_postmeta pm ON pm.post_id=p.ID
+               AND pm.meta_key IN ('_manage_stock','_stock','_stock_status','_sku')
+          WHERE p.post_type IN ('product','product_variation')
+          GROUP BY p.ID,p.post_parent,p.post_type,p.post_status
+          ORDER BY p.ID;
+          SQL
+          timeout 180 sshpass -e ssh -o ConnectTimeout=15 -o ServerAliveInterval=20 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST"             'docker exec -i vc-db-vesta sh -c '"'"'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw --default-character-set=utf8mb4'"'"''             < stock.sql > vesta-stock.tsv
+          test -s vesta-stock.tsv
+          head -1 vesta-stock.tsv | grep -q 'stock_quantity'
+          echo "Rows exported (including header): $(wc -l < vesta-stock.tsv)"
+          rm -f stock.sql
+      - name: Upload product-stock only
+        uses: actions/upload-artifact@v4
+        with:
+          name: vesta-product-stock-readonly-20261028
+          path: vesta-stock.tsv
+          retention-days: 1
+          if-no-files-found: error
