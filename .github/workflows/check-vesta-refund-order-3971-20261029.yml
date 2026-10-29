@@ -1,0 +1,40 @@
+name: Read-only Vesta refund 3971 diagnostic
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/check-vesta-refund-order-3971-20261029.yml"]
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Get SSH client
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read-only refund state (no transaction, no customer data)
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          test -n "$HOST" && test -n "$SSHPASS"
+          sshpass -e ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php' <<'PHP'
+          <?php
+          require '/var/www/html/wp-load.php';
+          if (!function_exists('wc_get_order')) { echo "WOOCOMMERCE_UNAVAILABLE\n"; exit(15); }
+          $o=wc_get_order(3971);
+          if (!$o) { echo "ORDER_FOUND=no\n"; exit(0); }
+          echo "ORDER_FOUND=yes\n";
+          echo "DIGIPAY_METHOD=".((function_exists('vc_dp_is_gateway_order') && vc_dp_is_gateway_order($o))?"yes":"no")."\n";
+          echo "REFUND_FORM_HOOK=".((function_exists('vc_dp_render_footer_forms') && has_action('admin_footer','vc_dp_render_footer_forms')!==false)?"installed":"missing")."\n";
+          $a=$o->get_meta('_vc_dp_refund_attempts',true);
+          $a=is_array($a)?$a:array();
+          echo "ATTEMPTS_COUNT=".count($a)."\n";
+          $valid=array('submitted','uncertain','processing','confirmed_unrecorded','completed','failed');
+          foreach ($a as $i=>$item) {
+              $state=is_array($item) && isset($item['state'])?$item['state']:'';
+              echo 'ATTEMPT_'.$i.'_STATE='.(in_array($state,$valid,true)?$state:'other')."\n";
+          }
+          echo "WOOCOMMERCE_REFUND_COUNT=".count($o->get_refunds())."\n";
+          PHP
