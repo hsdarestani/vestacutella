@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Vesta DigiPay Refunds
  * Description: Admin-only tracked, manual refunds for Vesta DigiPay WooCommerce orders. Never initiates an automatic transfer.
- * Version: 1.0.0
+ * Version: 1.0.1
  * Requires PHP: 7.4
  */
 defined('ABSPATH') || exit;
@@ -75,21 +75,14 @@ function vc_dp_lock($id) {
     return add_option($key, (string)time(), '', 'no');
 }
 function vc_dp_error_redirect($order_id, $message, $level = 'error') {
-    set_transient('vc_dp_notice_'.get_current_user_id(), array($level, $message), 45);
+    set_transient('vc_dp_notice_'.get_current_user_id().'_'.absint($order_id), array($level, $message), 300);
     delete_option('vc_dp_refund_lock_' . absint($order_id));
     $target = function_exists('wc_get_order') ? wc_get_order(absint($order_id)) : null;
-    wp_safe_redirect($target && method_exists($target, 'get_edit_order_url') ? $target->get_edit_order_url() : admin_url('post.php?post='.absint($order_id).'&action=edit'));
+    wp_safe_redirect(($target && method_exists($target, 'get_edit_order_url') ? $target->get_edit_order_url() : admin_url('post.php?post='.absint($order_id).'&action=edit')).'#vc-dp-refund-box');
     exit;
 }
-add_action('admin_notices', function() {
-    if (!current_user_can('manage_woocommerce')) { return; }
-    $key = 'vc_dp_notice_'.get_current_user_id();
-    $notice = get_transient($key);
-    if (!$notice || !is_array($notice)) { return; }
-    delete_transient($key);
-    echo '<div class="notice notice-'.esc_attr($notice[0]).' is-dismissible"><p>'.esc_html($notice[1]).'</p></div>';
-});
 function vc_dp_box($order) {
+    global $vc_dp_footer_forms;
     if (!($order instanceof WC_Order) || !vc_dp_is_gateway_order($order) || !current_user_can('manage_woocommerce')) { return; }
     $attempts = vc_dp_attempts($order);
     $currency = strtoupper($order->get_currency());
@@ -99,8 +92,16 @@ function vc_dp_box($order) {
         if (in_array($attempt['state'], array('submitted','uncertain','processing','confirmed_unrecorded'), true)) { $pending = true; }
     }
     $credentials = (bool)vc_dp_credentials($order);
-    echo '<div dir="rtl" style="margin:16px 0;padding:14px;border:1px solid #c3c4c7;background:#f8f9fb;border-radius:8px">';
+    $vc_dp_footer_forms = array('order_id'=>$order->get_id(), 'refund'=>false, 'inquiry'=>array());
+    echo '<div id="vc-dp-refund-box" dir="rtl" style="scroll-margin-top:60px;margin:16px 0;padding:14px;border:1px solid #c3c4c7;background:#f8f9fb;border-radius:8px">';
     echo '<h3>بازگشت وجه دیجی‌پی</h3>';
+    $notice_key = 'vc_dp_notice_'.get_current_user_id().'_'.$order->get_id();
+    $notice = get_transient($notice_key);
+    if (is_array($notice) && count($notice) >= 2) {
+        delete_transient($notice_key);
+        $level = $notice[0] === 'success' ? '#e5f7e8' : '#fff0d9';
+        echo '<p role="status" style="padding:12px;border:1px solid #c3c4c7;background:'.esc_attr($level).';border-radius:6px"><strong>'.esc_html($notice[1]).'</strong></p>';
+    }
     echo '<p>بازپرداخت فقط پس از ثبت دستی درخواست مدیر انجام می‌شود. تأیید نهایی با استعلام دیجی‌پی بررسی می‌شود.</p>';
     if (!$credentials) { echo '<p style="color:#a00">دسترسی فنی API این درگاه پیدا نشد؛ مقادیر Client ID / Client Secret / Username / Password باید در تنظیمات درگاه یا ثابت‌های امن سرور قرار بگیرند.</p>'; }
     if (!in_array($currency, array('IRR','IRT','TOMAN'), true)) { echo '<p style="color:#a00">واحد پول سفارش پشتیبانی نشده؛ مبلغ ریالی باید پیش از فعال‌سازی مشخص شود.</p>'; }
@@ -109,28 +110,49 @@ function vc_dp_box($order) {
         foreach (array_reverse($attempts, true) as $index=>$item) {
             echo '<tr><td>'.esc_html($item['provider']).'</td><td>'.esc_html($item['store_amount'].' '.$currency).'</td><td>'.esc_html($item['type']).'</td><td>'.esc_html($item['state']).'</td><td>';
             if (in_array($item['state'], array('submitted','uncertain','processing','confirmed_unrecorded'), true)) {
-                echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'">';
-                wp_nonce_field('vc_dp_manage_'.$order->get_id());
-                echo '<input type="hidden" name="action" value="vc_dp_manage"><input type="hidden" name="mode" value="inquiry"><input type="hidden" name="order_id" value="'.esc_attr($order->get_id()).'"><input type="hidden" name="attempt" value="'.esc_attr($index).'">';
-                echo '<button class="button" type="submit">استعلام وضعیت</button></form>';
+                // The WooCommerce order screen has an outer form: never nest a <form> inside it.
+                $vc_dp_footer_forms['inquiry'][] = $index;
+                echo '<button class="button" type="submit" form="vc-dp-inquiry-'.esc_attr($order->get_id()).'-'.esc_attr($index).'">استعلام وضعیت</button>';
             } else { echo '—'; }
             echo '</td></tr>';
         }
         echo '</tbody></table>';
     }
     if ($available>0 && !$pending && $credentials && in_array($currency,array('IRR','IRT','TOMAN'),true) && $order->is_paid()) {
-        echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'" onsubmit="return confirm(\'آیا درخواست واقعی بازگشت وجه به دیجی‌پی ارسال شود؟\')">';
-        wp_nonce_field('vc_dp_manage_'.$order->get_id());
-        echo '<input type="hidden" name="action" value="vc_dp_manage"><input type="hidden" name="mode" value="refund"><input type="hidden" name="order_id" value="'.esc_attr($order->get_id()).'">';
-        echo '<p><label>مبلغ ('.esc_html($currency).') <input type="number" name="amount" step="1" min="1" max="'.esc_attr((int)floor($available)).'" value="'.esc_attr((int)floor($available)).'" required></label></p>';
-        echo '<p><label>کد پیگیری پرداخت (trackingCode) <input type="text" name="tracking" value="'.esc_attr($order->get_transaction_id()).'" required maxlength="80" autocomplete="off"></label></p>';
-        echo '<p><label>نوع پرداخت <select name="type"><option value="">انتخاب کنید</option><option value="0">IPG (0)</option><option value="11">کیف پول (11)</option><option value="5">اعتباری (5)</option><option value="13">BNPL (13)</option><option value="24">کارت اعتباری (24)</option></select></label></p>';
+        $vc_dp_footer_forms['refund'] = true;
+        $form_id = 'vc-dp-refund-'.$order->get_id();
+        echo '<p><label>مبلغ ('.esc_html($currency).') <input form="'.esc_attr($form_id).'" type="number" name="amount" step="1" min="1" max="'.esc_attr((int)floor($available)).'" value="'.esc_attr((int)floor($available)).'" required></label></p>';
+        echo '<p><label>کد پیگیری پرداخت (trackingCode) <input form="'.esc_attr($form_id).'" type="text" name="tracking" value="'.esc_attr($order->get_transaction_id()).'" required maxlength="80" autocomplete="off"></label></p>';
+        echo '<p><label>نوع پرداخت <select form="'.esc_attr($form_id).'" name="type"><option value="">انتخاب کنید</option><option value="0">IPG (0)</option><option value="11">کیف پول (11)</option><option value="5">اعتباری (5)</option><option value="13">BNPL (13)</option><option value="24">کارت اعتباری (24)</option></select></label></p>';
         echo '<p><strong>قبل از ارسال، trackingCode و نوع تراکنش را با گزارش دیجی‌پی تطبیق دهید.</strong></p>';
-        echo '<button class="button button-primary" type="submit">ارسال درخواست واقعی بازگشت وجه</button></form>';
+        echo '<button class="button button-primary" type="submit" form="'.esc_attr($form_id).'">ارسال درخواست واقعی بازگشت وجه</button>';
     }
     echo '</div>';
 }
 add_action('woocommerce_admin_order_data_after_order_details', 'vc_dp_box', 30);
+/** Render real independent forms after WooCommerce has closed its order-edit form.
+ * Visible controls use the HTML5 form attribute to associate with these forms.
+ * Works in the legacy post.php editor and avoids corrupting WooCommerce's own POST.
+ */
+function vc_dp_render_footer_forms() {
+    global $vc_dp_footer_forms;
+    if (!current_user_can('manage_woocommerce') || empty($vc_dp_footer_forms['order_id'])) { return; }
+    $id = absint($vc_dp_footer_forms['order_id']);
+    $action_url = esc_url(admin_url('admin-post.php'));
+    if (!empty($vc_dp_footer_forms['refund'])) {
+        echo '<form id="vc-dp-refund-'.esc_attr($id).'" method="post" action="'.$action_url.'" onsubmit="return confirm(\'درخواست واقعی انتقال وجه به دیجی‌پی ارسال شود؟ قبل از تأیید وضعیت ریفاند قبلی را بررسی کرده‌اید؟\')">';
+        wp_nonce_field('vc_dp_manage_'.$id);
+        echo '<input type="hidden" name="action" value="vc_dp_manage"><input type="hidden" name="mode" value="refund"><input type="hidden" name="order_id" value="'.esc_attr($id).'"></form>';
+    }
+    foreach ($vc_dp_footer_forms['inquiry'] as $index) {
+        $index = absint($index);
+        echo '<form id="vc-dp-inquiry-'.esc_attr($id).'-'.esc_attr($index).'" method="post" action="'.$action_url.'">';
+        wp_nonce_field('vc_dp_manage_'.$id);
+        echo '<input type="hidden" name="action" value="vc_dp_manage"><input type="hidden" name="mode" value="inquiry"><input type="hidden" name="order_id" value="'.esc_attr($id).'"><input type="hidden" name="attempt" value="'.esc_attr($index).'"></form>';
+    }
+}
+add_action('admin_footer', 'vc_dp_render_footer_forms', 99);
+
 add_action('admin_post_vc_dp_manage', function() {
     if (!current_user_can('manage_woocommerce')) { wp_die('دسترسی مجاز نیست.', '',array('response'=>403)); }
     $id = isset($_POST['order_id']) ? absint($_POST['order_id']) : 0;
