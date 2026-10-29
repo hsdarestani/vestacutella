@@ -1,0 +1,47 @@
+name: Deploy Vesta Digipay refund admin safely
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/deploy-vesta-digipay-refunds.yml"
+      - "scripts/deploy-vesta-digipay-refunds.sh"
+      - "infra/plugins/vesta-digipay-refunds/**"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vc-vesta-digipay-refund-deploy
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check code before server contact
+        run: |
+          set -euo pipefail
+          php -l infra/plugins/vesta-digipay-refunds/vesta-digipay-refunds.php
+          bash -n scripts/deploy-vesta-digipay-refunds.sh
+          grep -q 'check_admin_referer' infra/plugins/vesta-digipay-refunds/vesta-digipay-refunds.php
+          grep -q 'refund_payment.*false' infra/plugins/vesta-digipay-refunds/vesta-digipay-refunds.php
+      - name: Install SSH client
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Deploy Vesta only with rollback
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          test -n "$HOST" && test -n "$SSHPASS"
+          sshpass -e scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null infra/plugins/vesta-digipay-refunds/vesta-digipay-refunds.php "root@$HOST:/tmp/vc-vesta-digipay-refunds.php"
+          sshpass -e scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/deploy-vesta-digipay-refunds.sh "root@$HOST:/tmp/vc-vesta-digipay-refunds-deploy.sh"
+          sshpass -e ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/vc-vesta-digipay-refunds-deploy.sh'
+      - name: Public availability regression
+        run: |
+          set -euo pipefail
+          for domain in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir; do
+            code=$(curl -LfsS --connect-timeout 10 --max-time 35 -o /dev/null -w '%{http_code}' "https://$domain/")
+            echo "$domain HTTP=$code"
+            test "$code" = 200
+          done
