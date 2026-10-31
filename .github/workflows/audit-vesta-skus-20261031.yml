@@ -1,4 +1,4 @@
-name: Vesta SKU preflight and Mahak catalog sync
+name: Verify Vesta SKU catalog (read-only)
 on:
   push:
     branches: [main]
@@ -50,37 +50,18 @@ jobs:
           retention-days: 3
           if-no-files-found: error
 
-      - name: Check all 1292 mappings against fresh production snapshot
+
+      - name: Independently verify all 1292 active SKUs in live database
         run: |
           python3 - <<'PY'
           import csv
           ids=[int(v) for v in open('data/vesta-mahak-sku-targets-20261031.txt')]
-          assert len(ids)==1292 and len(set(ids))==1292
           with open('vesta-sku-audit.tsv',encoding='utf8') as f:
               rows=list(csv.DictReader(f,delimiter='\t'))
-          byid={int(row['product_id']):row for row in rows}
-          assert len(byid)==len(rows)
-          assert all(i in byid and byid[i]['post_status']=='publish' and not byid[i]['sku'] for i in ids)
-          existing={x['sku'] for x in rows if x['sku']}
-          assert not existing.intersection(map(str,ids))
-          print('SKU_PREFLIGHT_COLLATION_CHECK',len(ids))
+          byid={int(r['product_id']):r for r in rows}
+          assert len(ids)==1292 and len(set(ids))==1292
+          mismatches=[i for i in ids if i not in byid or byid[i]['sku']!=str(i) or byid[i]['post_status']!='publish']
+          print('LIVE_VERIFIED_SKU_COUNT',len(ids)-len(mismatches))
+          print('LIVE_SKU_MISMATCHES',len(mismatches))
+          assert not mismatches, 'Some SKU mappings do not match the signed-off catalog'
           PY
-      - name: Apply guarded SKU changes on Vesta only
-        env:
-          HOST: ${{ secrets.HOST }}
-          SSHPASS: ${{ secrets.PASS }}
-        run: |
-          set -euo pipefail
-          bash -n scripts/apply-vesta-sku-mahak-20261031.sh
-          test -n "$HOST" && test -n "$SSHPASS"
-          sshpass -e scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null data/vesta-mahak-sku-targets-20261031.txt "root@$HOST:/tmp/vesta-mahak-targets-20261031.txt"
-          sshpass -e scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/apply-vesta-sku-mahak-20261031.sh "root@$HOST:/tmp/apply-vesta-sku-mahak-20261031.sh"
-          timeout 600 sshpass -e ssh -o ConnectTimeout=15 -o ServerAliveInterval=20 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/apply-vesta-sku-mahak-20261031.sh'
-          sshpass -e scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST:/tmp/vesta-mahak-sku-result-20261031.tsv" vesta-mahak-sku-result.tsv
-          test "$(($(wc -l < vesta-mahak-sku-result.tsv)-1))" -eq 1292
-      - uses: actions/upload-artifact@v4
-        with:
-          name: vesta-mahak-sku-verified-20261031
-          path: vesta-mahak-sku-result.tsv
-          retention-days: 4
-          if-no-files-found: error
