@@ -61,7 +61,7 @@ BEGIN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='An SKU was assigned since the audit';
   END IF;
   SELECT COUNT(*) INTO v_bad FROM wp_postmeta pm JOIN vc_sku_targets t
-    ON pm.meta_value=CAST(t.id AS CHAR) AND pm.post_id<>t.id
+    ON BINARY pm.meta_value=BINARY CAST(t.id AS CHAR) AND pm.post_id<>t.id
     WHERE pm.meta_key='_sku' AND pm.meta_value<>'';
   IF v_bad <> 0 THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='An SKU conflicts with an existing product';
@@ -88,8 +88,8 @@ BEGIN
   UPDATE wp_wc_product_meta_lookup l JOIN vc_sku_targets t ON t.id=l.product_id
     SET l.sku=CAST(t.id AS CHAR);
   SELECT COUNT(DISTINCT t.id) INTO v_count FROM vc_sku_targets t
-    JOIN wp_postmeta pm ON pm.post_id=t.id AND pm.meta_key='_sku' AND pm.meta_value=CAST(t.id AS CHAR)
-    JOIN wp_wc_product_meta_lookup l ON l.product_id=t.id AND l.sku=CAST(t.id AS CHAR);
+    JOIN wp_postmeta pm ON pm.post_id=t.id AND pm.meta_key='_sku' AND BINARY pm.meta_value=BINARY CAST(t.id AS CHAR)
+    JOIN wp_wc_product_meta_lookup l ON l.product_id=t.id AND BINARY l.sku=BINARY CAST(t.id AS CHAR);
   IF v_count <> 1292 THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Verification failed; transaction rolled back';
   END IF;
