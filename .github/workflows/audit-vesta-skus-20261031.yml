@@ -1,0 +1,50 @@
+name: Audit Vesta SKU inventory (read-only)
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/audit-vesta-skus-20261031.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  sku-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Install sshpass
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read current WooCommerce product IDs and SKUs (no writes)
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "$HOST" && test -n "$SSHPASS"
+          cat > sku.sql <<'SQL'
+          SELECT p.ID AS product_id,
+                 p.post_parent AS parent_id,
+                 p.post_type,
+                 p.post_status,
+                 COALESCE(MAX(CASE WHEN pm.meta_key='_sku' THEN pm.meta_value END),'') AS sku,
+                 COALESCE(MAX(CASE WHEN pm.meta_key='_stock_status' THEN pm.meta_value END),'') AS stock_status,
+                 COALESCE(MAX(CASE WHEN pm.meta_key='_stock' THEN pm.meta_value END),'') AS stock_quantity
+          FROM wp_posts p
+          LEFT JOIN wp_postmeta pm ON pm.post_id=p.ID AND pm.meta_key IN ('_sku','_stock_status','_stock')
+          WHERE p.post_type IN ('product','product_variation')
+          GROUP BY p.ID,p.post_parent,p.post_type,p.post_status
+          ORDER BY p.ID;
+          SQL
+          timeout 240 sshpass -e ssh -o ConnectTimeout=15 -o ServerAliveInterval=20 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-db-vesta sh -c '\''MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw --default-character-set=utf8mb4'\''' < sku.sql > vesta-sku-audit.tsv
+          test -s vesta-sku-audit.tsv
+          head -1 vesta-sku-audit.tsv | grep -q product_id
+          echo "sku data rows: $(( $(wc -l < vesta-sku-audit.tsv) - 1 ))"
+          awk -F '\t' 'NR>1 {if($5=="") empty++; else nonempty++} END {print "empty SKU:",empty+0,"nonempty SKU:",nonempty+0}' vesta-sku-audit.tsv
+          rm sku.sql
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vesta-sku-audit-20261031
+          path: vesta-sku-audit.tsv
+          retention-days: 3
+          if-no-files-found: error
