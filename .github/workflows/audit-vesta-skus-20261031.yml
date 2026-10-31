@@ -1,4 +1,4 @@
-name: Verify Vesta SKU catalog (read-only)
+name: Vesta SKU cache refresh and verification
 on:
   push:
     branches: [main]
@@ -65,3 +65,28 @@ jobs:
           print('LIVE_SKU_MISMATCHES',len(mismatches))
           assert not mismatches, 'Some SKU mappings do not match the signed-off catalog'
           PY
+
+      - name: Refresh WooCommerce product object and meta caches after SKU update
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          cat > clear_sku_cache.php <<'PHP'
+          <?php
+          require '/var/www/html/wp-load.php';
+          $lines = file('php://stdin', FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+          $ids = array_values(array_unique(array_map('intval', $lines)));
+          if (count($ids) !== 1292) { fwrite(STDERR, "INVALID_TARGET_COUNT\n"); exit(12); }
+          foreach ($ids as $id) {
+              wp_cache_delete($id, 'post_meta');
+              wp_cache_delete($id, 'posts');
+          }
+          if (class_exists('WC_Cache_Helper')) {
+              WC_Cache_Helper::invalidate_cache_group('products');
+          }
+          echo "SKU_PRODUCT_CACHES_REFRESHED=" . count($ids) . PHP_EOL;
+          PHP
+          sshpass -e scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null clear_sku_cache.php "root@$HOST:/tmp/vesta-clear-sku-cache-20261031.php"
+          sshpass -e scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null data/vesta-mahak-sku-targets-20261031.txt "root@$HOST:/tmp/vesta-mahak-targets-20261031.txt"
+          timeout 120 sshpass -e ssh -o ConnectTimeout=15 -o ServerAliveInterval=20 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker cp /tmp/vesta-clear-sku-cache-20261031.php vc-vesta:/tmp/vesta-clear-sku-cache-20261031.php && docker exec -i vc-vesta php -d memory_limit=512M /tmp/vesta-clear-sku-cache-20261031.php < /tmp/vesta-mahak-targets-20261031.txt'
