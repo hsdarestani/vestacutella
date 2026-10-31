@@ -29,7 +29,8 @@ SELECT product_id,COALESCE(sku,'') AS sku FROM wp_wc_product_meta_lookup
 WHERE product_id IN ($IDS) ORDER BY product_id;
 SQL
 echo "SKU_LOOKUP_BACKUP_QUERY_FINISHED"
-[[ -s "$BACKUP/meta-before.tsv" && -s "$BACKUP/lookup-before.tsv" ]]
+[[ -f "$BACKUP/meta-before.tsv" && -f "$BACKUP/lookup-before.tsv" ]]
+wc -c "$BACKUP/meta-before.tsv" "$BACKUP/lookup-before.tsv"
 echo "BACKUP_CREATED=$BACKUP"
 cat > "$BACKUP/apply.sql" <<SQL
 DELIMITER //
