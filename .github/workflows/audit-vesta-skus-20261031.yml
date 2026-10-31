@@ -63,7 +63,7 @@ jobs:
           assert all(i in byid and byid[i]['post_status']=='publish' and not byid[i]['sku'] for i in ids)
           existing={x['sku'] for x in rows if x['sku']}
           assert not existing.intersection(map(str,ids))
-          print('SKU_PREFLIGHT_PASS',len(ids))
+          print('SKU_PREFLIGHT_VERIFIED',len(ids))
           PY
       - name: Apply guarded SKU changes on Vesta only
         env:
