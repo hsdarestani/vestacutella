@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
+trap 'ec=$?; echo "SKU_SCRIPT_FAILURE line=$LINENO exit=$ec" >&2' ERR
 umask 077
 TARGETS=/tmp/vesta-mahak-targets-20261031.txt
 [[ -s "$TARGETS" ]]
@@ -7,22 +8,27 @@ grep -Eq '^[0-9]+$' "$TARGETS"
 ! grep -Evq '^[0-9]+$' "$TARGETS"
 [[ "$(wc -l < "$TARGETS")" -eq 1292 ]]
 [[ "$(sort -n "$TARGETS" | uniq | wc -l)" -eq 1292 ]]
+echo "SKU_TARGETS_CHECK_OK"
 IDS="$(paste -sd, "$TARGETS")"
 VALUES="$(awk '{printf("(%d),",$1)}' "$TARGETS")"
 VALUES="$(printf '%s' "$VALUES" | sed 's/,$//')"
 BACKUP="/srv/backups/vesta-mahak-sku-$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p -m 0700 "$BACKUP"
 cp "$TARGETS" "$BACKUP/target-ids.txt"
+echo "SKU_BACKUP_DIRECTORY_OK"
 db() { docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw --default-character-set=utf8mb4'; }
 # Back up the affected SKU metadata and WooCommerce SKU lookup, not orders or other product metadata.
+echo "SKU_BACKUP_START"
 cat <<SQL | db > "$BACKUP/meta-before.tsv"
 SELECT pm.meta_id,pm.post_id,pm.meta_value FROM wp_postmeta pm
 WHERE pm.meta_key='_sku' AND pm.post_id IN ($IDS) ORDER BY pm.post_id,pm.meta_id;
 SQL
+echo "SKU_META_BACKUP_OK"
 cat <<SQL | db > "$BACKUP/lookup-before.tsv"
 SELECT product_id,COALESCE(sku,'') AS sku FROM wp_wc_product_meta_lookup
 WHERE product_id IN ($IDS) ORDER BY product_id;
 SQL
+echo "SKU_LOOKUP_BACKUP_QUERY_FINISHED"
 [[ -s "$BACKUP/meta-before.tsv" && -s "$BACKUP/lookup-before.tsv" ]]
 echo "BACKUP_CREATED=$BACKUP"
 cat > "$BACKUP/apply.sql" <<SQL
