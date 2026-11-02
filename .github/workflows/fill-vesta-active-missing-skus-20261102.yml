@@ -1,0 +1,211 @@
+name: Fill missing active Vesta SKUs with WooCommerce IDs (verified)
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/fill-vesta-active-missing-skus-20261102.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-live-sku-write
+  cancel-in-progress: false
+jobs:
+  fill-skus:
+    runs-on: ubuntu-latest
+    timeout-minutes: 16
+    steps:
+      - name: Install SSH client
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Query all product and variation statuses from live Vesta (read only)
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "$HOST" && test -n "$SSHPASS"
+          cat > inventory.sql <<'SQL'
+          SELECT p.ID AS id, p.post_parent AS parent_id, p.post_type AS item_type, p.post_status AS status,
+                 COALESCE(pp.post_status,'') AS parent_status,
+                 COALESCE((SELECT meta_value FROM wp_postmeta WHERE post_id=p.ID AND meta_key='_sku' LIMIT 1),'') AS sku,
+                 COALESCE((SELECT meta_value FROM wp_postmeta WHERE post_id=p.ID AND meta_key='_stock_status' LIMIT 1),'') AS stock_status,
+                 COALESCE((SELECT meta_value FROM wp_postmeta WHERE post_id=p.ID AND meta_key='_manage_stock' LIMIT 1),'') AS manage_stock,
+                 COALESCE((SELECT meta_value FROM wp_postmeta WHERE post_id=p.ID AND meta_key='_stock' LIMIT 1),'') AS stock_quantity,
+                 (SELECT COUNT(*) FROM wp_posts child WHERE child.post_parent=p.ID AND child.post_type='product_variation' AND child.post_status='publish') AS published_variations
+          FROM wp_posts p
+          LEFT JOIN wp_posts pp ON pp.ID=p.post_parent
+          WHERE p.post_type IN ('product','product_variation')
+          ORDER BY p.ID;
+          SQL
+          remote_db() {
+            timeout 240 sshpass -e ssh -o ConnectTimeout=15 -o ServerAliveInterval=20 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-db-vesta sh -c '\''MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw --default-character-set=utf8mb4'\'''
+          }
+          remote_db < inventory.sql > before.tsv
+          test -s before.tsv
+          head -1 before.tsv | grep -q stock_status
+      - name: Select only genuinely in-stock sellable products missing SKU; build guarded transaction
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import csv,json,re
+          with open('before.tsv',encoding='utf-8') as f:rows=list(csv.DictReader(f,delimiter='\t'))
+          def active(r):
+              if r['status']!='publish' or r['stock_status']!='instock':return False
+              if r['item_type']=='product':
+                  if int(r['published_variations'] or 0)>0:return False
+              elif r['item_type']=='product_variation':
+                  if r['parent_status']!='publish':return False
+              else:return False
+              if r['manage_stock'].lower() in ('yes','1','true'):
+                  qty=r['stock_quantity'].strip()
+                  if re.fullmatch(r'-?\d+(?:\.\d+)?',qty) and float(qty)<=0:return False
+              return True
+          targets=[r for r in rows if active(r) and not r['sku'].strip()]
+          ids=sorted(int(r['id']) for r in targets)
+          if len(ids)>300:raise SystemExit('SAFETY_STOP: more than 300 active products missing SKU')
+          if len(ids)!=len(set(ids)):raise SystemExit('Duplicate target IDs')
+          existing={r['sku'].strip():int(r['id']) for r in rows if r['sku'].strip()}
+          conflicts=[i for i in ids if str(i) in existing and existing[str(i)]!=i]
+          if conflicts:raise SystemExit('SAFETY_STOP: SKU collision in existing product meta: '+repr(conflicts))
+          with open('targets.txt','w') as f:
+              for i in ids:f.write(str(i)+'\n')
+          count=len(ids)
+          print('LIVE_PUBLISHED_ORDERABLE_WITHOUT_SKU',count)
+          if count==0:
+              open('apply.sql','w').write('SELECT \'NO_SKUS_TO_UPDATE\' AS result;\n')
+              open('target-backup.sql','w').write('SELECT 0 AS no_targets;\n')
+          else:
+              id_list=','.join(map(str,ids))
+              values=','.join(f'({i})' for i in ids)
+              open('target-backup.sql','w').write(f"""
+          SELECT p.ID AS product_id,pm.meta_id,pm.meta_value AS old_sku_meta,l.sku AS old_lookup_sku,
+                 p.post_type,p.post_status
+          FROM wp_posts p LEFT JOIN wp_postmeta pm ON pm.post_id=p.ID AND pm.meta_key='_sku'
+          LEFT JOIN wp_wc_product_meta_lookup l ON l.product_id=p.ID
+          WHERE p.ID IN ({id_list}) ORDER BY p.ID,pm.meta_id;
+          """)
+              sql=f"""
+          DELIMITER //
+          DROP PROCEDURE IF EXISTS vc_fill_remaining_active_skus_20261102//
+          CREATE PROCEDURE vc_fill_remaining_active_skus_20261102()
+          BEGIN
+            DECLARE n INT DEFAULT 0;
+            DECLARE bad INT DEFAULT 0;
+            DECLARE EXIT HANDLER FOR SQLEXCEPTION
+            BEGIN
+              ROLLBACK;
+              RESIGNAL;
+            END;
+            CREATE TEMPORARY TABLE vc_target_skus_20261102 (id BIGINT UNSIGNED PRIMARY KEY) ENGINE=MEMORY;
+            INSERT INTO vc_target_skus_20261102(id) VALUES {values};
+            SELECT COUNT(*) INTO n FROM vc_target_skus_20261102;
+            IF n <> {count} THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Target count mismatch'; END IF;
+            SELECT COUNT(*) INTO bad FROM vc_target_skus_20261102 t
+              LEFT JOIN wp_posts p ON p.ID=t.id
+              LEFT JOIN wp_posts pp ON pp.ID=p.post_parent
+              WHERE p.ID IS NULL OR p.post_status<>'publish'
+                 OR p.post_type NOT IN ('product','product_variation')
+                 OR (p.post_type='product_variation' AND (pp.ID IS NULL OR pp.post_status<>'publish'))
+                 OR (SELECT meta_value FROM wp_postmeta WHERE post_id=t.id AND meta_key='_stock_status' LIMIT 1)<>'instock';
+            IF bad<>0 THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Product status/stock changed; aborting'; END IF;
+            SELECT COUNT(*) INTO bad FROM
+              (SELECT pm.post_id FROM wp_postmeta pm JOIN vc_target_skus_20261102 t ON t.id=pm.post_id
+               WHERE pm.meta_key='_sku' GROUP BY pm.post_id HAVING COUNT(*)>1) mult;
+            IF bad<>0 THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Duplicate SKU metadata rows'; END IF;
+            SELECT COUNT(*) INTO bad FROM wp_postmeta pm JOIN vc_target_skus_20261102 t ON pm.post_id=t.id
+              WHERE pm.meta_key='_sku' AND TRIM(COALESCE(pm.meta_value,''))<>'';
+            IF bad<>0 THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='A target SKU was already populated'; END IF;
+            SELECT COUNT(*) INTO bad FROM wp_postmeta pm JOIN vc_target_skus_20261102 t
+              ON BINARY pm.meta_value=BINARY CAST(t.id AS CHAR) AND pm.post_id<>t.id
+              WHERE pm.meta_key='_sku' AND pm.meta_value<>'';
+            IF bad<>0 THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='An SKU conflicts with another product'; END IF;
+            SELECT COUNT(*) INTO bad FROM wp_wc_product_meta_lookup l JOIN vc_target_skus_20261102 t
+              ON BINARY l.sku=BINARY CAST(t.id AS CHAR) AND l.product_id<>t.id;
+            IF bad<>0 THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='SKU lookup collision'; END IF;
+            SELECT COUNT(*) INTO bad FROM vc_target_skus_20261102 t LEFT JOIN wp_wc_product_meta_lookup l ON l.product_id=t.id
+              WHERE l.product_id IS NULL OR TRIM(COALESCE(l.sku,''))<>'';
+            IF bad<>0 THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Missing or populated WooCommerce lookup rows'; END IF;
+            START TRANSACTION;
+            UPDATE wp_postmeta pm JOIN vc_target_skus_20261102 t ON t.id=pm.post_id
+               SET pm.meta_value=CAST(t.id AS CHAR)
+               WHERE pm.meta_key='_sku' AND TRIM(COALESCE(pm.meta_value,''))='';
+            INSERT INTO wp_postmeta (post_id,meta_key,meta_value)
+              SELECT t.id,'_sku',CAST(t.id AS CHAR) FROM vc_target_skus_20261102 t
+              WHERE NOT EXISTS(SELECT 1 FROM wp_postmeta pm WHERE pm.post_id=t.id AND pm.meta_key='_sku');
+            UPDATE wp_wc_product_meta_lookup l JOIN vc_target_skus_20261102 t ON l.product_id=t.id
+              SET l.sku=CAST(t.id AS CHAR);
+            SELECT COUNT(DISTINCT t.id) INTO bad FROM vc_target_skus_20261102 t
+              JOIN wp_postmeta pm ON pm.post_id=t.id AND pm.meta_key='_sku' AND BINARY pm.meta_value=BINARY CAST(t.id AS CHAR)
+              JOIN wp_wc_product_meta_lookup l ON l.product_id=t.id AND BINARY l.sku=BINARY CAST(t.id AS CHAR);
+            IF bad<>n THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='Post-write verification failed'; END IF;
+            COMMIT;
+            SELECT 'UPDATED_SKUS' AS metric, n AS quantity;
+          END//
+          DELIMITER ;
+          CALL vc_fill_remaining_active_skus_20261102();
+          DROP PROCEDURE IF EXISTS vc_fill_remaining_active_skus_20261102;
+          """
+              open('apply.sql','w',encoding='utf-8').write(sql)
+          json.dump({'preflight_all_rows':len(rows),'target_count':count,'target_ids':ids},open('sku-preflight.json','w'),indent=2)
+          PY
+      - name: Secure backup of exactly the target SKU records before changes
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          umask 077
+          ssh_opts='-o ConnectTimeout=15 -o ServerAliveInterval=20 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
+          remote_db() {
+            timeout 240 sshpass -e ssh $ssh_opts "root@$HOST" 'docker exec -i vc-db-vesta sh -c '\''MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw --default-character-set=utf8mb4'\'''
+          }
+          remote_db < target-backup.sql > sku-meta-before.tsv
+          backup="/srv/backups/vesta-active-sku-20261102-$(date -u +%Y%m%dT%H%M%SZ)"
+          sshpass -e ssh $ssh_opts "root@$HOST" "umask 077; mkdir -p -m 0700 '$backup'"
+          sshpass -e ssh $ssh_opts "root@$HOST" "umask 077; cat > '$backup/sku-meta-before.tsv'" < sku-meta-before.tsv
+          sshpass -e ssh $ssh_opts "root@$HOST" "umask 077; cat > '$backup/target-ids.txt'" < targets.txt
+          echo "BACKUP_CREATED=$backup"
+      - name: Fill only absent SKU fields, preserving every existing SKU (transaction)
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          timeout 240 sshpass -e ssh -o ConnectTimeout=15 -o ServerAliveInterval=20 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-db-vesta sh -c '\''MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw --default-character-set=utf8mb4'\''' < apply.sql | tee apply-result.txt
+          grep -Eq 'UPDATED_SKUS|NO_SKUS_TO_UPDATE' apply-result.txt
+      - name: Independently re-read live DB and verify IDs, SKUs and protected products
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          timeout 240 sshpass -e ssh -o ConnectTimeout=15 -o ServerAliveInterval=20 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-db-vesta sh -c '\''MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw --default-character-set=utf8mb4'\''' < inventory.sql > after.tsv
+          python3 - <<'PY'
+          import csv,json
+          def read(name):
+              with open(name,encoding='utf-8') as f:return {r['id']:r for r in csv.DictReader(f,delimiter='\t')}
+          before,after=read('before.tsv'),read('after.tsv')
+          ids=[x.strip() for x in open('targets.txt') if x.strip()]
+          errors=[i for i in ids if i not in after or after[i]['sku']!=i]
+          changed_existing=[i for i,r in before.items() if r['sku'].strip() and (i not in after or after[i]['sku']!=r['sku'])]
+          if errors or changed_existing:raise SystemExit('LIVE VERIFICATION FAILED: '+str((errors,changed_existing)))
+          print('LIVE_VERIFIED_NEW_SKUS',len(ids))
+          print('EXISTING_SKUS_PRESERVED',sum(bool(r['sku'].strip()) for r in before.values()))
+          json.dump({'sku_updates_verified':len(ids),'all_preexisting_skus_preserved':not changed_existing},open('sku-verification.json','w'),indent=2)
+          PY
+      - name: Upload audit artifact for reconciliation
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vesta-active-sku-filled-20261102
+          path: |
+            targets.txt
+            sku-preflight.json
+            sku-verification.json
+            sku-meta-before.tsv
+            apply-result.txt
+            before.tsv
+            after.tsv
+          retention-days: 7
+          if-no-files-found: warn
