@@ -1,0 +1,97 @@
+name: Export current Vesta in-stock catalog (read-only)
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/export-vesta-available-20261102.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Install SSH client
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read current live published WooCommerce inventory
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "$HOST" && test -n "$SSHPASS"
+          cat > catalog.sql <<'SQL'
+          SELECT p.ID AS id,
+                 p.post_parent AS parent_id,
+                 p.post_type AS item_type,
+                 IF(p.post_type='product_variation',COALESCE(NULLIF(pp.post_title,''),p.post_title),p.post_title) AS product_name,
+                 IF(p.post_type='product_variation',COALESCE(p.post_excerpt,''),'') AS variant_name,
+                 COALESCE((SELECT meta_value FROM wp_postmeta WHERE post_id=p.ID AND meta_key='_sku' LIMIT 1),'') AS sku,
+                 COALESCE((SELECT meta_value FROM wp_postmeta WHERE post_id=p.ID AND meta_key='_stock_status' LIMIT 1),'') AS stock_status,
+                 COALESCE((SELECT meta_value FROM wp_postmeta WHERE post_id=p.ID AND meta_key='_manage_stock' LIMIT 1),'') AS manage_stock,
+                 COALESCE((SELECT meta_value FROM wp_postmeta WHERE post_id=p.ID AND meta_key='_stock' LIMIT 1),'') AS stock_quantity,
+                 COALESCE((SELECT meta_value FROM wp_postmeta WHERE post_id=p.ID AND meta_key='_price' LIMIT 1),'') AS price,
+                 COALESCE((SELECT meta_value FROM wp_postmeta WHERE post_id=p.ID AND meta_key='_regular_price' LIMIT 1),'') AS regular_price,
+                 p.post_date AS created_date,
+                 IF(p.post_type='product_variation',pp.ID,p.ID) AS shop_product_id
+          FROM wp_posts p
+          LEFT JOIN wp_posts pp ON p.post_parent=pp.ID
+          WHERE p.post_type IN ('product','product_variation')
+            AND p.post_status='publish'
+            AND (p.post_type='product' OR pp.post_status='publish')
+          ORDER BY p.ID DESC;
+          SQL
+          timeout 240 sshpass -e ssh -o ConnectTimeout=15 -o ServerAliveInterval=20 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-db-vesta sh -c '\''MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw --default-character-set=utf8mb4'\''' < catalog.sql > catalog.tsv
+          test -s catalog.tsv
+          rm catalog.sql
+      - name: Build SKU-inclusive CSV with only orderable stock and summary
+        run: |
+          python3 - <<'PY'
+          import csv, json, re
+          from datetime import datetime,timezone
+          rows = []
+          with open('catalog.tsv', encoding='utf-8') as f:
+              reader = csv.DictReader(f, delimiter='\t')
+              rows = list(reader)
+          par={r['id']:r for r in rows if r['item_type']=='product'}
+          variable_parents={r['parent_id'] for r in rows if r['item_type']=='product_variation'}
+          output=[]
+          for r in rows:
+              if r['item_type']=='product' and r['id'] in variable_parents: continue
+              if r['stock_status']!='instock': continue
+              manage=r['manage_stock'].lower() in ('yes','1','true')
+              qty=r['stock_quantity'].strip()
+              if manage and re.fullmatch(r'-?\d+(?:\.\d+)?',qty) and float(qty)<=0: continue
+              pid=r['shop_product_id']
+              p=r if r['item_type']=='product' else par.get(r['parent_id'],r)
+              newer=r['created_date'][:10]>'2026-10-28' or p['created_date'][:10]>'2026-10-28'
+              output.append([
+                  r['sku'],r['id'],pid,
+                  r['product_name'].replace('\t',' ').replace('\n',' ').strip(),
+                  r['variant_name'].replace('\t',' ').replace('\n',' ').strip(),
+                  'تنوع' if r['item_type']=='product_variation' else 'ساده',
+                  r['price'],r['regular_price'],qty if manage else '',
+                  'موجود', 'بله' if newer else 'خیر',
+                  f'https://vesta-cosmetics.ir/?post_type=product&p={pid}'
+              ])
+          out='Vesta_Available_Products_2026-11-02.csv'
+          header=['SKU','شناسه کالا یا تنوع','شناسه محصول مادر','نام محصول','مدل یا رنگ','نوع','قیمت جاری (ریال)','قیمت اصلی (ریال)','موجودی عددی (درصورت مدیریت موجودی)','وضعیت','اضافه‌شده بعد از ۲۸ اکتبر','لینک محصول']
+          with open(out,'w',encoding='utf-8-sig',newline='') as f:
+              w=csv.writer(f)
+              w.writerow(header);w.writerows(output)
+          summary={'extracted_utc':datetime.now(timezone.utc).isoformat(),'source':'Vesta live WooCommerce MariaDB (read-only)','published_catalog_rows':len(rows),'in_stock_sellable_rows':len(output),'with_sku':sum(bool(r[0]) for r in output),'missing_sku':sum(not bool(r[0]) for r in output),'new_since_oct_28':sum(r[10]=='بله' for r in output)}
+          with open('Vesta_Available_Products_Summary_2026-11-02.json','w',encoding='utf-8') as f:json.dump(summary,f,ensure_ascii=False,indent=2)
+          print('EXPORT_SUMMARY='+json.dumps(summary,ensure_ascii=False))
+          assert output,'No in-stock rows exported'
+          PY
+      - name: Upload available product export
+        uses: actions/upload-artifact@v4
+        with:
+          name: Vesta-Available-Products-2026-11-02
+          path: |
+            Vesta_Available_Products_2026-11-02.csv
+            Vesta_Available_Products_Summary_2026-11-02.json
+          retention-days: 7
+          if-no-files-found: error
