@@ -1,0 +1,45 @@
+name: Prepare private Vesta installer key enrollment
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/activate-vesta-installer-20261107.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: vesta-installer-key-enrollment-20261107
+  cancel-in-progress: false
+jobs:
+  enrollment:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Check the installer account and prepare one-use key transport
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          test -n "$HOST" && test -n "$SSHPASS"
+          timeout 100 sshpass -e ssh -T -o ConnectTimeout=18 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          umask 077
+          account=vesta-installer
+          home_path=/home/$account
+          test "$(getent passwd "$account" | cut -d: -f6)" = "$home_path"
+          test "$(id -nG "$account")" = "$account"
+          test "$(passwd -S "$account" | awk '{print $2}')" = L
+          test -d "$home_path/.ssh" && test ! -L "$home_path/.ssh"
+          test -f "$home_path/.ssh/authorized_keys" && test ! -L "$home_path/.ssh/authorized_keys"
+          test ! -s "$home_path/.ssh/authorized_keys"
+          sshd -t
+          host_key=$(awk 'NR == 1 {print $1 " " $2}' /etc/ssh/ssh_host_ed25519_key.pub)
+          stage=/run/vesta-key-enrollment-fd1cc789e0cf5c3e
+          mkdir -m 700 "$stage"
+          trap 'rm -rf -- "$stage"' ERR
+          openssl genpkey -quiet -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out "$stage/transport.pem"
+          printf 'HOST_KEY=%s\n' "$host_key"
+          printf 'ENROLLMENT_TRANSPORT_KEY='
+          openssl pkey -in "$stage/transport.pem" -pubout -outform DER | base64 -w0
+          printf '\nINSTALLER_ACCOUNT_READY\n'
+          REMOTE
