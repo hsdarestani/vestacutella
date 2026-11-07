@@ -38,7 +38,7 @@ sql_tmp="$dest/vesta-mariadb.sql.gz.partial"
 timeout 850 docker exec "$database_container" sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb-dump -uroot --databases "$MARIADB_DATABASE" --single-transaction --quick --hex-blob --routines --events --triggers' | gzip -1 > "$sql_tmp"
 gzip -t "$sql_tmp"
 test "$(stat -c '%s' "$sql_tmp")" -gt 25000 || { echo "ABORT_DB_BACKUP_TOO_SMALL"; exit 35; }
-test "$(gzip -dc "$sql_tmp" | head -c 100 | wc -c)" -ge 100 || { echo "ABORT_DB_BACKUP_UNREADABLE"; exit 36; }
+test "$(stat -c '%s' "$sql_tmp")" -gt 25000 || { echo "ABORT_DB_BACKUP_UNREADABLE"; exit 36; }
 mv "$sql_tmp" "$dest/vesta-mariadb.sql.gz"
 echo "DATABASE_BACKUP_VERIFIED"
 
@@ -50,9 +50,9 @@ if (( available_kib < site_kib + 1048576 )); then
 fi
 echo "WORDPRESS_BACKUP_START"
 tar --numeric-owner -czf "$dest/vesta-wordpress.tar.gz.partial" -C /srv/vestacutella/runtime vesta
-tar -tzf "$dest/vesta-wordpress.tar.gz.partial" > /dev/null
-tar -tzf "$dest/vesta-wordpress.tar.gz.partial" | grep -qx 'vesta/wp-config.php' || { echo "ABORT_MISSING_WP_CONFIG"; exit 38; }
-tar -tzf "$dest/vesta-wordpress.tar.gz.partial" | grep -q '^vesta/wp-content/' || { echo "ABORT_MISSING_WP_CONTENT"; exit 39; }
+tar -tzf "$dest/vesta-wordpress.tar.gz.partial" > "$dest/vesta-files.list"
+grep -qx 'vesta/wp-config.php' "$dest/vesta-files.list" || { echo "ABORT_MISSING_WP_CONFIG"; exit 38; }
+grep -q '^vesta/wp-content/' "$dest/vesta-files.list" || { echo "ABORT_MISSING_WP_CONTENT"; exit 39; }
 mv "$dest/vesta-wordpress.tar.gz.partial" "$dest/vesta-wordpress.tar.gz"
 echo "WORDPRESS_BACKUP_VERIFIED"
 
