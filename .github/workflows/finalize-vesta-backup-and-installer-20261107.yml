@@ -1,0 +1,26 @@
+name: Finalize Vesta backup and prepare installer account
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/finalize-vesta-backup-and-installer-20261107.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: vesta-pre-installer-20261107
+  cancel-in-progress: false
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SSH helper
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Verify the existing archive and prepare the installer account
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          test -n "$HOST" && test -n "$SSHPASS"
+          timeout 1250 sshpass -e ssh -T -o ConnectTimeout=18 -o ServerAliveInterval=15 -o ServerAliveCountMax=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' < scripts/finalize-vesta-backup-and-installer-20261107.sh
