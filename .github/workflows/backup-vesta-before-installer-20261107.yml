@@ -1,0 +1,29 @@
+name: Verified Vesta site backup and locked installer account
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/backup-vesta-before-installer-20261107.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-pre-installer-20261107
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SSH client
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Back up Vesta and prepare restricted server user
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          test -n "$HOST" && test -n "$SSHPASS"
+          timeout 90 sshpass -e scp -o ConnectTimeout=18 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/backup-vesta-before-installer-20261107.sh "root@$HOST:/tmp/backup-vesta-before-installer-20261107.sh"
+          timeout 1950 sshpass -e ssh -o ConnectTimeout=18 -o ServerAliveInterval=15 -o ServerAliveCountMax=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/backup-vesta-before-installer-20261107.sh'
