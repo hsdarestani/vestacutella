@@ -1,0 +1,32 @@
+name: Audit Vesta Pinterest readiness (read-only)
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/audit-vesta-pinterest-readiness-20261108.yml'
+      - 'scripts/audit-vesta-pinterest-readiness-20261108.sh'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vc-vesta-pinterest-readiness
+  cancel-in-progress: false
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate audit script
+        run: bash -n scripts/audit-vesta-pinterest-readiness-20261108.sh
+      - name: Install SSH client
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Inspect site and WooCommerce product data without changes
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          test -n "$HOST" && test -n "$SSHPASS"
+          timeout 60 sshpass -e scp -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/audit-vesta-pinterest-readiness-20261108.sh "root@$HOST:/tmp/audit-vesta-pinterest-readiness-20261108.sh"
+          timeout 180 sshpass -e ssh -o ConnectTimeout=12 -o ServerAliveInterval=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/audit-vesta-pinterest-readiness-20261108.sh; rc=$?; rm -f /tmp/audit-vesta-pinterest-readiness-20261108.sh; exit "$rc"'
