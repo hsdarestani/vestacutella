@@ -1,0 +1,37 @@
+name: Deploy Vesta Pinterest retail product CSV feed safely
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/vesta-pinterest-feed-generator-20261108.php
+      - scripts/deploy-vesta-pinterest-feed-20261108.sh
+      - .github/workflows/deploy-vesta-pinterest-feed-20261108.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vc-vesta-pinterest-feed-deploy
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate PHP and deployment
+        run: |
+          set -euo pipefail
+          php -l scripts/vesta-pinterest-feed-generator-20261108.php
+          bash -n scripts/deploy-vesta-pinterest-feed-20261108.sh
+      - name: Install SSH client
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Deploy generator and schedule safe updates
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          test -n "$HOST" && test -n "$SSHPASS"
+          timeout 70 sshpass -e scp -o ConnectTimeout=18 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/vesta-pinterest-feed-generator-20261108.php "root@$HOST:/tmp/vesta-pinterest-feed-generator.php"
+          timeout 70 sshpass -e scp -o ConnectTimeout=18 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/deploy-vesta-pinterest-feed-20261108.sh "root@$HOST:/tmp/deploy-vesta-pinterest-feed-20261108.sh"
+          timeout 620 sshpass -e ssh -o ConnectTimeout=18 -o ServerAliveInterval=20 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/deploy-vesta-pinterest-feed-20261108.sh'
