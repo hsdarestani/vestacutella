@@ -1,0 +1,37 @@
+name: Deploy Vesta Pinterest product sharing safely
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'infra/plugins/vesta-pinterest-sharing/vesta-pinterest-sharing.php'
+      - 'scripts/deploy-vesta-pinterest-sharing-20261108.sh'
+      - '.github/workflows/deploy-vesta-pinterest-sharing-20261108.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-pinterest-sharing-deploy
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate PHP and deploy shell
+        run: |
+          set -euo pipefail
+          bash -n scripts/deploy-vesta-pinterest-sharing-20261108.sh
+          php -l infra/plugins/vesta-pinterest-sharing/vesta-pinterest-sharing.php
+      - name: Install SSH client
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Deploy scoped plugin to Vesta only; rollback on failed verification
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          test -n "$HOST" && test -n "$SSHPASS"
+          timeout 60 sshpass -e scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null infra/plugins/vesta-pinterest-sharing/vesta-pinterest-sharing.php "root@$HOST:/tmp/vesta-pinterest-sharing.php"
+          timeout 60 sshpass -e scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/deploy-vesta-pinterest-sharing-20261108.sh "root@$HOST:/tmp/deploy-vesta-pinterest-sharing-20261108.sh"
+          timeout 300 sshpass -e ssh -o ConnectTimeout=15 -o ServerAliveInterval=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/deploy-vesta-pinterest-sharing-20261108.sh'
