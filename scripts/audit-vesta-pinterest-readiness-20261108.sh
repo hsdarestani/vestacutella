@@ -53,3 +53,20 @@ print('SCHEMA_PRODUCT='+str(bool(re.search(r'"@type"\s*:\s*"Product"',s,re.I))).
 print('PRODUCT_MAINTENANCE='+str(bool(re.search('در حال بروز رسانی|در حال بروزرسانی|maintenance',s,re.I))).lower())
 PY
 echo READ_ONLY_AUDIT_COMPLETE
+
+echo '[4] Maintenance origin and SEO plugin identification (read only)'
+docker exec -i vc-vesta php -d display_errors=0 -r '
+error_reporting(E_ERROR|E_PARSE);
+require "/var/www/html/wp-load.php";
+echo "WORDPRESS_MAINTENANCE_FILE=".(file_exists(ABSPATH.".maintenance")?"present":"absent")."\n";
+echo "WORDPRESS_PUBLIC_SEARCH_ENGINE_OPTION=".(int)get_option("blog_public")."\n";
+$plugins=(array)get_option("active_plugins",array());
+foreach($plugins as $plugin) {
+ if(preg_match("~maintenance|coming-soon|under-construction|seedprod|elementor|seo|rank-math|yoast|all-in-one|woocommerce~i",$plugin))
+  echo "ACTIVE_PLUGIN=".preg_replace("~[^a-zA-Z0-9_./-]~","",$plugin)."\n";
+}
+foreach(array("woodmart_maintenance_mode","maintenance_mode","wp_maintenance_mode","seedprod_coming_soon_mode") as $key) {
+  $v=get_option($key,null);
+  if(is_scalar($v)) echo "OPTION_".$key."=".substr((string)$v,0,30)."\n";
+}
+' 2>/dev/null || echo MAINTENANCE_INSPECTION_FAILED
