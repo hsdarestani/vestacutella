@@ -1,0 +1,85 @@
+name: Audit Vesta Bazaar sync scheduling (read-only)
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/audit-vesta-bazaar-sync-20261110.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-bazaar-cron-audit
+  cancel-in-progress: false
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Install SSH helper
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Inspect current production scheduling without modifications
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          test -n "$HOST" && test -n "$SSHPASS"
+          sshpass -e ssh -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          export LC_ALL=C
+          echo "AUDIT_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          if systemctl is-active --quiet cron; then echo HOST_CRON_ACTIVE=yes;else echo HOST_CRON_ACTIVE=no;fi
+          C=/etc/cron.d/vestacutella-wp-cron
+          if [[ -r "$C" ]];then
+            echo VESTA_CRON_FILE_PRESENT=yes
+            awk '/vesta-wp-cron.lock/ {n++;if($1=="*"&&$2=="*"&&$3=="*"&&$4=="*"&&$5=="*") every++;if(index($0,"curl")) https++;if(index($0,"docker exec")) cli++}END{printf "VESTA_CRON_ENTRIES=%d\nVESTA_EVERY_MINUTE=%d\nVESTA_HTTPS_ENTRIES=%d\nVESTA_CLI_ENTRIES=%d\n",n,every,https,cli}' "$C"
+          else echo VESTA_CRON_FILE_PRESENT=no;fi
+          if [[ -f /var/log/vesta-wp-cron-errors.log ]];then
+             echo "CRON_ERROR_LINE_COUNT=$(wc -l </var/log/vesta-wp-cron-errors.log)"
+             echo "CRON_ERROR_LOG_MTIME=$(date -u -r /var/log/vesta-wp-cron-errors.log +%Y-%m-%dT%H:%M:%SZ)"
+          else echo CRON_ERROR_LOG_PRESENT=no;fi
+          echo "VESTA_CONTAINER_UP=$(docker inspect -f '{{.State.Running}}' vc-vesta)"
+          echo "VESTA_DB_UP=$(docker inspect -f '{{.State.Running}}' vc-db-vesta)"
+          echo '===== RELEVANT PLUGIN DIRECTORIES ====='
+          find /srv/vestacutella/runtime/vesta/wp-content/plugins -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | grep -Ei 'bazar|bazaar|maha|market|sync|inventory|connector|erp' | head -50 || true
+          db() { docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw --default-character-set=utf8mb4'; }
+          echo '===== ACTION SCHEDULER COUNTS AND AGE ====='
+          cat <<'SQL' | db
+          SELECT status,COUNT(*) AS actions FROM wp_actionscheduler_actions GROUP BY status ORDER BY actions DESC;
+          SELECT 'PENDING_OLDER_THAN_5MIN',COUNT(*) FROM wp_actionscheduler_actions WHERE status='pending' AND scheduled_date_gmt < UTC_TIMESTAMP() - INTERVAL 5 MINUTE;
+          SELECT 'PENDING_OLDER_THAN_60MIN',COUNT(*) FROM wp_actionscheduler_actions WHERE status='pending' AND scheduled_date_gmt < UTC_TIMESTAMP() - INTERVAL 60 MINUTE;
+          SELECT 'IN_PROGRESS_OLDER_THAN_10MIN',COUNT(*) FROM wp_actionscheduler_actions WHERE status='in-progress' AND last_attempt_gmt < UTC_TIMESTAMP() - INTERVAL 10 MINUTE;
+          SELECT 'LATEST_ACTION_LOG',MAX(log_date_gmt) FROM wp_actionscheduler_logs;
+          SQL
+          echo '===== OVERDUE HOOKS TOP 30 ====='
+          cat <<'SQL' | db
+          SELECT hook,status,COUNT(*) AS total,MIN(scheduled_date_gmt) AS earliest_due
+          FROM wp_actionscheduler_actions WHERE status IN ('pending','in-progress') AND scheduled_date_gmt < UTC_TIMESTAMP()
+          GROUP BY hook,status ORDER BY total DESC LIMIT 30;
+          SQL
+          echo '===== RELATED INTEGRATION HOOKS ====='
+          cat <<'SQL' | db
+          SELECT hook,status,COUNT(*) AS total,MIN(scheduled_date_gmt) AS oldest,MAX(last_attempt_gmt) AS recent_attempt
+          FROM wp_actionscheduler_actions WHERE hook REGEXP 'bazar|bazaar|market|maha|stock|sync|inventory|erp'
+          GROUP BY hook,status ORDER BY total DESC LIMIT 35;
+          SQL
+          echo '===== REGISTERED WP CRON HOOKS ====='
+          db <<'SQL' | docker exec -i vc-vesta php -d memory_limit=256M -r '
+          $raw=trim(stream_get_contents(STDIN));$cr=@unserialize($raw,["allowed_classes"=>false]);
+          if(!is_array($cr)){echo "CRON_OPTION_PARSE_FAILED\n";exit;}
+          $now=time();$total=0;$due=0;$matches=[];
+          foreach($cr as $ts=>$hooks){if(!is_numeric($ts)||!is_array($hooks))continue;
+            foreach($hooks as $hook=>$jobs){$num=is_array($jobs)?count($jobs):0;$total+=$num;if((int)$ts<$now)$due+=$num;
+              if(preg_match("/bazar|bazaar|market|maha|stock|sync|inventory|erp/i",$hook)){
+                if(!isset($matches[$hook]))$matches[$hook]=[0,(int)$ts];
+                $matches[$hook][0]+=$num;$matches[$hook][1]=min($matches[$hook][1],(int)$ts);
+              }
+            }
+          }
+          echo "WP_CRON_TOTAL=$total\nWP_CRON_DUE=$due\n";
+          foreach($matches as $name=>$entry){echo preg_replace("/[^a-zA-Z0-9_:.-]/","?",$name)." count=".$entry[0]." earliest_utc=".gmdate("Y-m-d H:i:s",$entry[1])."\n";}
+          '
+          SELECT option_value FROM wp_options WHERE option_name='cron' LIMIT 1;
+          SQL
+          echo READ_ONLY_AUDIT_COMPLETE=yes
+          REMOTE
