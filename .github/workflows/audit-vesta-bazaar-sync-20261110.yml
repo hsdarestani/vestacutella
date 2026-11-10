@@ -526,5 +526,27 @@ jobs:
               print('IS_POSTMETA_QUERY',bool(re.search(r'wp_postmeta|postmeta',body,re.I)))
               print('IS_META_STATUS_CONDITION',bool(re.search(r'meta_key|meta_value|_bazara',body,re.I)))
           PY
+          echo '===== BAZARA QUERY CONDITIONS REDACTED ====='
+          python3 - <<'PY'
+          import re
+          p='/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara/classes/functions.php'
+          lines=open(p,encoding='utf8',errors='ignore').read().splitlines()
+          funcs=['get_orders','get_left_behind_orders_from_limit']
+          for func in funcs:
+            pos=next((i for i,l in enumerate(lines) if re.search(r'^\s*function\s+'+func+r'\(',l)),None)
+            if pos is None:continue
+            print('FUNC',func)
+            for i in range(pos,min(pos+32,len(lines))):
+              s=lines[i].strip()
+              if re.search(r'SELECT|FROM|JOIN|WHERE|ORDER|AND|meta_key|meta_value|LIMIT|post_status|post_type|query|wpdb',s,re.I):
+                  if re.search(r'(password|token|secret|api_key)',s,re.I):continue
+                  s=re.sub(r'\b\d{6,}\b','[N]',s)
+                  print('SQL_LINE',i+1,s[:200])
+          PY
+          echo '===== ORDER SYNC META KEYS ====='
+          cat <<'SQL' | db
+          SELECT meta_key,COUNT(*) total FROM wp_postmeta WHERE post_id IN (SELECT ID FROM wp_posts WHERE post_type='shop_order' AND ID>=33763 AND ID<105207)
+          AND (meta_key LIKE '%bazara%' OR meta_key LIKE '%bazar%' OR meta_key LIKE '%sync%') GROUP BY meta_key ORDER BY total DESC LIMIT 25;
+          SQL
           echo READ_ONLY_AUDIT_COMPLETE=yes
           REMOTE
