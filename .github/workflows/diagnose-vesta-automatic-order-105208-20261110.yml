@@ -1,0 +1,79 @@
+name: Diagnose Vesta future order 105208 not yet synchronized (read-only)
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/diagnose-vesta-automatic-order-105208-20261110.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read order, item mapping, API error status and background attempts
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          echo "CHECK_UTC=$(date -u +%FT%TZ)"
+          echo '===== ORDER 105208 PUBLIC PRODUCT IDENTIFIERS AND MAPPINGS ====='
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=384M <<'PHP'
+          <?php
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']=443;$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          $order=wc_get_order(105208);
+          if(!$order){echo "ORDER_MISSING=yes\n";exit(0);}
+          echo "ORDER_STATUS=".$order->get_status()."\n";
+          echo "ORDER_ERP_MARKER_PRESENT=".($order->get_meta('mahak_id')?'yes':'no')."\n";
+          echo "ORDER_WOO_ITEMS=".count($order->get_items())."\n";
+          foreach($order->get_items() as $item){
+            $p=$item->get_product();
+            $productId=$item->get_product_id();
+            $variationId=$item->get_variation_id();
+            $id=$variationId?:$productId;
+            echo "ITEM_PRODUCT=$productId VARIATION=$variationId QTY=".$item->get_quantity().
+               " MAPPED_PRODUCT=".(get_post_meta($id,'mahak_id',true)?'yes':'no').
+               " MAPPED_DETAIL=".(get_post_meta($id,'mahak_product_detail_id',true)?'yes':'no').
+               " DETAIL_ID=".(int)get_post_meta($id,'mahak_product_detail_id',true).
+               " STOCK=".($p?var_export($p->get_stock_quantity(),true):'no_product').
+               " STOCK_STATUS=".($p?$p->get_stock_status():'no_product')."\n";
+          }
+          PHP
+          echo '===== ERP ERROR META PRESENT AND CATEGORIES ====='
+          docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw --default-character-set=utf8mb4' <<'SQL' | python3 -c '
+          import sys,re
+          for raw in sys.stdin:
+             parts=raw.rstrip("\n").split("\t")
+             if len(parts)<2 or parts[0]=="meta_key":continue
+             key,msg=parts[0],parts[1]
+             cat="other"
+             for c,regex in [("stock",r"موجودی|stock|inventory"),("missing_product",r"کالا|product|item"),("authentication",r"token|auth|ورود"),("network",r"timeout|ارتباط|connection"),("duplicate",r"duplicate|تکرار"),("bank",r"bank|بانک|پرداخت"),("missing_data",r"missing|نامعتبر")]:
+               if re.search(regex,msg,re.I):cat=c;break
+             print("ORDER_META_KEY",key,"CATEGORY",cat,"SIZE",len(msg))
+          '
+          SELECT meta_key,meta_value FROM wp_postmeta WHERE post_id=105208 AND meta_key IN('mahak_error','mahak_id');
+          SQL
+          echo '===== LAST RECENT BAZARA LOG CATEGORIES ====='
+          docker logs --since 30m vc-vesta 2>&1 | grep -E 'VC_BAZARA_CATCHUP order=[0-9]+ ok=(yes|no)|Bazara Order Processing: Insufficient stock' | sed -E 's/(Required|Processed|Remaining): [0-9.]+/\1:[N]/g' | tail -16 || true
+          echo '===== CURRENT ERP ASSET AVAILABILITY (105208 ITEM DETAILS ONLY) ====='
+          docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw --default-character-set=utf8mb4' <<'SQL'
+          SELECT o.order_item_id, im.meta_value AS variation_id,
+              dm.meta_value AS remote_detail_id, SUM(COALESCE(a.Count1,0)) AS cached_erp_stock
+          FROM wp_woocommerce_order_items o
+          JOIN wp_woocommerce_order_itemmeta im ON im.order_item_id=o.order_item_id AND im.meta_key='_variation_id'
+          LEFT JOIN wp_postmeta dm ON dm.post_id=CAST(im.meta_value AS UNSIGNED) AND dm.meta_key='mahak_product_detail_id'
+          LEFT JOIN wp_bazara_product_assets a ON a.ProductDetailId=CAST(dm.meta_value AS UNSIGNED) AND a.Deleted=0
+          WHERE o.order_id=105208 AND o.order_item_type='line_item'
+          GROUP BY o.order_item_id,im.meta_value,dm.meta_value;
+          SELECT action_id,status,scheduled_date_gmt,last_attempt_gmt
+          FROM wp_actionscheduler_actions WHERE hook='bazara_run_sending_orders'
+          ORDER BY action_id DESC LIMIT 6;
+          SQL
+          echo DIAG_NEW_ORDER_READ_ONLY_COMPLETE=yes
+          REMOTE
