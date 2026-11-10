@@ -1,0 +1,43 @@
+name: Inspect exact Bazaar outgoing pricing function and sync integration
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/inspect-bazara-outgoing-currency-20261110.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read only exact PHP order API boundaries
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+          p=Path('/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara/classes/class.bazara.api.php')
+          a=p.read_text(encoding='utf8',errors='replace').splitlines()
+          print('TOTAL_PHP_LINES',len(a))
+          for i,s in enumerate(a,1):
+            if re.search(r'(public|private|protected) function .*order|function .*price',s,re.I) and 2650<=i<=3900:
+              print('FUNCTION',i,s.strip()[:180])
+          for start,end in [(2815,2875),(2890,2910),(3045,3090),(3214,3240),(3638,3746),(3745,3805)]:
+            print('===== REGION',start,end,'=====')
+            for i in range(start,min(end,len(a))+1):
+              line=a[i-1].rstrip()
+              if re.search(r'password|token|access.?key|secret|bearer|authorization',line,re.I):
+                print(i,'[SECRET CONTEXT REDACTED]');continue
+              if re.search(r'[\'"](?:http|https)://',line,re.I):
+                line=re.sub(r'https?://[^\'"\s]+','[URL]',line)
+              print(i,line[:225])
+          PY
+          echo INSPECT_OUTGOING_READONLY_DONE=yes
+          REMOTE
