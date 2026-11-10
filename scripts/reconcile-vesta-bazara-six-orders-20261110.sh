@@ -16,8 +16,8 @@ for expected in 105053 105204 105205 105206 105207;do
   echo "===== ORDER=$expected ====="
   ack=$(num "SELECT COALESCE(MAX(CAST(meta_value AS SIGNED)),0) FROM wp_postmeta WHERE post_id=$expected AND meta_key='mahak_id';")
   cached=$(num "SELECT COUNT(*) FROM wp_bazara_orders WHERE OrderClientId=$expected;")
-  if [[ "$ack" =~ ^[0-9]+$ ]] && ((ack>0)) && ((cached>0));then
-    echo "ORDER=$expected STATUS=already_confirmed ERP_ENTITY=$ack"
+  if [[ "$ack" =~ ^[0-9]+$ ]] && ((ack>0));then
+    echo "ORDER=$expected STATUS=confirmed_positive_remote_ack ERP_ENTITY=$ack CACHED=$cached"
     continue
   fi
   if [[ "$ack" != 0 || "$cached" != 0 ]];then
@@ -58,7 +58,7 @@ PHP
     sleep 5
     ack=$(num "SELECT COALESCE(MAX(CAST(meta_value AS SIGNED)),0) FROM wp_postmeta WHERE post_id=$expected AND meta_key='mahak_id';")
     cached=$(num "SELECT COUNT(*) FROM wp_bazara_orders WHERE OrderClientId=$expected;")
-    if [[ "$ack" =~ ^[0-9]+$ ]] && ((ack>0)) && ((cached>0));then confirmed=yes;break;fi
+    if [[ "$ack" =~ ^[0-9]+$ ]] && ((ack>0));then confirmed=yes;break;fi
     if [[ "$ack" != 0 || "$cached" != 0 ]];then
       echo "ORDER=$expected ERROR=partial_confirmation ACK=$ack CACHED=$cached STOP=yes"
       exit 17
