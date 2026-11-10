@@ -313,5 +313,23 @@ jobs:
           FROM wp_options WHERE option_name LIKE '%bazara%' AND (option_name LIKE '%cron%' OR option_name LIKE '%minute%' OR option_name LIKE '%interval%')
           LIMIT 25;
           SQL
+          echo '===== BAZARA ORDER SELECTION / CURSOR FLOW ====='
+          python3 - <<'PY'
+          import re
+          p='/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara/classes/class.bazara.api.php'
+          lines=open(p,encoding='utf8',errors='replace').read().splitlines()
+          for i in range(2615,2748):
+              line=lines[i-1]
+              if re.search(r'order|max_id|left_behind|limit|query|result|success|option|wpdb|return|foreach|for\s*\(',line,re.I):
+                  s=re.sub(r"'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"",'[STR]',line)
+                  s=re.sub(r'\s+',' ',s).strip()
+                  if s:print(i,s[:165])
+          PY
+          echo '===== BAZARA ORDER STORAGE SCHEMA SUMMARY ====='
+          cat <<'SQL' | db
+          SHOW COLUMNS FROM wp_bazara_orders;
+          SELECT 'bazara_order_rows',COUNT(*) FROM wp_bazara_orders;
+          SELECT 'woo_legacy_orders',COUNT(*) FROM wp_posts WHERE post_type='shop_order';
+          SQL
           echo READ_ONLY_AUDIT_COMPLETE=yes
           REMOTE
