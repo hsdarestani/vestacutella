@@ -1,0 +1,67 @@
+name: Verify Vesta future Bazaar order auto-sync readiness
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/verify-vesta-future-bazara-orders-20261110.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  read-only-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Setup SSH client
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read production cron, order markers and new-order queue
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          test -n "$HOST" && test -n "$SSHPASS"
+          sshpass -e ssh -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          export LC_ALL=C
+          echo "LIVE_CHECK_UTC=$(date -u +%FT%TZ)"
+          echo "CRON_SERVICE=$(systemctl is-active cron)"
+          if grep -qF 'vesta-wp-cron.lock' /etc/cron.d/vestacutella-wp-cron;then echo "VESTA_HOST_CRON_REGISTERED=yes";else echo "VESTA_HOST_CRON_REGISTERED=no";fi
+          if grep -qF 'VC_RECENT_BAZARA_CATCHUP_20261110' /srv/vestacutella/runtime/vesta/wp-content/plugins/bazara/classes/class.bazara.api.php;then echo "BOUNDED_BAZARA_CATCHUP_INSTALLED=yes";else echo "BOUNDED_BAZARA_CATCHUP_INSTALLED=no";fi
+          db() { docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw --default-character-set=utf8mb4'; }
+          echo '===== CURRENT ORDER QUEUE / PENDING SINCE NOV 8 ====='
+          cat <<'SQL' | db
+          SELECT 'TOTAL_ELIGIBLE_UNMARKED_SINCE_NOV8',COUNT(*) FROM wp_posts p
+          LEFT JOIN wp_postmeta m ON m.post_id=p.ID AND m.meta_key='mahak_id' AND CAST(m.meta_value AS SIGNED)>0
+          WHERE p.post_type='shop_order'
+          AND p.post_date_gmt>='2026-11-08 00:00:00'
+          AND p.post_status IN ('wc-completed','wc-processing','wc-processing5','wc-pws-packaged','wc-pws-shipping','wc-arrival-shipment')
+          AND m.meta_id IS NULL;
+          SELECT 'NEW_ORDER_IDS_AFTER_105207',ID,post_date_gmt,post_status,
+          CASE WHEN EXISTS(SELECT 1 FROM wp_postmeta pm WHERE pm.post_id=wp_posts.ID AND pm.meta_key='mahak_id' AND CAST(pm.meta_value AS SIGNED)>0) THEN 'confirmed' ELSE 'unmarked' END
+          FROM wp_posts WHERE post_type='shop_order' AND ID>105207 ORDER BY ID DESC LIMIT 12;
+          SELECT 'RECENT_BAZARA_ACTIONS',action_id,hook,status,scheduled_date_gmt,last_attempt_gmt
+          FROM wp_actionscheduler_actions WHERE hook='bazara_run_sending_orders' ORDER BY action_id DESC LIMIT 10;
+          SELECT 'NEW_ORDER_ACKS',p.ID,COALESCE(MAX(CASE WHEN m.meta_key='mahak_id' THEN CAST(m.meta_value AS SIGNED) END),0)
+          FROM wp_posts p LEFT JOIN wp_postmeta m ON m.post_id=p.ID AND m.meta_key='mahak_id'
+          WHERE p.ID IN (105052,105053,105204,105205,105206,105207)
+          GROUP BY p.ID ORDER BY p.ID;
+          SQL
+          echo '===== BAZARA AUTO-SCHEDULE REGISTRATION ====='
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=384M <<'PHP'
+          <?php
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          echo "ORDER_HOOK_LISTENER=".(has_action('bazara_run_sending_orders')?'yes':'no')."\n";
+          $sched=as_get_scheduled_actions(['hook'=>'bazara_run_sending_orders','status'=>'pending','per_page'=>3],'ids');
+          echo "BAZARA_PENDING_REGISTERED_ACTIONS=".count($sched)."\n";
+          $conf=get_option('bazara_visitor_settings',[]);
+          if(is_array($conf)){
+            foreach(['order_id_greater_than','left_behind_sync_limit'] as $k) {
+              $v=$conf[$k]??null;
+              echo "CONFIG_".$k."=".(is_numeric($v)?(int)$v:'not_numeric')."\n";
+            }
+          }
+          PHP
+          echo "LIVE_READ_ONLY_CHECK_FINISHED=yes"
+          REMOTE
