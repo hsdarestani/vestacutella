@@ -88,3 +88,32 @@ jobs:
           SQL
           echo SECOND_AUDIT_DONE=yes
           REMOTE
+      - name: Diagnose protected PHP failure without replay
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          echo '===== SEND STDERR ERROR CLASS ====='
+          python3 - <<'PY'
+          import re
+          p='/srv/backups/vesta-bazara-replay-20261110T143314Z/send-stderr.log'
+          s=open(p,encoding='utf8',errors='replace').read()
+          print('STDERR_BYTE_COUNT',len(s))
+          for line in s.splitlines()[:25]:
+             line=re.sub(r'https?://[^\s]+','[URL]',line)
+             line=re.sub(r'(password|token|secret)\s*[:=]\s*\S+',r'\1=[REDACTED]',line,flags=re.I)
+             line=re.sub(r'[A-Za-z0-9+/_=-]{45,}','[REDACTED]',line)
+             print('PHP_ERROR_LINE',line[:330])
+          p2='/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara/classes/class.bazara.api.php'
+          t=open(p2,encoding='utf8',errors='ignore').read()
+          print('API_CONSTRUCTOR_DEFINED',bool(re.search(r'function\s+__construct\s*\(',t)))
+          PY
+          echo '===== VERIFY ORDER STILL NOT SENT ====='
+          docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw --default-character-set=utf8mb4' <<'SQL'
+          SELECT 'order_105052_maha_id',COUNT(*) FROM wp_postmeta WHERE post_id=105052 AND meta_key='mahak_id' AND meta_value<>'';
+          SELECT 'order_105052_bazara_local',COUNT(*) FROM wp_bazara_orders WHERE OrderClientId=105052;
+          SQL
+          REMOTE
