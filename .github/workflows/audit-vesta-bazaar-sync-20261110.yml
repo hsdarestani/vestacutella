@@ -331,5 +331,60 @@ jobs:
           SELECT 'bazara_order_rows',COUNT(*) FROM wp_bazara_orders;
           SELECT 'woo_legacy_orders',COUNT(*) FROM wp_posts WHERE post_type='shop_order';
           SQL
+          echo '===== BAZARA API NETWORK DIAGNOSTICS (NO CREDENTIALS) ====='
+          python3 - <<'PY'
+          import re,os,urllib.parse
+          root='/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara'
+          hosts=set()
+          for d,_,fs in os.walk(root):
+            for fn in fs:
+              if not fn.endswith('.php'):continue
+              try:s=open(os.path.join(d,fn),encoding='utf8',errors='ignore').read()
+              except:continue
+              for url in re.findall(r'https?://[a-zA-Z0-9_.:-]+',s):
+                try:host=urllib.parse.urlsplit(url).hostname
+                except:continue
+                if host and re.search(r'bazar|api',host,re.I) and not host.startswith('127.') and host!='localhost':hosts.add(host)
+          print('BAZARA_API_HOST_COUNT',len(hosts))
+          with open('/tmp/vesta-bazara-audit-hosts.txt','w') as p:
+            for host in sorted(hosts):
+              p.write(host+'\n')
+              print('PUBLIC_API_HOST',host)
+          PY
+          if [[ -s /tmp/vesta-bazara-audit-hosts.txt ]];then
+            while IFS= read -r h;do
+              echo "HOST_PROBE=$h"
+              getent ahostsv4 "$h" >/dev/null && echo 'DNS_RESOLUTION=ok' || echo 'DNS_RESOLUTION=failed'
+              curl -k -sS -I --connect-timeout 5 --max-time 9 -o /dev/null -w 'HTTP=%{http_code} CONNECT=%{time_connect} TOTAL=%{time_total}\n' "https://$h/" || echo 'HTTP_PROBE_FAILED'
+            done </tmp/vesta-bazara-audit-hosts.txt
+          fi
+          rm -f /tmp/vesta-bazara-audit-hosts.txt
+          echo '===== ORDER QUERY FUNCTION SHAPES ====='
+          python3 - <<'PY'
+          import re,os
+          root='/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara'
+          targets=['get_orders','get_orders_hpos','get_left_behind_orders_from_limit','get_left_behind_orders_from_limit_hpos']
+          for method in targets:
+            for d,_,fs in os.walk(root):
+              for fn in fs:
+                if not fn.endswith('.php'):continue
+                p=os.path.join(d,fn)
+                try:s=open(p,encoding='utf8',errors='replace').read()
+                except:continue
+                m=re.search(r'\bfunction\s+'+method+r'\s*\(',s)
+                if not m:continue
+                a=s.find('{',m.end());n=1;i=a+1
+                while i<len(s) and n:
+                  n+=(s[i]=='{')-(s[i]=='}');i+=1
+                body=s[a+1:i-1]
+                print('QUERY_FUNCTION',method,'FILE',os.path.relpath(p,root),'LINES',body.count('\n')+1,
+                  'LIMIT_LITERAL_COUNT',len(re.findall(r'\bLIMIT\b',body,re.I)),
+                  'POSTS_PER_PAGE_COUNT',len(re.findall(r'posts_per_page',body,re.I)),
+                  'NUMERIC_MINUS_ONE_COUNT',len(re.findall(r'-1',body)),
+                  'ORDER_BY_ID',len(re.findall(r'ORDER\s+BY',body,re.I)))
+                break
+              else:continue
+              break
+          PY
           echo READ_ONLY_AUDIT_COMPLETE=yes
           REMOTE
