@@ -69,3 +69,37 @@ jobs:
           PY
           echo BAZARA_REJECTION_DIAG_COMPLETE=yes
           REMOTE
+      - name: Check Woo order item mappings and stock without writes
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          echo '===== SAFE ORDER ITEM INVENTORY CHECK ====='
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=384M <<'PHP'
+          <?php
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']=443;$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          foreach(array(105052,105053,105204,105205,105206,105207) as $id) {
+            $o=wc_get_order($id);
+            if (!$o) continue;
+            echo "ORDER=".$id." STATUS=".$o->get_status()." LINE_ITEMS=".count($o->get_items())."\n";
+            foreach($o->get_items() as $item){
+              $product=$item->get_product();
+              if (!$product){echo "ITEM_MISSING_PRODUCT=yes\n";continue;}
+              $p_id=$product->get_id();
+              $mapped=get_post_meta($p_id,'mahak_product_detail_id',true);
+              $parent=$product->get_parent_id();
+              $stock=$product->get_stock_quantity();
+              echo "PRODUCT_ID=".$p_id." QTY=".$item->get_quantity()." MAHAK_MAPPING=".($mapped!==''?'yes':'no')." WOO_STOCK=".($stock===null?'not_managed':(float)$stock)." STOCK_STATUS=".$product->get_stock_status()." PARENT=".$parent."\n";
+            }
+          }
+          PHP
+          echo '===== BAZARA ASSET SCHEMA ====='
+          docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw --default-character-set=utf8mb4' <<'SQL'
+          SHOW COLUMNS FROM wp_bazara_product_assets;
+          SELECT COUNT(*) AS assets FROM wp_bazara_product_assets;
+          SQL
+          REMOTE
