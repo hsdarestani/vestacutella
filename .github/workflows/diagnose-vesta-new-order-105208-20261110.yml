@@ -1,0 +1,73 @@
+name: Diagnose new Vesta order 105208 not auto-synced
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/diagnose-vesta-new-order-105208-20261110.yml"
+  workflow_dispatch:
+permissions: 
+  contents: read
+jobs:
+  read-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read order status, stock and mappings without sending or changing anything
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          echo "AUDIT_AT_UTC=$(date -u +%FT%TZ)"
+          db() { docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw --default-character-set=utf8mb4'; }
+          echo '===== ORDER DETAILS SAFE ====='
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=384M <<'PHP'
+          <?php
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          $order=wc_get_order(105208);
+          if(!$order){echo "ORDER_NOT_FOUND\n";exit(13);}
+          echo "ORDER_ID=105208\nORDER_STATUS=".$order->get_status()."\n";
+          $v=$order->get_meta('mahak_id',true);
+          echo "REMOTE_RECEIPT=".((is_numeric($v)&&$v>0)?(int)$v:'none')."\n";
+          $e=$order->get_meta('mahak_error',true);
+          echo "HAS_ERPCONNECTOR_ERROR=".($e!==''?'yes':'no')."\n";
+          if($e!==''){
+            $raw=is_string($e)?$e:wp_json_encode($e);
+            echo "ERROR_CATEGORY=";
+            if(preg_match('/موجودی|stock|inventory/u',$raw))echo "stock"; 
+            elseif(preg_match('/product|کالا|اقلام/u',$raw))echo "product";
+            elseif(preg_match('/timeout|connection|ارتباط/u',$raw))echo "connection";
+            elseif(preg_match('/payment|bank|پرداخت|بانک/u',$raw))echo "bank_payment";
+            else echo "unknown";
+            echo "\n";
+          }
+          echo "ORDER_ITEM_COUNT=".count($order->get_items())."\n";
+          foreach($order->get_items() as $item) {
+            $prod=$item->get_product();
+            if(!$prod){echo "ITEM_MISSING_PRODUCT=yes\n";continue;}
+            $id=$prod->get_id();$parent=$prod->get_parent_id();
+            $mappedDetail=get_post_meta($id,'mahak_product_detail_id',true);
+            $mappedProduct=get_post_meta($id,'mahak_id',true);
+            echo "ITEM_ID=$id PARENT=$parent QTY=".$item->get_quantity()
+                ." DETAIL_MAPPED=".($mappedDetail!==''?'yes':'no')
+                ." ERP_PRODUCT_MAPPED=".($mappedProduct!==''?'yes':'no')
+                ." WOO_STOCK=".($prod->get_stock_quantity()===null?'not_managed':$prod->get_stock_quantity())
+                ." STOCK_STATUS=".$prod->get_stock_status()."\n";
+          }
+          PHP
+          echo '===== ERP LOCAL REFERENCE / ACTION SCHEDULER ====='
+          cat <<'SQL' | db
+          SELECT 'ORDER_105208_LOCAL_REF',COUNT(*) FROM wp_bazara_orders WHERE OrderClientId=105208;
+          SELECT a.action_id,a.status,a.scheduled_date_gmt,a.last_attempt_gmt,COUNT(l.log_id) log_count
+          FROM wp_actionscheduler_actions a LEFT JOIN wp_actionscheduler_logs l ON l.action_id=a.action_id
+          WHERE a.hook='bazara_run_sending_orders'
+          GROUP BY a.action_id,a.status,a.scheduled_date_gmt,a.last_attempt_gmt
+          ORDER BY a.action_id DESC LIMIT 4;
+          SELECT 'ORDER_105208_HAS_MAHAK_ERROR',COUNT(*) FROM wp_postmeta WHERE post_id=105208 AND meta_key='mahak_error';
+          SQL
+          echo "ORDER_READ_ONLY_DIAG_FINISHED=yes"
+          REMOTE
