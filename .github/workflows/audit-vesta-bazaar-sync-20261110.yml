@@ -548,5 +548,24 @@ jobs:
           SELECT meta_key,COUNT(*) total FROM wp_postmeta WHERE post_id IN (SELECT ID FROM wp_posts WHERE post_type='shop_order' AND ID>=33763 AND ID<105207)
           AND (meta_key LIKE '%bazara%' OR meta_key LIKE '%bazar%' OR meta_key LIKE '%sync%') GROUP BY meta_key ORDER BY total DESC LIMIT 25;
           SQL
+          echo '===== EXACT LEGACY ORDER BACKLOG COUNTS ====='
+          cat <<'SQL' | db
+          SELECT COUNT(*) AS backlog_from_33763_to_105207
+          FROM wp_posts p
+          LEFT JOIN wp_postmeta pm ON p.ID=pm.post_id AND pm.meta_key='mahak_id'
+          WHERE p.post_type='shop_order'
+            AND p.post_status IN ('wc-completed','wc-processing','wc-processing5','wc-pws-packaged','wc-pws-shipping','wc-arrival-shipment')
+            AND p.ID >=33763 AND p.ID <105207 AND pm.meta_id IS NULL;
+          SELECT COUNT(*) AS pending_new_after_105207
+          FROM wp_posts p
+          LEFT JOIN wp_postmeta pm ON p.ID=pm.post_id AND pm.meta_key='mahak_id'
+          WHERE p.post_type='shop_order'
+            AND p.post_status IN ('wc-completed','wc-processing','wc-processing5','wc-pws-packaged','wc-pws-shipping','wc-arrival-shipment')
+            AND p.ID >=105207 AND pm.meta_id IS NULL;
+          SELECT COUNT(*) AS already_synced_legacy_in_range
+          FROM wp_posts p
+          JOIN wp_postmeta pm ON p.ID=pm.post_id AND pm.meta_key='mahak_id'
+          WHERE p.post_type='shop_order' AND p.ID >=33763 AND p.ID <105207;
+          SQL
           echo READ_ONLY_AUDIT_COMPLETE=yes
           REMOTE
