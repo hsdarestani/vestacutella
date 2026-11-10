@@ -156,5 +156,48 @@ jobs:
           WHERE action_id IN (SELECT action_id FROM wp_actionscheduler_actions WHERE hook='bazara_run_sending_orders' AND status='failed')
           GROUP BY category ORDER BY total DESC;
           SQL
+          echo '===== BAZARA HANDLER STRUCTURE (NON-SENSITIVE KEYWORDS ONLY) ====='
+          python3 - <<'PY'
+          import re
+          p='/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara/classes/functions.php'
+          s=open(p,encoding='utf8',errors='replace').read().splitlines()
+          for name in ('send_bazara_orders','bazara_run_product_synchronize'):
+              matches=[(i,line) for i,line in enumerate(s) if re.search(r'^\s*function\s+'+re.escape(name)+r'\s*\(',line)]
+              print('FUNCTION',name,'declarations',len(matches))
+              for i,_ in matches[:1]:
+                  print('LINE',i+1)
+                  brace=0;started=False;body=[]
+                  for j in range(i,min(i+900,len(s))):
+                      l=s[j];brace+=l.count('{')-l.count('}')
+                      if '{' in l:started=True
+                      body.append(l)
+                      if started and brace<=0:break
+                  b='\n'.join(body)
+                  print('BODY_LINES',len(body))
+                  words=('wp_remote_post','wp_remote_get','wp_remote_request','curl_init','curl_exec','timeout','sleep','usleep','get_orders','wc_get_orders','get_posts','foreach','while','wp_die','wp_send_json','wp_remote_retrieve_response_code','as_schedule','wp_schedule','wp_json_encode','is_wp_error','try','catch','throw','return')
+                  for word in words:
+                      count=len(re.findall(r'\b'+re.escape(word)+r'\b',b,re.I))
+                      if count:print(word,count)
+                  for m in re.finditer(r'["'+"']"+r'(https?://[^"'+ "'" +r'\s]+)',b):
+                      host=re.search(r'https?://([^/]+)',m.group(1))
+                      if host:print('REMOTE_HOST_PRESENT=yes')
+          PY
+          echo '===== DURATION DISTRIBUTION FOR FAILED BAZARA ORDER ACTIONS ====='
+          cat <<'SQL' | db
+          SELECT CASE WHEN TIMESTAMPDIFF(SECOND,MIN(l.log_date_gmt),MAX(l.log_date_gmt))>=300 THEN '300s_plus'
+          WHEN TIMESTAMPDIFF(SECOND,MIN(l.log_date_gmt),MAX(l.log_date_gmt))>=120 THEN '120_to_299s'
+          WHEN TIMESTAMPDIFF(SECOND,MIN(l.log_date_gmt),MAX(l.log_date_gmt))>=30 THEN '30_to_119s'
+          ELSE 'below_30s' END AS duration_bucket,
+          COUNT(DISTINCT a.action_id) actions
+          FROM wp_actionscheduler_actions a JOIN wp_actionscheduler_logs l ON a.action_id=l.action_id
+          WHERE a.hook='bazara_run_sending_orders' AND a.status='failed'
+          GROUP BY a.action_id
+          ORDER BY a.action_id DESC LIMIT 20;
+          SQL
+          echo '===== SCHEDULER GROUP COUNTS ====='
+          cat <<'SQL' | db
+          SELECT g.slug,a.hook,a.status,COUNT(*) num FROM wp_actionscheduler_actions a JOIN wp_actionscheduler_groups g ON g.group_id=a.group_id
+          WHERE a.hook IN ('bazara_run_sending_orders','bazara_run_product_sync') GROUP BY g.slug,a.hook,a.status;
+          SQL
           echo READ_ONLY_AUDIT_COMPLETE=yes
           REMOTE
