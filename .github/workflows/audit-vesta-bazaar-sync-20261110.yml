@@ -309,8 +309,7 @@ jobs:
           echo '===== BAZARA TABLE NAMES / NUMERIC OPTIONS ONLY ====='
           cat <<'SQL' | db
           SHOW TABLES LIKE '%bazar%';
-          SELECT option_name,CASE WHEN option_value REGEXP '^[0-9]+
- THEN option_value ELSE '[non-numeric]' END AS numeric_value
+          SELECT option_name,CASE WHEN option_value NOT REGEXP '[^0-9]' AND LENGTH(option_value)>0 THEN option_value ELSE '[non-numeric]' END AS numeric_value
           FROM wp_options WHERE option_name LIKE '%bazara%' AND (option_name LIKE '%cron%' OR option_name LIKE '%minute%' OR option_name LIKE '%interval%')
           LIMIT 25;
           SQL
