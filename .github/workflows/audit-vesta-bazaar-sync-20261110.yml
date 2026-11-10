@@ -386,5 +386,46 @@ jobs:
               else:continue
               break
           PY
+          echo '===== BAZARA SAFETY-RELEVANT QUERY CONTROL FLOW ====='
+          python3 - <<'PY'
+          import re
+          p='/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara/classes/functions.php'
+          t=open(p,encoding='utf8',errors='replace').read()
+          for name in ['get_orders','get_orders_hpos','get_left_behind_orders_from_limit','get_left_behind_orders_from_limit_hpos']:
+              m=re.search(r'\bfunction\s+'+name+r'\s*\(',t)
+              if not m:continue
+              i=t.find('{',m.end());j=i+1;depth=1
+              while j<len(t) and depth:depth+=(t[j]=='{')-(t[j]=='}');j+=1
+              s=t[m.start():j]
+              # Never print raw identifiers, order data, endpoints or credentials.
+              s=re.sub(r"'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"",'[STR]',s)
+              for n,line in enumerate(s.splitlines()):
+                  if re.search(r'function|SELECT|FROM|WHERE|ORDER BY|LIMIT|get_results|prepare|ORDER|order_id|post_status|post_type|query|return',line,re.I):
+                      print(name,n,re.sub(r'\s+',' ',line).strip()[:160])
+          PY
+          echo '===== BAZARA LOG TABLE SCHEMA AND RECENT CATEGORY FINGERPRINTS ====='
+          db <<'SQL'
+          SHOW COLUMNS FROM wp_bazara_logs;
+          SQL
+          echo '===== BAZARA ACTION FAILURE LOG NORMALIZED ====='
+          cat <<'SQL' | db | python3 -c '
+          import sys,re,hashlib,collections
+          groups=collections.Counter()
+          for line in sys.stdin:
+              fields=line.rstrip("\n").split("\t")
+              if len(fields)<2 or fields[0]=="message":continue
+              msg=fields[0].lower()
+              for pattern,label in ((r"\d+","N"),(r"https?://[^\s]+","URL"),(r"[a-z0-9._%+-]+@[a-z0-9.-]+","EMAIL")):msg=re.sub(pattern,label,msg)
+              msg=re.sub(r"\s+"," ",msg)
+              sig=hashlib.sha256(msg.encode()).hexdigest()[:12]
+              groups[(sig,len(msg))]+=1
+          for (sig,size),count in groups.most_common(10):print("PATTERN_HASH",sig,"NORMALIZED_LEN",size,"COUNT",count)'
+          SELECT l.message,a.hook FROM wp_actionscheduler_logs l JOIN wp_actionscheduler_actions a ON a.action_id=l.action_id WHERE a.hook='bazara_run_sending_orders' AND a.status='failed' ORDER BY l.log_date_gmt DESC LIMIT 350;
+          SQL
+          echo '===== MYSQL ORDER QUERY ROW COUNTS BY ID WINDOW ====='
+          cat <<'SQL' | db
+          SELECT COUNT(*) AS total_orders_past_7days FROM wp_posts WHERE post_type='shop_order' AND post_date_gmt > UTC_TIMESTAMP() - INTERVAL 7 DAY;
+          SELECT COUNT(*) AS total_orders_past_1day FROM wp_posts WHERE post_type='shop_order' AND post_date_gmt > UTC_TIMESTAMP() - INTERVAL 1 DAY;
+          SQL
           echo READ_ONLY_AUDIT_COMPLETE=yes
           REMOTE
