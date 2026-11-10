@@ -455,5 +455,49 @@ jobs:
           FROM wp_actionscheduler_actions WHERE hook='bazara_run_sending_orders'
           GROUP BY status;
           SQL
+          echo '===== BAZARA CURSOR ID ONLY ====='
+          db <<'SQL' | docker exec -i vc-vesta php -r '
+          $d=trim(stream_get_contents(STDIN));$a=explode("\n",$d);$payload=implode("",array_slice($a,1));
+          $v=@unserialize(base64_decode($payload),["allowed_classes"=>false]);
+          if(!is_array($v)){echo "CURSOR_PARSE_FAILED\n";exit;}
+          foreach(["order_id_greater_than","left_behind_sync_limit"] as $key){
+             $x=$v[$key]??null;echo $key."=".(is_numeric($x)?(int)$x:"MISSING")."\n";
+          }
+          '
+          SELECT TO_BASE64(option_value) FROM wp_options WHERE option_name='bazara_visitor_settings' LIMIT 1;
+          SQL
+          echo '===== BAZARA OWN ERRORS SANITIZED ====='
+          cat <<'SQL' | db | python3 -c '
+          import sys,re,collections
+          def clean(t):
+            t=re.sub(r"https?://[^\s,]+","[URL]",t,flags=re.I)
+            t=re.sub(r"[\w.+-]+@[\w.-]+","[EMAIL]",t)
+            t=re.sub(r"\b(?:\d{1,3}\.){3}\d{1,3}\b","[IP]",t)
+            t=re.sub(r"\b\d{5,}\b","[NUMBER]",t)
+            t=re.sub(r"\b[A-Za-z0-9+/=_-]{25,}\b","[SECRET]",t)
+            t=re.sub(r"\s+"," ",t)
+            return t[:180]
+          seen=collections.Counter()
+          for line in sys.stdin:
+            v=line.rstrip("\n").split("\t")
+            if len(v)!=2 or v[0]=="log_title":continue
+            title,comment=map(clean,v)
+            seen[(title,comment)]+=1
+          for (title,comment),count in seen.most_common(12):print("COUNT",count,"TITLE",title,"COMMENT",comment)'
+          SELECT log_title,log_comment FROM wp_bazara_logs ORDER BY log_id DESC LIMIT 100;
+          SQL
+          echo '===== ACTION SCHEDULER ERRORS SANITIZED ====='
+          cat <<'SQL' | db | python3 -c '
+          import sys,re
+          def clean(t):
+            t=re.sub(r"https?://[^\s,]+","[URL]",t,flags=re.I)
+            t=re.sub(r"\b\d{5,}\b","[NUMBER]",t)
+            t=re.sub(r"[\w.+-]+@[\w.-]+","[EMAIL]",t)
+            return t[:180]
+          for ln in sys.stdin:
+             v=ln.rstrip("\n").split("\t")
+             if len(v)>1 and v[0]!="message":print("ACTION",clean(v[0]),"WHEN",v[1])'
+          SELECT l.message,l.log_date_gmt FROM wp_actionscheduler_logs l JOIN wp_actionscheduler_actions a ON a.action_id=l.action_id WHERE a.hook='bazara_run_sending_orders' AND a.status='failed' ORDER BY l.log_date_gmt DESC LIMIT 8;
+          SQL
           echo READ_ONLY_AUDIT_COMPLETE=yes
           REMOTE
