@@ -427,5 +427,33 @@ jobs:
           SELECT COUNT(*) AS total_orders_past_7days FROM wp_posts WHERE post_type='shop_order' AND post_date_gmt > UTC_TIMESTAMP() - INTERVAL 7 DAY;
           SELECT COUNT(*) AS total_orders_past_1day FROM wp_posts WHERE post_type='shop_order' AND post_date_gmt > UTC_TIMESTAMP() - INTERVAL 1 DAY;
           SQL
+          echo '===== BAZARA CONFIG KEY NAMES (NO CONFIG VALUES) ====='
+          python3 - <<'PY'
+          import re
+          p='/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara/classes/class.bazara.api.php'
+          lines=open(p,encoding='utf8',errors='ignore').read().splitlines()
+          for i in [2618,2620,2621,2625,2629,2630,2686,2715,2716]:
+             print('LINE',i,re.findall(r'get_option\s*\(\s*["'"'"']([^"'"'"']+)',lines[i-1])+
+             re.findall(r'update_option\s*\(\s*["'"'"']([^"'"'"']+)',lines[i-1])+
+             re.findall(r'\[\s*["'"'"']([^"'"'"']+)',lines[i-1]))
+          PY
+          echo '===== BAZARA CONFIG OPTION NAMES ====='
+          cat <<'SQL' | db
+          SELECT option_name,LENGTH(option_value) bytes FROM wp_options
+          WHERE option_name LIKE '%bazara%' OR option_name LIKE '%bazar%' ORDER BY option_name LIMIT 45;
+          SQL
+          echo '===== BAZARA OWN LOG COUNTS ====='
+          cat <<'SQL' | db
+          SELECT is_success,COUNT(*) total,MIN(log_updated_date) earliest,MAX(log_updated_date) latest FROM wp_bazara_logs GROUP BY is_success;
+          SELECT is_success,COUNT(*) total FROM wp_bazara_logs WHERE log_updated_date > UTC_TIMESTAMP() - INTERVAL 24 HOUR GROUP BY is_success;
+          SQL
+          echo '===== BAZARA ACTION TIMEOUTS AND RECENT SUCCESS RATE ====='
+          cat <<'SQL' | db
+          SELECT status,COUNT(*) total,
+          ROUND(AVG(TIMESTAMPDIFF(SECOND,scheduled_date_gmt,last_attempt_gmt)),1) avg_wait_secs,
+          MAX(last_attempt_gmt) last_attempt
+          FROM wp_actionscheduler_actions WHERE hook='bazara_run_sending_orders'
+          GROUP BY status;
+          SQL
           echo READ_ONLY_AUDIT_COMPLETE=yes
           REMOTE
