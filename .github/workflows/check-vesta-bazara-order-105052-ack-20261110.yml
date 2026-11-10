@@ -1,0 +1,40 @@
+name: Verify Bazaar acknowledged order 105052 with positive ERP entity ID
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/check-vesta-bazara-order-105052-ack-20261110.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read-only positive ERP IDs and recent action results
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          db() { docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw --default-character-set=utf8mb4'; }
+          cat <<'SQL' | db
+          SELECT p.ID,p.post_status, COALESCE(MAX(CASE WHEN pm.meta_key='mahak_id' THEN CAST(pm.meta_value AS SIGNED) END),0) AS bazara_remote_entity_id,
+             COUNT(DISTINCT CASE WHEN pm.meta_key='mahak_error' THEN pm.meta_id END) as errors,
+             (SELECT COUNT(*) FROM wp_bazara_orders b WHERE b.OrderClientId=p.ID) as cached_erp_ack
+          FROM wp_posts p LEFT JOIN wp_postmeta pm ON pm.post_id=p.ID AND pm.meta_key IN ('mahak_id','mahak_error')
+          WHERE p.ID IN (105052,105053,105204,105205,105206,105207)
+          GROUP BY p.ID,p.post_status ORDER BY p.ID;
+          SELECT a.action_id,a.status,MAX(l.log_date_gmt) last_log,
+          SUM(CASE WHEN l.message LIKE '%failed%' OR l.message LIKE '%ناموفق%' THEN 1 ELSE 0 END) failure_logs
+          FROM wp_actionscheduler_actions a
+          JOIN wp_actionscheduler_logs l ON l.action_id=a.action_id
+          WHERE a.hook='bazara_run_sending_orders'
+          GROUP BY a.action_id,a.status ORDER BY a.action_id DESC LIMIT 6;
+          SQL
+          echo POSITIVE_ACK_CHECK_COMPLETE=yes
+          REMOTE
