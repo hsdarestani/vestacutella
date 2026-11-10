@@ -1,0 +1,73 @@
+name: Verify Vesta Bazaar currency settings and actual transferred prices
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/verify-vesta-bazara-currency-settings-20261110.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read only currency configuration and numeric synced item comparison
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          echo "VERIFIED_UTC=$(date -u +%FT%TZ)"
+          echo '===== BAZARA SELECTED CURRENCIES ONLY (NO SETTINGS CREDENTIALS) ====='
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=256M <<'PHP'
+          <?php
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          $v=get_option('bazara_visitor_settings',[]);
+          if(!is_array($v)){$v=[];}
+          foreach(['selectCurrencySoftware','selectCurrencyPlugin','CarrierCurrencyType'] as $key){
+            $val=$v[$key]??'(not set)';
+            if(!is_scalar($val))$val='(non-scalar)';
+            echo "BAZARA_CURRENCY_SETTING_".$key."=".preg_replace('/[^a-zA-Z0-9_-]/','',strtolower((string)$val))."\n";
+          }
+          echo "BAZARA_CARRIER_CURRENCY_TYPE_DEFINED=".(defined('BAZARA_CARRIER_CURRENCY_TYPE')?'yes':'no')."\n";
+          if(defined('BAZARA_CARRIER_CURRENCY_TYPE'))echo "BAZARA_CARRIER_CURRENCY_TYPE_VALUE=".(int)constant('BAZARA_CARRIER_CURRENCY_TYPE')."\n";
+          echo "WOO_CURRENCY=".get_woocommerce_currency()."\n";
+          foreach([105052,105053,105204,105205,105206,105207,105208] as $id){
+            $o=wc_get_order($id);
+            if(!$o)continue;
+            echo "WOO_ORDER=".$id." TOTAL=".wc_format_decimal($o->get_total(),2)." CURRENCY=".$o->get_currency()."\n";
+            foreach($o->get_items('line_item') as $item){
+              $q=(float)$item->get_quantity();
+              if($q<=0)continue;
+              echo "WOO_ITEM_ORDER=".$id." PRODUCT_ID=".$item->get_product_id()." VARIATION_ID=".$item->get_variation_id().
+               " QTY=".$q." SUBTOTAL=".wc_format_decimal($item->get_subtotal(),2)." UNIT_SUBTOTAL=".wc_format_decimal($item->get_subtotal()/$q,2).
+               " TOTAL=".wc_format_decimal($item->get_total(),2)."\n";
+            }
+          }
+          PHP
+          echo '===== BAZARA ORDERS AND CACHED REMOTE ITEM PRICES ====='
+          docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw --default-character-set=utf8mb4' <<'SQL'
+          SELECT b.OrderClientId,b.OrderId,b.OrderCode,COUNT(d.o_d_id) detail_rows
+          FROM wp_bazara_orders b LEFT JOIN wp_bazara_order_details d ON d.OrderId=b.OrderId
+          WHERE b.OrderClientId IN(105052,105053,105204,105205,105206,105207,105208)
+          GROUP BY b.OrderClientId,b.OrderId,b.OrderCode ORDER BY b.OrderClientId;
+          SELECT b.OrderClientId,d.ProductDetailId,d.Count1,d.Price
+          FROM wp_bazara_orders b JOIN wp_bazara_order_details d ON d.OrderId=b.OrderId
+          WHERE b.OrderClientId IN(105052,105053,105204,105205,105206,105207,105208)
+          ORDER BY b.OrderClientId,d.ProductDetailId LIMIT 80;
+          SQL
+          echo '===== PLUGIN CONVERSION BRANCH CONTEXT (ONLY CURRENCY LINES) ====='
+          python3 - <<'PY'
+          p='/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara/classes/class.bazara.api.php'
+          a=open(p,encoding="utf8",errors="replace").read().splitlines()
+          for start,end in ((3065,3085),(3216,3236),(3642,3664)):
+            for n in range(start,end):
+              print("PHP_LINE",n,a[n-1].strip()[:185])
+          PY
+          echo "CURRENCY_VERIFICATION_READONLY_COMPLETE=yes"
+          REMOTE
