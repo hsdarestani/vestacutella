@@ -43,10 +43,10 @@ jobs:
              ranked=sorted(((difflib.SequenceMatcher(None,wn,bn).ratio(),bi) for bi,bn in b),reverse=True)[:1] if wn else []
              print("WOO_PARENT",wi,"UNIQUE_EXACT_MATCH",exact[0] if len(exact)==1 else "none","EXACT_COUNT",len(exact),"BEST_MATCH_SCORE",round(ranked[0][0],3) if ranked else 0,"BEST_MATCH_ID",ranked[0][1] if ranked and ranked[0][0]>=.92 else "not_exact")
           '
-          SELECT 'W' AS origin, ID AS product_id, REPLACE(REPLACE(post_title,CHAR(10),' '),CHAR(9),' ') AS name FROM wp_posts
+          SELECT 'W' AS origin, ID AS product_id, CONVERT(REPLACE(REPLACE(post_title,CHAR(10),' '),CHAR(9),' ') USING utf8mb4) COLLATE utf8mb4_general_ci AS name FROM wp_posts
           WHERE ID IN(42801,45079,33045,102249,37746,45887,58867,56377,54591,101870,44556,41893,35112,73091)
           UNION ALL
-          SELECT 'B',ProductId,REPLACE(REPLACE(ProductName,CHAR(10),' '),CHAR(9),' ') FROM wp_bazara_products;
+          SELECT 'B',ProductId,CONVERT(REPLACE(REPLACE(ProductName,CHAR(10),' '),CHAR(9),' ') USING utf8mb4) COLLATE utf8mb4_general_ci FROM wp_bazara_products;
           SQL
           echo '===== ALTERNATE PRODUCT BARCODE META TYPES ====='
           cat <<'SQL' | db
