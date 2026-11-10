@@ -1,0 +1,60 @@
+name: Audit Bazaar product variation mappings read only
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/audit-vesta-bazara-variation-mappings-20261110.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Inspect mapped parent, child, and Bazara product detail data
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          db() { docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw --default-character-set=utf8mb4'; }
+          echo '===== PARENT AND VARIATION MAPPING ====='
+          cat <<'SQL' | db
+          SELECT p.ID,p.post_parent,p.post_type,
+            COALESCE(MAX(CASE WHEN m.meta_key='mahak_product_detail_id' THEN m.meta_value END),'') AS mahak_detail,
+            COALESCE(MAX(CASE WHEN m.meta_key='mahak_id' THEN m.meta_value END),'') AS mahak_product,
+            COALESCE(MAX(CASE WHEN m.meta_key='_sku' THEN m.meta_value END),'') AS sku
+          FROM wp_posts p
+          LEFT JOIN wp_postmeta m ON m.post_id=p.ID AND m.meta_key IN('mahak_product_detail_id','mahak_id','_sku')
+          WHERE p.ID IN(42807,42801,45092,45079,33051,33045,102250,102253,102249,100023,37746,45900,45887,58872,58867,101269,81885,56381,56377,54598,54591,101872,101870,44569,44556,100273,41902,41893,35120,35117,35112,73200,73091)
+          GROUP BY p.ID,p.post_parent,p.post_type ORDER BY p.post_parent,p.ID;
+          SELECT 'MAPPED_PARENT_UNMAPPED_VARIATIONS', COUNT(*)
+          FROM wp_posts c JOIN wp_posts p ON p.ID=c.post_parent
+          JOIN wp_postmeta m ON m.post_id=p.ID AND m.meta_key='mahak_product_detail_id' AND m.meta_value<>''
+          LEFT JOIN wp_postmeta v ON v.post_id=c.ID AND v.meta_key='mahak_product_detail_id' AND v.meta_value<>''
+          WHERE c.post_type='product_variation' AND v.meta_id IS NULL;
+          SQL
+          echo '===== REMOTE CATALOG TABLE SHAPES ====='
+          cat <<'SQL' | db
+          SHOW COLUMNS FROM wp_bazara_products;
+          SHOW COLUMNS FROM wp_bazara_product_details;
+          SELECT 'CACHED_DETAIL_ROWS',COUNT(*) FROM wp_bazara_product_details;
+          SELECT 'CACHED_PRODUCT_ROWS',COUNT(*) FROM wp_bazara_products;
+          SQL
+          echo '===== VARIATION SIBLING COUNTS ====='
+          cat <<'SQL' | db
+          SELECT post_parent,COUNT(*) AS variations FROM wp_posts WHERE post_type='product_variation' AND post_parent IN(42801,45079,33045,102249,37746,45887,58867,56377,54591,101870,44556,41893,35112,73091) GROUP BY post_parent ORDER BY post_parent;
+          SQL
+          echo '===== SIBLINGS WITH EXISTING MAPPING ====='
+          cat <<'SQL' | db
+          SELECT c.post_parent, COUNT(*) as mapped_siblings, COUNT(DISTINCT m.meta_value) distinct_detail_ids
+          FROM wp_posts c JOIN wp_postmeta m ON m.post_id=c.ID AND m.meta_key='mahak_product_detail_id' AND m.meta_value<>''
+          WHERE c.post_type='product_variation' AND c.post_parent IN(42801,45079,33045,102249,37746,45887,58867,56377,54591,101870,44556,41893,35112,73091)
+          GROUP BY c.post_parent;
+          SQL
+          echo VARIATION_AUDIT_COMPLETE=yes
+          REMOTE
