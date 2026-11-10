@@ -50,10 +50,41 @@ jobs:
           SQL
           echo '===== ALTERNATE PRODUCT BARCODE META TYPES ====='
           cat <<'SQL' | db
-          SELECT meta_key,COUNT(*) AS rows FROM wp_postmeta WHERE post_id IN(42801,45079,33045,102249,37746,45887,58867,56377,54591,101870,44556,41893,35112,73091,
+          SELECT meta_key,COUNT(*) AS n FROM wp_postmeta WHERE post_id IN(42801,45079,33045,102249,37746,45887,58867,56377,54591,101870,44556,41893,35112,73091,
           42807,45092,33051,102250,102253,100023,45900,58872,56381,54598,101872,44569,41902,35120,35117,73200)
           AND meta_key REGEXP 'barcode|ean|gtin|upc|mahak|_sku' GROUP BY meta_key ORDER BY rows DESC;
           SELECT 'REMOTE_BARCODE_NONEMPTY',COUNT(*) FROM wp_bazara_products WHERE barcode IS NOT NULL AND barcode<>'';
           SQL
           echo EXACT_BAZARA_MAPPING_AUDIT_COMPLETE=yes
+          REMOTE
+      - name: Verify one-to-one variation details and attribute values
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          db() { docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw --default-character-set=utf8mb4'; }
+          echo '===== BAZARA REMOTE DETAILS PER EXACT PARENT ====='
+          cat <<'SQL' | db
+          SELECT d.ProductId, COUNT(DISTINCT d.ProductDetailId) AS details,COUNT(*) AS cached_rows,
+            MIN(d.Deleted) min_deleted,MAX(d.Deleted) max_deleted
+          FROM wp_bazara_product_details d WHERE d.ProductId IN
+          (10685375,10685320,10685274,10685318,10685289,10685525,10685513,10685506,10685442,10685407,10685474,10685044,10685209,10685094)
+          GROUP BY d.ProductId ORDER BY d.ProductId;
+          SELECT ProductId,ProductDetailId,LEFT(Properties,750) AS property_json,Deleted
+          FROM wp_bazara_product_details WHERE ProductId IN(10685289,10685320,10685094,10685513)
+          ORDER BY ProductId,ProductDetailId LIMIT 42;
+          SQL
+          echo '===== WOO VARIATION ATTRIBUTES FOR THREE MATCHED PARENTS ====='
+          cat <<'SQL' | db
+          SELECT p.ID,p.post_parent,m.meta_key,LEFT(m.meta_value,150) AS attribute_value
+          FROM wp_posts p JOIN wp_postmeta m ON m.post_id=p.ID AND m.meta_key LIKE 'attribute%'
+          WHERE p.post_type='product_variation' AND p.post_parent IN (42801,35112,102249,45079)
+          ORDER BY p.post_parent,p.ID,m.meta_key LIMIT 90;
+          SHOW COLUMNS FROM wp_bazara_detail_properties;
+          SHOW COLUMNS FROM wp_bazara_product_properties;
+          SQL
+          echo DETAIL_MAPPING_AUDIT_COMPLETE=yes
           REMOTE
