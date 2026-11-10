@@ -1,0 +1,71 @@
+name: Audit Bazaar currency change side effects on Woo product imports
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/audit-vesta-bazara-currency-side-effects-20261110.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Locate inbound price conversion and compare cached catalog prices
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          echo '===== ALL BAZARA CURRENCY OPTION USAGE ====='
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          root=Path('/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara')
+          for p in root.rglob('*.php'):
+            if 'vendors' in p.parts or 'libs' in p.parts:continue
+            try:a=p.read_text(encoding='utf8',errors='replace').splitlines()
+            except Exception:continue
+            hits=[]
+            for i,s in enumerate(a,1):
+              if re.search(r'selectCurrencySoftware|selectCurrencyPlugin|SoftwareCurrency|PluginCurrency|CurrencySoftware|CurrencyPlugin',s,re.I):
+                if not re.search(r'password|secret|api_key',s,re.I):
+                  hits.append((i,s.strip()[:160]))
+            if hits:
+              print('PHP_FILE',p.relative_to(root))
+              for i,s in hits[:45]:print('PHP_LINE',i,s)
+          PY
+          echo '===== CACHED BAZARA PRODUCT PRICE VALUES ONLY ====='
+          docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw --default-character-set=utf8mb4' <<'SQL'
+          SELECT d.ProductId,d.ProductDetailId,LEFT(d.Prices,240) AS cached_prices,
+                 (SELECT COUNT(*) FROM wp_bazara_products b WHERE b.ProductId=d.ProductId) remote_product_exists
+          FROM wp_bazara_product_details d
+          WHERE d.ProductDetailId IN (12183609,12183612,12182803,12182450)
+          ORDER BY d.ProductDetailId;
+          SQL
+          echo '===== CURRENT WOOCOMMERCE UNIT PRICE META ====='
+          docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw --default-character-set=utf8mb4' <<'SQL'
+          SELECT p.ID,pm.meta_key,pm.meta_value FROM wp_posts p JOIN wp_postmeta pm ON pm.post_id=p.ID
+          WHERE p.ID IN(102250,102253,42807,33051)
+             AND pm.meta_key IN('_price','_regular_price','_sale_price') ORDER BY p.ID,pm.meta_key;
+          SQL
+          echo '===== BAZARA PRICE IMPORT TRANSFORM LINES ONLY ====='
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          root=Path('/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara')
+          p=root/'classes/class.bazara.api.php'
+          a=p.read_text(encoding='utf8',errors='replace').splitlines()
+          for i,s in enumerate(a,1):
+            if ('SoftwareCurrency' in s or 'PluginCurrency' in s) and (i<2800 or i>3900):
+              for j in range(max(1,i-2),min(len(a),i+5)+1):
+                line=a[j-1].strip()
+                if re.search(r'secret|token|password|api_key',line,re.I):continue
+                print('PRICE_IMPORT_LINE',j,line[:160])
+          PY
+          echo CURRENCY_SIDE_EFFECTS_AUDIT_COMPLETE=yes
+          REMOTE
