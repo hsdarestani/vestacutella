@@ -199,5 +199,50 @@ jobs:
           SELECT g.slug,a.hook,a.status,COUNT(*) num FROM wp_actionscheduler_actions a JOIN wp_actionscheduler_groups g ON g.group_id=a.group_id
           WHERE a.hook IN ('bazara_run_sending_orders','bazara_run_product_sync') GROUP BY g.slug,a.hook,a.status;
           SQL
+          echo '===== BAZARA ORDER DISPATCH CALL GRAPH (IDENTIFIERS ONLY) ====='
+          python3 - <<'PY'
+          import re,os
+          root='/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara'
+          files=[]
+          for base,dirs,fs in os.walk(root):
+            for f in fs:
+              if f.endswith('.php'):
+                p=os.path.join(base,f)
+                try:s=open(p,encoding='utf8',errors='replace').read()
+                except:continue
+                files.append((p,s))
+          found=set()
+          frontier=['send_bazara_orders']
+          for depth in range(3):
+            nxt=[]
+            for func in frontier[:20]:
+              if func in found:continue
+              found.add(func)
+              pat=r'\bfunction\s+'+re.escape(func)+r'\s*\('
+              for path,s in files:
+                m=re.search(pat,s)
+                if not m:continue
+                begin=s.find('{',m.end());brace=1;idx=begin+1
+                while idx<len(s) and brace:
+                  brace+=1 if s[idx]=='{' else (-1 if s[idx]=='}' else 0)
+                  idx+=1
+                body=s[begin+1:idx-1]
+                calls=re.findall(r'(?<!function\s)(?<!\$)([A-Za-z_][A-Za-z0-9_]*)\s*\(',body)
+                methods=re.findall(r'->([A-Za-z_][A-Za-z0-9_]*)\s*\(',body)
+                print('DEPTH',depth,'FUNCTION',func,'FILE',os.path.relpath(path,root),'BODY_LINES',body.count('\n')+1,'CALLS',','.join(sorted(set(calls))[:35]),'METHODS',','.join(sorted(set(methods))[:35]))
+                for candidate in calls:
+                  if candidate.startswith(('bazara','send_','sync_','get_bazara','order_')):nxt.append(candidate)
+                break
+            frontier=nxt
+          print('PHP_FILES',len(files))
+          PY
+          echo '===== BAZARA SCHEDULE INTERVALS FROM RECENT ACTIONS ====='
+          cat <<'SQL' | db
+          SELECT hook,status,MAX(action_id) as latest_id,
+          MAX(scheduled_date_gmt) as latest_scheduled,
+          SUBSTRING_INDEX(SUBSTRING_INDEX(REPLACE(REPLACE(HEX(schedule),'00',''),'696E74657276616C',1),'',1),'',1) as placeholder
+          FROM wp_actionscheduler_actions WHERE hook IN ('bazara_run_sending_orders','bazara_run_product_sync')
+          GROUP BY hook,status ORDER BY hook,status;
+          SQL
           echo READ_ONLY_AUDIT_COMPLETE=yes
           REMOTE
