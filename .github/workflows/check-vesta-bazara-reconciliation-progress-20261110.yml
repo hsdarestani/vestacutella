@@ -1,0 +1,33 @@
+name: Check live Bazara six-order reconciliation progress
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/check-vesta-bazara-reconciliation-progress-20261110.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read positive Bazaar order acknowledgments
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          echo "REPORT_UTC=$(date -u +%FT%TZ)"
+          docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw --default-character-set=utf8mb4' <<'SQL'
+          SELECT p.ID,p.post_status,COALESCE(MAX(CASE WHEN pm.meta_key='mahak_id' THEN CAST(pm.meta_value AS SIGNED) END),0) ERP_ACK,
+           (SELECT COUNT(*) FROM wp_bazara_orders b WHERE b.OrderClientId=p.ID) CACHE_MATCHES
+          FROM wp_posts p LEFT JOIN wp_postmeta pm ON pm.post_id=p.ID AND pm.meta_key='mahak_id'
+          WHERE p.ID IN (105052,105053,105204,105205,105206,105207)
+          GROUP BY p.ID,p.post_status ORDER BY p.ID;
+          SQL
+          echo READ_ONLY_PROGRESS_COMPLETE=yes
+          REMOTE
