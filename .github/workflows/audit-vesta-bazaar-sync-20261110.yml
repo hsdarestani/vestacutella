@@ -126,5 +126,35 @@ jobs:
           echo "WP_CRON_EVENTS=$all WP_CRON_OVERDUE=$due\n";'
           SELECT TO_BASE64(option_value) FROM wp_options WHERE option_name='cron' LIMIT 1;
           SQL
+          echo '===== SYSTEM CAPACITY ====='
+          uptime
+          free -m | head -2
+          echo '===== BAZARA REGISTRATION LINES (NO KEYS OR CONFIG) ====='
+          grep -nE 'bazara_run_sending_orders|bazara_run_product_sync|as_schedule_recurring_action|as_schedule_single_action|as_enqueue_async_action' \
+            /srv/vestacutella/runtime/vesta/wp-content/plugins/bazara/classes/functions.php |
+            sed -E 's@https?://[^[:space:]'"'"'"]+@[URL]@g;s@(["'"'"'])[^"'"'"']{35,}\1@[STRING]@g' |
+            head -45 || true
+          echo '===== BAZARA ACTION SCHEDULE SHAPES ====='
+          cat <<'SQL' | db
+          SELECT hook,status,LEFT(schedule,95) AS schedule_prefix,COUNT(*) AS total
+          FROM wp_actionscheduler_actions WHERE hook IN ('bazara_run_sending_orders','bazara_run_product_sync')
+          GROUP BY hook,status,schedule_prefix ORDER BY hook,status,total DESC LIMIT 20;
+          SQL
+          echo '===== ACTION LOG TEMPLATE CATEGORIES ====='
+          cat <<'SQL' | db
+          SELECT CASE
+            WHEN LOWER(message) LIKE '%started%' THEN 'started'
+            WHEN LOWER(message) LIKE '%completed%' THEN 'completed'
+            WHEN LOWER(message) LIKE '%failed%' THEN 'failed'
+            WHEN LOWER(message) LIKE '%timeout%' THEN 'timeout'
+            WHEN LOWER(message) LIKE '%wp cron%' THEN 'wp_cron'
+            WHEN LOWER(message) LIKE '%async%' THEN 'async'
+            WHEN LOWER(message) LIKE '%registered%' THEN 'registered'
+            ELSE 'not_english_template' END AS category,
+            COUNT(*) AS total, MAX(log_date_gmt) AS last_seen
+          FROM wp_actionscheduler_logs
+          WHERE action_id IN (SELECT action_id FROM wp_actionscheduler_actions WHERE hook='bazara_run_sending_orders' AND status='failed')
+          GROUP BY category ORDER BY total DESC;
+          SQL
           echo READ_ONLY_AUDIT_COMPLETE=yes
           REMOTE
