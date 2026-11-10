@@ -1,0 +1,63 @@
+name: Repair 16 uniquely matched Vesta Bazaar product variations
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/repair-vesta-bazara-verified-variations-20261110.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vc-vesta-bazara-verified-variation-repair
+  cancel-in-progress: false
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate no pricing, order, stock, or cron mutations
+        run: |
+          set -euo pipefail
+          test -f scripts/repair-vesta-bazara-verified-variations-20261110.php
+          grep -Fq 'MAPPING_PREFLIGHT_VALIDATED=' scripts/repair-vesta-bazara-verified-variations-20261110.php
+          grep -Fq 'MAPPING_ROLLBACK_COMPLETE=yes' scripts/repair-vesta-bazara-verified-variations-20261110.php
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Backup, dry-run, apply mapping and confirm readback
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/repair-vesta-bazara-verified-variations-20261110.php "root@$HOST:/tmp/repair-vesta-bazara-verified-variations-20261110.php"
+          sshpass -e ssh -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          umask 077
+          base=/srv/backups/vesta-bazara-verified-variation-meta-$(date -u +%Y%m%dT%H%M%SZ)
+          mkdir -p -m 0700 "$base"
+          cp -p /tmp/repair-vesta-bazara-verified-variations-20261110.php "$base/repair.php"
+          docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw --default-character-set=utf8mb4' > "$base/original-mapping-meta.tsv" <<'SQL'
+          SELECT meta_id,post_id,meta_key,meta_value FROM wp_postmeta
+          WHERE post_id IN (33051,35117,35120,41902,42807,44569,45092,45900,54598,56381,58872,73200,100023,101872,102250,102253)
+          AND meta_key IN ('mahak_id','mahak_product_detail_id');
+          SQL
+          echo "MAPPING_SNAPSHOT=$base/original-mapping-meta.tsv"
+          docker exec -i vc-vesta php -l < "$base/repair.php"
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=384M < "$base/repair.php" > "$base/dry-run.txt"
+          cat "$base/dry-run.txt"
+          grep -Fqx 'MAPPING_PREFLIGHT_VALIDATED=16' "$base/dry-run.txt"
+          grep -Fqx 'MAPPING_DRY_RUN_ONLY=yes' "$base/dry-run.txt"
+          docker exec -i -e VC_MAP_COMMIT=yes vc-vesta php -d display_errors=0 -d memory_limit=384M < "$base/repair.php" > "$base/result.txt"
+          cat "$base/result.txt"
+          grep -Fqx 'MAPPING_META_CREATED=32' "$base/result.txt"
+          grep -Fqx 'MAPPING_VERIFIED_COMPLETE=yes' "$base/result.txt"
+          echo "MAPPING_DEPLOY_SUCCESS=yes"
+          REMOTE
+      - name: Verify all affected domains from outside
+        run: |
+          set -euo pipefail
+          for host in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
+            code=$(curl -kLsS --connect-timeout 10 --max-time 40 -o /dev/null -w '%{http_code}' "https://$host/")
+            echo "$host HTTP=$code"
+            test "$code" = 200
+          done
