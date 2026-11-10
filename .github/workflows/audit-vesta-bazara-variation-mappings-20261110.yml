@@ -71,7 +71,7 @@ jobs:
           cat <<'SQL' | db
           SELECT p.ID,p.post_parent,
             (SELECT COUNT(*) FROM wp_bazara_products b WHERE b.Post_ID=p.ID) AS match_post_id,
-            (SELECT COUNT(*) FROM wp_bazara_products b WHERE b.sku=CAST(p.ID AS CHAR)) AS match_sku,
+            (SELECT COUNT(*) FROM wp_bazara_products b WHERE CAST(b.sku AS UNSIGNED)=p.ID) AS match_sku,
             (SELECT COUNT(*) FROM wp_bazara_products b WHERE b.ProductCode=p.ID) AS match_product_code,
             (SELECT COUNT(*) FROM wp_bazara_products b WHERE b.Post_ID=p.post_parent) AS parent_match_post_id
           FROM wp_posts p WHERE p.ID IN (42807,45092,33051,102250,102253,100023,45900,58872,56381,54598,101872,44569,41902,35120,35117,73200)
