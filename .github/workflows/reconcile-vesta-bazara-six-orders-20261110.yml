@@ -4,6 +4,7 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/reconcile-vesta-bazara-six-orders-20261110.yml"
+      - "scripts/reconcile-vesta-bazara-six-orders-20261110.sh"
   workflow_dispatch:
 permissions:
   contents: read
