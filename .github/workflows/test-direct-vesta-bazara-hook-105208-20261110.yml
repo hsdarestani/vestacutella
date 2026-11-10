@@ -1,0 +1,64 @@
+name: One-time direct Bazara hook test for order 105208
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/test-direct-vesta-bazara-hook-105208-20261110.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-bazara-single-direct-hook
+  cancel-in-progress: false
+jobs:
+  direct-one-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Run registered Bazara hook only if order remains unacknowledged
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e ssh -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          exec 9>/run/lock/vesta-bazara-direct-105208-test.lock
+          flock -n 9 || { echo "TEST_LOCK_BUSY";exit 11; }
+          db() { docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw --default-character-set=utf8mb4'; }
+          ack=$(printf "SELECT COALESCE(MAX(CAST(meta_value AS SIGNED)),0) FROM wp_postmeta WHERE post_id=105208 AND meta_key='mahak_id';\n"| db|tail -1)
+          ref=$(printf "SELECT COUNT(*) FROM wp_bazara_orders WHERE OrderClientId=105208;\n"|db|tail -1)
+          echo "PREFLIGHT_ORDER_105208_ACK=$ack REF=$ref"
+          if ((ack>0));then echo "ALREADY_VERIFIED=no_send";exit 0;fi
+          if ((ref>0));then echo "AMBIGUOUS_CACHE_REF_DO_NOT_SEND";exit 12;fi
+          elig=$(printf "SELECT COUNT(*) FROM wp_posts WHERE ID=105208 AND post_status='wc-processing' AND post_type='shop_order';\n"|db|tail -1)
+          test "$elig" = 1 || { echo "ORDER_NOT_ELIGIBLE";exit 13;}
+          echo "START_DIRECT_HOOK_UTC=$(date -u +%FT%TZ)"
+          set +e
+          timeout 105 docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=384M <<'PHP'
+          <?php
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';
+          $_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';
+          $_SERVER['SERVER_PORT']='443';
+          $_SERVER['REQUEST_SCHEME']='https';
+          $_SERVER['REQUEST_URI']='/wp-cron.php';
+          $_SERVER['REQUEST_METHOD']='GET';
+          $_SERVER['REMOTE_ADDR']='127.0.0.1';
+          define('WP_USE_THEMES',false);
+          require '/var/www/html/wp-load.php';
+          if(!has_action('bazara_run_sending_orders')){echo "BAZARA_HOOK_UNAVAILABLE\n";exit(21);}
+          do_action('bazara_run_sending_orders');
+          echo "DIRECT_BAZARA_HOOK_RETURNED=yes\n";
+          PHP
+          rc=$?
+          set -e
+          echo "DIRECT_HOOK_EXIT=$rc"
+          ack=$(printf "SELECT COALESCE(MAX(CAST(meta_value AS SIGNED)),0) FROM wp_postmeta WHERE post_id=105208 AND meta_key='mahak_id';\n"|db|tail -1)
+          ref=$(printf "SELECT COUNT(*) FROM wp_bazara_orders WHERE OrderClientId=105208;\n"|db|tail -1)
+          echo "AFTER_ORDER_105208_ACK=$ack CACHED_REF=$ref"
+          if ((ack>0));then echo "ORDER_105208_VERIFIED_ERP_ACK=yes";exit 0;fi
+          echo "DIRECT_HOOK_UNVERIFIED_NO_RETRY=yes"
+          exit 22
+          REMOTE
