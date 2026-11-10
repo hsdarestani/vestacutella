@@ -244,5 +244,44 @@ jobs:
           FROM wp_actionscheduler_actions WHERE hook IN ('bazara_run_sending_orders','bazara_run_product_sync')
           GROUP BY hook,status ORDER BY hook,status;
           SQL
+          echo '===== BAZARA API ORDER SENDER STRUCTURE ====='
+          python3 - <<'PY'
+          import re,os,collections
+          root='/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara'
+          src=[]
+          for d,_,fs in os.walk(root):
+              for fn in fs:
+                  if fn.endswith('.php'):
+                      p=os.path.join(d,fn)
+                      try:s=open(p,encoding='utf8',errors='replace').read()
+                      except:continue
+                      src.append((p,s))
+          todo=['start_sync_orders'];done=set()
+          for depth in range(3):
+              next_todo=[]
+              for method in todo[:30]:
+                  if method in done:continue
+                  done.add(method)
+                  for p,s in src:
+                      m=re.search(r'\bfunction\s+'+re.escape(method)+r'\s*\(',s)
+                      if not m:continue
+                      start=s.find('{',m.end());n=1;i=start+1
+                      while i<len(s) and n:
+                          n+=int(s[i]=='{')-int(s[i]=='}');i+=1
+                      body=s[start+1:i-1]
+                      calls=re.findall(r'->([A-Za-z_][A-Za-z0-9_]*)\s*\(',body)
+                      static_calls=re.findall(r'(?:::)([A-Za-z_][A-Za-z0-9_]*)\s*\(',body)
+                      funcs=re.findall(r'\b([A-Za-z_][A-Za-z0-9_]*)\s*\(',body)
+                      print('DEPTH',depth,'METHOD',method,'FILE',os.path.relpath(p,root),'LINES',body.count('\n')+1)
+                      print('METHOD_CALLS',','.join(sorted(set(calls))[:55]),'STATIC_CALLS',','.join(sorted(set(static_calls))[:40]))
+                      for w in ['curl_exec','curl_setopt','wp_remote_get','wp_remote_post','wp_remote_request','wc_get_orders','get_posts','sleep','usleep','timeout','foreach','while','wpdb','wp_schedule','as_schedule','update_option','add_option','get_option','wpdb','break','return','try','catch']:
+                          k=len(re.findall(r'\b'+w+r'\b',body,re.I))
+                          if k:print('KEYWORD',w,k)
+                      for candidate in calls+static_calls:
+                          if candidate not in ('get_option','update_option','get_posts','get_orders','get','post','request','send','log','error','success','get_id','get_meta','is_wp_error','get_message','json_encode','add','set','get_product'):
+                              next_todo.append(candidate)
+                      break
+              todo=next_todo
+          PY
           echo READ_ONLY_AUDIT_COMPLETE=yes
           REMOTE
