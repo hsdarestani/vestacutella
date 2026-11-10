@@ -1,0 +1,39 @@
+name: Reconcile five missed Vesta Bazaar orders in strict sequence
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/reconcile-vesta-bazara-six-orders-20261110.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-bazara-six-order-reconciliation
+  cancel-in-progress: false
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check backfill script syntax and safety guard
+        run: |
+          set -euo pipefail
+          bash -n scripts/reconcile-vesta-bazara-six-orders-20261110.sh
+          grep -Fq 'SIX_ORDER_RECONCILIATION_COMPLETE=yes' scripts/reconcile-vesta-bazara-six-orders-20261110.sh
+          grep -Fq 'NO_RETRY=yes' scripts/reconcile-vesta-bazara-six-orders-20261110.sh
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Reconcile only verified orders (stop on any error or duplicate risk)
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e ssh -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' < scripts/reconcile-vesta-bazara-six-orders-20261110.sh
+      - name: Three shop domains still healthy
+        if: always()
+        run: |
+          for h in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
+            code=$(curl -kLsS --connect-timeout 10 --max-time 30 -o /dev/null -w '%{http_code}' "https://$h/")
+            echo "$h HTTP=$code"
+          done
