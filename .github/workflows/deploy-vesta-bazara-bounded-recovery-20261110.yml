@@ -1,0 +1,44 @@
+name: Safely prioritize new Bazara orders (defer unsafe backfill)
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/deploy-vesta-bazara-bounded-recovery-20261110.yml"
+      - "scripts/deploy-vesta-bazara-bounded-recovery-20261110.sh"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-bazara-guarded-recovery
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax and safety preflight
+        run: |
+          set -euo pipefail
+          bash -n scripts/deploy-vesta-bazara-bounded-recovery-20261110.sh
+          grep -Fq 'BAZARA_FILE_ROLLED_BACK' scripts/deploy-vesta-bazara-bounded-recovery-20261110.sh
+          grep -Fq "vc_bazara_defer_historical_backfill" scripts/deploy-vesta-bazara-bounded-recovery-20261110.sh
+      - name: Install remote SSH helper
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Apply backup-first bounded sync repair and smoke tests
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          test -n "$HOST" && test -n "$SSHPASS"
+          sshpass -e scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/deploy-vesta-bazara-bounded-recovery-20261110.sh "root@$HOST:/tmp/deploy-vesta-bazara-bounded-recovery-20261110.sh"
+          sshpass -e ssh -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/deploy-vesta-bazara-bounded-recovery-20261110.sh'
+      - name: External no-transaction website checks
+        run: |
+          set -euo pipefail
+          for domain in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir; do
+            status=$(curl -ksS -L --connect-timeout 10 --max-time 40 -o /dev/null -w '%{http_code}' "https://$domain/")
+            echo "$domain HTTP=$status"
+            test "$status" = 200
+          done
