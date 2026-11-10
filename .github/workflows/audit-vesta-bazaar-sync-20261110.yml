@@ -81,5 +81,50 @@ jobs:
           '
           SELECT option_value FROM wp_options WHERE option_name='cron' LIMIT 1;
           SQL
+          echo '===== BAZARA FAILURE LOG CATEGORIES (NO RAW MESSAGES) ====='
+          cat <<'SQL' | db
+          SELECT CASE
+            WHEN LOWER(l.message) LIKE '%timeout%' OR LOWER(l.message) LIKE '%timed out%' THEN 'timeout'
+            WHEN LOWER(l.message) LIKE '%canceled%' THEN 'canceled'
+            WHEN LOWER(l.message) LIKE '%no callbacks%' THEN 'missing_handler'
+            WHEN LOWER(l.message) LIKE '%fatal%' THEN 'fatal'
+            WHEN LOWER(l.message) LIKE '%exception%' THEN 'exception'
+            WHEN LOWER(l.message) LIKE '%failed%' THEN 'failed_generic'
+            WHEN LOWER(l.message) LIKE '%error%' THEN 'error_generic'
+            ELSE 'other' END AS message_category,COUNT(*) AS total,
+            MIN(l.log_date_gmt) oldest,MAX(l.log_date_gmt) newest
+          FROM wp_actionscheduler_logs l
+          JOIN wp_actionscheduler_actions a ON a.action_id=l.action_id
+          WHERE a.hook='bazara_run_sending_orders' AND a.status='failed'
+          GROUP BY message_category ORDER BY total DESC;
+          SQL
+          echo '===== LAST 10 FAILED BAZARA SEND ACTION IDS / TIMESTAMPS ====='
+          cat <<'SQL' | db
+          SELECT action_id,scheduled_date_gmt,last_attempt_gmt,attempts
+          FROM wp_actionscheduler_actions WHERE hook='bazara_run_sending_orders' AND status='failed'
+          ORDER BY last_attempt_gmt DESC LIMIT 10;
+          SQL
+          echo '===== HOST CRON ERROR CODE FREQUENCIES ====='
+          if [[ -f /var/log/vesta-wp-cron-errors.log ]];then
+            tail -n 100 /var/log/vesta-wp-cron-errors.log |
+            grep -oE 'curl: \([0-9]+\)' | sort | uniq -c || true
+          fi
+          echo '===== WP CLI PRESENCE ====='
+          docker exec vc-vesta sh -c 'if command -v wp >/dev/null;then echo WP_CLI_PRESENT=yes;else echo WP_CLI_PRESENT=no;fi'
+          echo '===== BAZARA SCHEDULING REFERENCES ====='
+          grep -RlnE 'bazara_run_sending_orders|bazara_run_product_sync|action_scheduler_queue_runner_batch_size|as_schedule_recurring_action' /srv/vestacutella/runtime/vesta/wp-content/plugins/bazara --include='*.php' | sed 's@.*/plugins/bazara/@bazara/@' | head -25 || true
+          echo '===== CRON OPTION DECODE BASE64 ====='
+          db <<'SQL' | docker exec -i vc-vesta php -d memory_limit=256M -r '
+          $encoded=trim(stream_get_contents(STDIN));$lines=explode("\n",$encoded);$encoded=implode("",array_slice($lines,1));
+          $data=@unserialize(base64_decode($encoded),["allowed_classes"=>false]);
+          if(!is_array($data)){echo "WP_CRON_BASE64_PARSE_FAILED\n";exit(0);}
+          $now=time();$due=0;$all=0;
+          foreach($data as $t=>$hooks){if(!is_numeric($t)||!is_array($hooks))continue;
+            foreach($hooks as $hook=>$events){$n=is_array($events)?count($events):0;$all+=$n;if((int)$t<$now)$due+=$n;
+            if(preg_match("/bazar|bazaar|market|maha|sync|inventory/i",$hook))echo "MATCHED_HOOK=".preg_replace("/[^a-zA-Z0-9_:.-]/","?",$hook)." due_utc=".gmdate("Y-m-d H:i:s",(int)$t)." num=$n\n";}
+          }
+          echo "WP_CRON_EVENTS=$all WP_CRON_OVERDUE=$due\n";'
+          SELECT TO_BASE64(option_value) FROM wp_options WHERE option_name='cron' LIMIT 1;
+          SQL
           echo READ_ONLY_AUDIT_COMPLETE=yes
           REMOTE
