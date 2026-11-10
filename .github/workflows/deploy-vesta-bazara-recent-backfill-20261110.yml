@@ -1,0 +1,76 @@
+name: Deploy safe Bazara recent-order catch-up and trigger one HTTP cron
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/deploy-vesta-bazara-recent-backfill-20261110.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vc-vesta-bazara-order-recovery
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify safe code and rollback hooks
+        run: |
+          set -euo pipefail
+          bash -n scripts/deploy-vesta-bazara-recent-backfill-20261110.sh
+          grep -Fq 'BAZARA_PATCH_ROLLED_BACK' scripts/deploy-vesta-bazara-recent-backfill-20261110.sh
+          grep -Fq 'LIMIT 1' scripts/deploy-vesta-bazara-recent-backfill-20261110.sh
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Install guarded patch, preflight and site smoke
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/deploy-vesta-bazara-recent-backfill-20261110.sh "root@$HOST:/tmp/deploy-vesta-bazara-recent-backfill-20261110.sh"
+          sshpass -e ssh -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/deploy-vesta-bazara-recent-backfill-20261110.sh'
+      - name: Schedule one WordPress native cron event for Bazaar (standard HTTPS runtime)
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e ssh -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=256M <<'PHP'
+          <?php
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';
+          $_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';
+          $_SERVER['SERVER_PORT']='443';
+          $_SERVER['REQUEST_SCHEME']='https';
+          $_SERVER['REQUEST_URI']='/wp-cron.php';
+          require '/var/www/html/wp-load.php';
+          $hook='bazara_run_sending_orders';
+          if (!has_action($hook)) { echo "BAZARA_HOOK_NOT_REGISTERED\n";exit(15); }
+          $success=wp_schedule_single_event(time()-1,$hook,array(),true);
+          if (is_wp_error($success)||$success===false) { echo "BAZARA_SCHEDULING_FAILED\n";exit(16); }
+          echo "BAZARA_HTTP_CONTEXT_EVENT_QUEUED=yes\n";
+          PHP
+          status=$(curl --noproxy '*' -kLsS --max-time 115 --connect-timeout 10 \
+            --resolve vesta-cosmetics.ir:443:127.0.0.1 -o /dev/null -w '%{http_code}' https://vesta-cosmetics.ir/wp-cron.php)
+          echo "HTTP_CRON_RESPONSE=$status"
+          test "$status" = 200
+          echo '===== FIRST MISSED ORDER REGISTRATION ====='
+          docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw --default-character-set=utf8mb4' <<'SQL'
+          SELECT 'ORDER_105052_MAHAK_ACK',COUNT(*) FROM wp_postmeta WHERE post_id=105052 AND meta_key='mahak_id' AND meta_value<>'';
+          SELECT 'ORDER_105052_BAZARA_REF',COUNT(*) FROM wp_bazara_orders WHERE OrderClientId=105052;
+          SQL
+          echo '===== REDACTED OUTCOME LOGS ====='
+          docker logs --since 2m vc-vesta 2>&1 | grep -E 'VC_BAZARA_CATCHUP order=[0-9]+ ok=(yes|no)' | tail -8 || true
+          REMOTE
+      - name: Verify websites externally
+        run: |
+          set -euo pipefail
+          for host in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
+            code=$(curl -kLsS --connect-timeout 10 --max-time 40 -o /dev/null -w '%{http_code}' "https://$host/")
+            echo "$host HTTP=$code"
+            test "$code" = 200
+          done
