@@ -1,0 +1,71 @@
+name: Audit Vesta toman to rial Bazara transfer read-only
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/audit-vesta-bazara-currency-20261110.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Inspect actual money calculations, accounting tables, and Woo currency
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          echo "CURRENCY_AUDIT_UTC=$(date -u +%FT%TZ)"
+          db(){ docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw --default-character-set=utf8mb4'; }
+          echo '===== WOO CURRENCY AND ACCOUNTING OPTIONS ====='
+          cat <<'SQL' | db
+          SELECT option_name,
+           CASE WHEN option_name IN('woocommerce_currency','woocommerce_price_num_decimals','woocommerce_currency_pos') THEN option_value ELSE '[not_disclosed]' END AS value
+          FROM wp_options WHERE option_name IN ('woocommerce_currency','woocommerce_price_num_decimals','woocommerce_currency_pos')
+             OR option_name LIKE '%toman%' OR option_name LIKE '%rial%' OR option_name LIKE '%currency_convert%';
+          SQL
+          echo '===== ACCOUNTING ORDER TABLE STRUCTURE (NAMES ONLY) ====='
+          cat <<'SQL' | db
+          SHOW COLUMNS FROM wp_bazara_orders;
+          SHOW COLUMNS FROM wp_bazara_order_details;
+          SQL
+          echo '===== RECENT CONFIRMED ORDER VALUE WOOCOMMERCE (NUMERIC ONLY) ====='
+          cat <<'SQL' | db
+          SELECT p.ID, p.post_status, MAX(CASE WHEN pm.meta_key='_order_total' THEN pm.meta_value END) woo_total,
+              MAX(CASE WHEN pm.meta_key='mahak_id' THEN pm.meta_value END) remote_ack
+          FROM wp_posts p LEFT JOIN wp_postmeta pm ON pm.post_id=p.ID AND pm.meta_key IN('_order_total','mahak_id')
+          WHERE p.ID IN (105203,105204,105205,105206,105207,105208)
+          GROUP BY p.ID,p.post_status ORDER BY p.ID;
+          SQL
+          echo '===== MONEY COMPUTATION CODE IN BAZARA SAVE ORDER ====='
+          python3 - <<'PY'
+          import re
+          p='/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara/classes/class.bazara.api.php'
+          a=open(p,encoding="utf8",errors="replace").read().splitlines()
+          for i in range(2800,min(len(a),3820)):
+            s=a[i].strip()
+            if re.search(r'currency|toman|rial|ریال|تومان|price|amount|discount|total|sellprice|unitprice|payable|receipts|cheques|factor|faktor|multiply|round|10000|1000|\*\s*10|10\s*\*',s,re.I) and not re.search(r'phone|mobile|address|person|customer|billing|email|shipping_address',s,re.I):
+              s=re.sub(r"(password|token|secret|api.?key)\s*(=>|=)\s*[^,);]+",r"\1\2[REDACTED]",s,flags=re.I)
+              s=re.sub(r"https?://[^\s'\";]+","[URL]",s)
+              print("PHP_LINE",i+1,re.sub(r"\s+"," ",s)[:240])
+          PY
+          echo '===== OTHER CURRENCY CONVERSION FUNCTIONS IN BAZARA PLUGIN ====='
+          grep -RnlE 'toman|تومان|rial|ریال|currency|\\* *10|10 *\\*|price_multiplier' \
+            /srv/vestacutella/runtime/vesta/wp-content/plugins/bazara --include='*.php' 2>/dev/null | sed 's@.*/bazara/@bazara/@' | head -25
+          echo '===== WP ACTIVE PLUGINS CURRENCY NAMES ONLY ====='
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=256M <<'PHP'
+          <?php
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          $installed=(array)get_option('active_plugins',array());
+          foreach($installed as $p)if(preg_match('/rial|toman|currency|woo|bazara|price|iran|persian/i',$p))echo "ACTIVE_PLUGIN=".preg_replace('/[^a-zA-Z0-9._\\/-]/','', $p)."\n";
+          echo "WOO_CURRENCY=".get_woocommerce_currency()."\n";
+          PHP
+          echo CURRENCY_AUDIT_FINISHED=yes
+          REMOTE
