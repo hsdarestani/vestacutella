@@ -23,3 +23,68 @@ jobs:
           set -euo pipefail
           test -n "$HOST" && test -n "$SSHPASS"
           sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' < scripts/audit-vesta-bazara-missing-orders-20261110.sh
+      - name: Diagnose exact recent orders and ERP receipts read only
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          db() { docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw --default-character-set=utf8mb4'; }
+          echo '===== CURRENT UNSYNCED RECENT ORDERS ====='
+          cat <<'SQL' | db
+          SELECT p.ID,p.post_date_gmt,p.post_status,
+            MAX(pm.meta_key='mahak_id') AS has_mahak_marker,
+            MAX(pm.meta_key='mahak_error') AS has_mahak_error,
+            MAX(CASE WHEN pm.meta_key='mahak_error' THEN CHAR_LENGTH(pm.meta_value) ELSE 0 END) AS error_chars,
+            EXISTS(SELECT 1 FROM wp_bazara_orders b WHERE b.OrderClientId=p.ID) AS exists_client_reference
+          FROM wp_posts p LEFT JOIN wp_postmeta pm ON p.ID=pm.post_id AND pm.meta_key IN('mahak_id','mahak_error')
+          WHERE p.post_type='shop_order' AND p.post_date_gmt > UTC_TIMESTAMP()-INTERVAL 12 DAY
+          GROUP BY p.ID,p.post_date_gmt,p.post_status ORDER BY p.ID DESC LIMIT 75;
+          SELECT
+             'BAZARA_REFERENCES_BY_CLIENT_ID',
+             COUNT(*),
+             COUNT(DISTINCT OrderClientId),
+             MIN(OrderClientId),MAX(OrderClientId)
+          FROM wp_bazara_orders;
+          SELECT
+            'ORDER_CURSOR_POSITIVE_MARKER',
+            COUNT(*)
+          FROM wp_posts p JOIN wp_postmeta pm ON pm.post_id=p.ID AND pm.meta_key='mahak_id'
+          WHERE p.post_type='shop_order' AND p.ID>100000;
+          SQL
+          echo '===== BAZARA API RESPONSE CONTROL FLOW ====='
+          python3 - <<'PY'
+          p='/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara/classes/class.bazara.api.php'
+          lines=open(p,encoding='utf8',errors='replace').read().splitlines()
+          import re
+          for start,end in ((3067,3107),(3690,3760),(2605,2755)):
+            print('SEGMENT_START',start)
+            for i in range(start,end):
+              s=lines[i-1].strip()
+              if i<2605 or not s:continue
+              if start==2605 and not re.search(r'get_orders|left_behind|orders|array_slice|sync_limit|max_id|option|success|result|return',s,re.I):continue
+              s=re.sub(r'(?i)(password|token|secret|api[_-]?key)\s*(=>|=)\s*[^,;]+',r'\1\2[REDACTED]',s)
+              s=re.sub(r'https?://[^\s"'\'';]+','[URL]',s)
+              print('PHP_LINE',i,re.sub(r'\s+',' ',s)[:175])
+          PY
+          echo '===== SANITIZED ERROR CATEGORIES ====='
+          cat <<'SQL' | db | python3 -c '
+          import sys,re,collections
+          def category(s):
+             s=s.lower()
+             for tag,pattern in [
+               ("stock",r"stock|inventory|موجودی"),("authorization",r"auth|unauthorized|token|اعتبار"),
+               ("duplicate",r"duplicate|already|تکراری"),("network",r"timeout|connection|ارتباط"),("bad_request",r"validation|invalid|نامعتبر")]:
+                 if re.search(pattern,s):return tag
+             return "other"
+          ct=collections.Counter()
+          for line in sys.stdin:
+             a=line.rstrip("\n").split("\t")
+             if len(a)>1 and a[0].isdigit():ct[(a[0],category(a[1]),len(a[1]))]+=1
+          for (oid,cat,size),n in ct.items():print("ORDER",oid,"ERROR_CLASS",cat,"CHARS",size,"N",n)'
+          SELECT post_id,meta_value FROM wp_postmeta WHERE meta_key='mahak_error' AND post_id IN (105207,105206,105205,105204,105203,105053,105052) LIMIT 12;
+          SQL
+          echo SECOND_AUDIT_DONE=yes
+          REMOTE
