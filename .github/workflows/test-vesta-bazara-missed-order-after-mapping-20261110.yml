@@ -1,0 +1,67 @@
+name: Verify repaired Bazara mapping by submitting one missed order
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/test-vesta-bazara-missed-order-after-mapping-20261110.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-bazara-one-time-missed-order-test
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Queue one protected Bazara synchronization and validate acknowledgment
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          db() { docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw --default-character-set=utf8mb4'; }
+          echo '===== REQUIRED PRODUCT MAPPINGS ====='
+          cat <<'SQL' | db
+          SELECT post_id,COUNT(*) mapped_keys FROM wp_postmeta WHERE post_id IN
+          (33051,35117,35120,41902,42807,44569,45092,45900,54598,56381,58872,73200,100023,101872,102250,102253)
+          AND meta_key IN ('mahak_id','mahak_product_detail_id') AND meta_value<>'' GROUP BY post_id ORDER BY post_id;
+          SELECT '105052_BEFORE',COUNT(*) FROM wp_postmeta WHERE post_id=105052 AND meta_key='mahak_id' AND meta_value<>'';
+          SQL
+          echo '===== ONLY IF UNSENT: QUEUE ONE NORMAL WP HOOK ====='
+          already=$(printf "SELECT COUNT(*) FROM wp_postmeta WHERE post_id=105052 AND meta_key='mahak_id' AND meta_value<>'';\n" | db | tail -1)
+          if [[ "$already" == 0 ]];then
+            docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=384M <<'PHP'
+          <?php
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';
+          $_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';
+          $_SERVER['SERVER_PORT']='443';
+          $_SERVER['REQUEST_URI']='/wp-cron.php';
+          require '/var/www/html/wp-load.php';
+          if(!has_action('bazara_run_sending_orders')){echo "HOOK_NOT_FOUND\n";exit(20);}
+          $result=wp_schedule_single_event(time()-1,'bazara_run_sending_orders',array(),true);
+          if(is_wp_error($result)||$result===false){echo "QUEUE_FAILED\n";exit(21);}
+          echo "QUEUED_ONE_BAZARA_EVENT=yes\n";
+          PHP
+            status=$(curl --noproxy '*' -kLsS --connect-timeout 12 --max-time 115 --resolve vesta-cosmetics.ir:443:127.0.0.1 -o /dev/null -w '%{http_code}' https://vesta-cosmetics.ir/wp-cron.php)
+            echo "WP_CRON_HTTP=$status"
+            test "$status" = 200
+            sleep 20
+          fi
+          echo '===== AFTER ONE ORDER PROCESSING ====='
+          cat <<'SQL' | db
+          SELECT p.ID,CASE WHEN MAX(pm.meta_value IS NOT NULL AND pm.meta_value<>'') THEN 'marked' ELSE 'unmarked' END AS remote_ack,
+                 (SELECT COUNT(*) FROM wp_bazara_orders b WHERE b.OrderClientId=p.ID) AS local_erp_matches
+          FROM wp_posts p LEFT JOIN wp_postmeta pm ON pm.post_id=p.ID AND pm.meta_key='mahak_id'
+          WHERE p.ID IN (105052,105053,105204,105205,105206,105207) GROUP BY p.ID ORDER BY p.ID;
+          SELECT status,COUNT(*),MAX(last_attempt_gmt) FROM wp_actionscheduler_actions WHERE hook='bazara_run_sending_orders' GROUP BY status;
+          SQL
+          echo '===== ORDER PROCESSING RECEIPT ====='
+          docker logs --since 3m vc-vesta 2>&1 | grep -E 'VC_BAZARA_CATCHUP order=[0-9]+ ok=(yes|no)' | tail -10 || true
+          echo VERIFICATION_PASS_COMPLETED=yes
+          REMOTE
