@@ -499,5 +499,32 @@ jobs:
              if len(v)>1 and v[0]!="message":print("ACTION",clean(v[0]),"WHEN",v[1])'
           SELECT l.message,l.log_date_gmt FROM wp_actionscheduler_logs l JOIN wp_actionscheduler_actions a ON a.action_id=l.action_id WHERE a.hook='bazara_run_sending_orders' AND a.status='failed' ORDER BY l.log_date_gmt DESC LIMIT 8;
           SQL
+          echo '===== BACKFILL CANDIDATE COUNTS ====='
+          cat <<'SQL' | db
+          SELECT 'IN_CURSOR_RANGE',COUNT(*) FROM wp_posts WHERE post_type='shop_order' AND ID >= 33763 AND ID < 105207;
+          SELECT 'AFTER_CURSOR',COUNT(*) FROM wp_posts WHERE post_type='shop_order' AND ID >= 105207;
+          SELECT meta_key,COUNT(*) AS num FROM wp_postmeta WHERE meta_key LIKE '%bazar%' AND post_id IN (SELECT ID FROM wp_posts WHERE post_type='shop_order') GROUP BY meta_key ORDER BY num DESC LIMIT 20;
+          SQL
+          echo '===== BAZARA ORDER CANDIDATE SELECTOR SANITIZED ====='
+          python3 - <<'PY'
+          import re
+          p='/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara/classes/functions.php'
+          s=open(p,encoding='utf8',errors='replace').read()
+          for name in ('get_orders','get_left_behind_orders_from_limit'):
+              m=re.search(r'function\s+'+name+r'\s*\(',s)
+              a=s.find('{',m.end());i=a+1;d=1
+              while i<len(s) and d:
+                  d+=(s[i]=='{')-(s[i]=='}');i+=1
+              body=s[a+1:i-1]
+              print('FUNCTION',name)
+              qs=re.findall(r'(["'"'"'])(.*?\bSELECT\b.*?)\1',body,re.I|re.S)
+              for _,q in qs:
+                  q=re.sub(r'\s+',' ',q)
+                  q=re.sub(r'\b[\d]{4,}\b','[N]',q)
+                  q=re.sub(r'(["'"'"'])([^"'"'"']+)\1','[S]',q)
+                  print('QUERY_SHAPE',q[:600])
+              print('IS_POSTMETA_QUERY',bool(re.search(r'wp_postmeta|postmeta',body,re.I)))
+              print('IS_META_STATUS_CONDITION',bool(re.search(r'meta_key|meta_value|_bazara',body,re.I)))
+          PY
           echo READ_ONLY_AUDIT_COMPLETE=yes
           REMOTE
