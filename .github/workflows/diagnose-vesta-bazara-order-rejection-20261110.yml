@@ -1,0 +1,71 @@
+name: Diagnose live Bazara order rejection without sending
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/diagnose-vesta-bazara-order-rejection-20261110.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Inspect latest Bazara order errors, no retries
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          db() { docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw --default-character-set=utf8mb4'; }
+          echo '===== BAZARA POST ERROR META SHAPES ====='
+          cat <<'SQL' | db | python3 -c '
+          import sys,json,re
+          for line in sys.stdin:
+            f=line.rstrip("\n").split("\t")
+            if len(f)<3 or f[0]=="post_id":continue
+            oid,key,raw=f[0],f[1],f[2]
+            print("ORDER",oid,"KEY",key,"VALUE_LENGTH",len(raw))
+            try:v=json.loads(raw)
+            except: v=raw
+            def scan(x,path="",depth=0):
+              if depth>7:return
+              if isinstance(x,dict):
+                print("JSON_PATH",path or "root","KEYS",",".join(sorted(str(z) for z in x.keys())[:18]))
+                for k,val in x.items():
+                  if str(k).lower() in ("errorcode","error_code","code","statuscode","resultcode") and isinstance(val,(int,float)):
+                    print("SAFE_ERROR_CODE",k,val)
+                  if isinstance(val,(dict,list)):scan(val,path+"."+str(k),depth+1)
+                  elif isinstance(val,str):
+                    phrases=["موجودی","stock","inventory","product","کالا","اقلام","شخص","مشتری","customer","bank","بانک","payment","پرداخت","not found","نامعتبر","خطا","error","duplicate","تکراری","token","توکن","authentication","ارتباط","connection","timeout"]
+                    for p in phrases:
+                      if p.casefold() in val.casefold():print("MATCHED_ERROR_CATEGORY",p)
+              elif isinstance(x,list):
+                print("JSON_LIST",path,"ITEM_COUNT",len(x))
+                for child in x[:3]:scan(child,path+"[]",depth+1)
+            scan(v)
+          '
+          SELECT post_id,meta_key,meta_value FROM wp_postmeta WHERE post_id IN(105052,105053,105204,105205,105206,105207) AND meta_key='mahak_error' ORDER BY post_id LIMIT 20;
+          SQL
+          echo '===== BAZARA ORDER SYNC LOG LATEST ====='
+          docker logs --since 15m vc-vesta 2>&1 | grep -E 'VC_BAZARA_CATCHUP order=[0-9]+ ok=(yes|no)' | tail -14 || true
+          echo '===== PSEUDONYMIZED CURRENT ERROR HANDLING BRANCHES ====='
+          python3 - <<'PY'
+          import re
+          p='/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara/classes/class.bazara.api.php'
+          a=open(p,encoding="utf8",errors="replace").read().splitlines()
+          for start,end in ((3475,3560),(3580,3620),(3695,3760),(2770,2838)):
+            print("SEGMENT",start)
+            for i in range(start,end):
+              s=a[i-1].strip()
+              if not re.search(r"return|if\s*\(|stock|inventory|error|message|is_order_status_valid|get_|login_token|quantity|maha|result|set_all_data|success",s,re.I):continue
+              s=re.sub(r"https?://\S+","[URL]",s)
+              s=re.sub(r"(?i)(password|token|secret|api_key)\s*=>\s*\S+",r"\1=[REDACTED]",s)
+              print("CODE_LINE",i,re.sub(r"\s+"," ",s)[:170])
+          PY
+          echo BAZARA_REJECTION_DIAG_COMPLETE=yes
+          REMOTE
