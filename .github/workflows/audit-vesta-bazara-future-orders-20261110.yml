@@ -1,0 +1,69 @@
+name: Audit Vesta future Bazara order sync and queue
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/audit-vesta-bazara-future-orders-20261110.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Install SSH helper
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read only live shop order queue and cron
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          echo "AUDIT_UTC=$(date -u +%FT%TZ)"
+          echo "HOST_CRON_ACTIVE=$(systemctl is-active cron)"
+          c=/etc/cron.d/vestacutella-wp-cron
+          if [[ -r "$c" ]];then echo CRON_FILE_PRESENT=yes; awk '!/^#|^$/ {if($1=="*"&&$2=="*"&&$3=="*"&&$4=="*"&&$5=="*")print "CRON_EVERY_MINUTE=yes";}' "$c";fi
+          echo "PLUGIN_HAS_BACKFILL_PATCH=$(grep -c VC_RECENT_BAZARA_CATCHUP_20261110 /srv/vestacutella/runtime/vesta/wp-content/plugins/bazara/classes/class.bazara.api.php)"
+          db(){ docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw --default-character-set=utf8mb4'; }
+          echo '===== RECENT ORDERS AND MAHAK RECEIPTS ====='
+          cat <<'SQL' | db
+          SELECT p.ID,p.post_date_gmt,p.post_status,
+            COALESCE(MAX(CASE WHEN m.meta_key='mahak_id' THEN CAST(m.meta_value AS SIGNED) END),0) ERP_ID,
+            (SELECT COUNT(*) FROM wp_bazara_orders b WHERE b.OrderClientId=p.ID) cached_ref
+          FROM wp_posts p LEFT JOIN wp_postmeta m ON m.post_id=p.ID AND m.meta_key='mahak_id'
+          WHERE p.post_type='shop_order' AND p.post_date_gmt >= '2026-11-10 13:00:00'
+          GROUP BY p.ID,p.post_date_gmt,p.post_status ORDER BY p.ID DESC LIMIT 18;
+          SELECT 'UNACKED_ELIGIBLE_SINCE_LAST_REPAIR',COUNT(*)
+          FROM wp_posts p LEFT JOIN wp_postmeta m ON m.post_id=p.ID AND m.meta_key='mahak_id' AND CAST(m.meta_value AS SIGNED)>0
+          WHERE p.post_type='shop_order' AND p.post_date_gmt >= '2026-11-10 15:04:30'
+          AND p.post_status IN ('wc-completed','wc-processing','wc-processing5','wc-pws-packaged','wc-pws-shipping','wc-arrival-shipment') AND m.meta_id IS NULL;
+          SELECT 'TOTAL_PENDING_ELIGIBLE_SINCE_NOV8',COUNT(*)
+          FROM wp_posts p LEFT JOIN wp_postmeta m ON m.post_id=p.ID AND m.meta_key='mahak_id' AND CAST(m.meta_value AS SIGNED)>0
+          WHERE p.post_type='shop_order' AND p.post_date_gmt >= '2026-11-08 00:00:00'
+          AND p.post_status IN ('wc-completed','wc-processing','wc-processing5','wc-pws-packaged','wc-pws-shipping','wc-arrival-shipment') AND m.meta_id IS NULL;
+          SQL
+          echo '===== AUTOMATIC ACTIONS AND SCHEDULE DUE ====='
+          cat <<'SQL' | db
+          SELECT a.action_id,a.hook,a.status,a.scheduled_date_gmt,a.last_attempt_gmt,g.slug
+          FROM wp_actionscheduler_actions a LEFT JOIN wp_actionscheduler_groups g ON g.group_id=a.group_id
+          WHERE a.hook IN ('bazara_run_sending_orders','bazara_run_product_sync')
+          ORDER BY action_id DESC LIMIT 16;
+          SELECT 'BAZARA_ORDER_SEND_PENDING',COUNT(*) FROM wp_actionscheduler_actions
+          WHERE hook='bazara_run_sending_orders' AND status='pending';
+          SELECT 'PENDING_OVERDUE',COUNT(*) FROM wp_actionscheduler_actions
+          WHERE status='pending' AND scheduled_date_gmt < UTC_TIMESTAMP()-INTERVAL 5 MINUTE;
+          SQL
+          echo '===== ACTION SCHEDULER REGISTERED CALLBACK AND FUTURE EVENT ====='
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=256M <<'PHP'
+          <?php
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          echo "BAZARA_ORDER_SEND_REGISTERED=".var_export((bool)has_action('bazara_run_sending_orders'),true)."\n";
+          if(function_exists('as_next_scheduled_action'))echo "AS_NEXT_SCHEDULED=".var_export(as_next_scheduled_action('bazara_run_sending_orders'),true)."\n";
+          echo "BAZARA_HISTORICAL_REPLAY_DEFERRED=".var_export((bool)get_option('vc_bazara_defer_historical_backfill',true),true)."\n";
+          PHP
+          echo "READONLY_VERIFIED=yes"
+          REMOTE
