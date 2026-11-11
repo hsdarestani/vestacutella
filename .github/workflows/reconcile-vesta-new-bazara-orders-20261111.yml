@@ -1,0 +1,45 @@
+name: Reconcile Vesta eight new Bazaar orders after mapping repair
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/reconcile-vesta-new-bazara-orders-20261111.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 14
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: One-time safe remote existence check and serial order submission
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e scp -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            scripts/reconcile-vesta-bazara-post-nov10-orders-20261111.php \
+            "root@$HOST:/tmp/reconcile-vesta-bazara-post-nov10-orders-20261111.php"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          exec 9>/run/lock/vesta-bazara-new-order-dedup-reconciliation.lock
+          flock -n 9 || exit 12
+          echo "RECONCILE_UTC=$(date -u +%FT%TZ)"
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=512M -d max_execution_time=0 < /tmp/reconcile-vesta-bazara-post-nov10-orders-20261111.php
+          echo '===== READ BACK ORDER ACKS ====='
+          docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw --default-character-set=utf8mb4' <<'SQL'
+          SELECT p.ID,p.post_status,
+            COALESCE(MAX(CASE WHEN m.meta_key='mahak_id' THEN m.meta_value END),'') AS erp_ack,
+            (SELECT COUNT(*) FROM wp_bazara_orders b WHERE b.OrderClientId=p.ID) AS cached_count
+          FROM wp_posts p LEFT JOIN wp_postmeta m ON m.post_id=p.ID AND m.meta_key='mahak_id'
+          WHERE p.ID IN(105219,105220,105221,105223,105225,105226,105227,105228,105230)
+          GROUP BY p.ID,p.post_status ORDER BY p.ID;
+          SQL
+          for host in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
+           code=$(curl --noproxy '*' -ksS --connect-timeout 8 --max-time 25 --resolve "$host:443:127.0.0.1" -o /dev/null -w '%{http_code}' "https://$host/")
+           echo "HOST=$host HTTP=$code";test "$code" = 200
+          done
+          echo "NEW_ORDER_RECONCILIATION_WORKFLOW_FINISHED=yes"
+          REMOTE
