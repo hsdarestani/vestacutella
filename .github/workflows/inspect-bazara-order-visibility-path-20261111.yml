@@ -1,0 +1,46 @@
+name: Inspect Bazara remote order list and display IDs safely
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/inspect-bazara-order-visibility-path-20261111.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read only endpoint routes and ERP order result transformations
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          root=Path('/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara')
+          a=(root/'classes/class.bazara.api.php').read_text(encoding='utf8',errors='replace').splitlines()
+          for start,end in [(45,115),(1730,1799),(1814,1908),(2590,2628),(2970,3005),(3727,3766)]:
+            print('===== API SNIPPET',start,end,'=====')
+            for i in range(start,min(end,len(a))+1):
+              s=a[i-1].rstrip()
+              if re.search(r'pass(word)?|secret|authorization|bearer|(?:api|access|refresh)[_-]?token|http(?:s)?://',s,re.I):
+                print('CODE',i,'[SECRET/ENDPOINT LINE OMITTED]');continue
+              print('CODE',i,s[:190])
+          p=root/'classes/functions.php'
+          b=p.read_text(encoding='utf8',errors='replace').splitlines()
+          for start,end in [(3245,3304),(3868,3930),(4270,4318)]:
+            print('===== FUNCTION SNIPPET',start,end,'=====')
+            for i in range(start,min(end,len(b))+1):
+              s=b[i-1].rstrip()
+              if re.search(r'pass(word)?|secret|authorization|bearer|(?:api|access|refresh)[_-]?token|http(?:s)?://',s,re.I):
+                print('CODE',i,'[SECRET/ENDPOINT LINE OMITTED]');continue
+              print('CODE',i,s[:190])
+          PY
+          echo ERP_ORDER_LIST_PATH_INSPECTED=yes
+          REMOTE
