@@ -1,0 +1,60 @@
+name: Verify Bazaar cloud source contains all accounting orders (read only)
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/verify-bazara-cloud-orders-20261111.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Query current cloud GetAllData Orders only; never call save
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=12 "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          echo "CLOUD_VERIFICATION_UTC=$(date -u +%FT%TZ)"
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=256M -d max_execution_time=100 <<'PHP'
+          <?php
+          error_reporting(0);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';
+          $_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          if(!class_exists('BazaraApi')){echo "BAZARA_API_CLASS_NOT_AVAILABLE=yes\n";exit(22);}
+          $api=new BazaraApi(true);
+          $from=5144291883;
+          $r=$api->get_all_data('',array('fromOrderVersion'=>$from));
+          if(!is_array($r)||empty($r['success'])){
+            echo "BAZARA_CLOUD_READ_SUCCESS=no\n";
+            echo "BAZARA_CLOUD_RESULT_TYPE=".gettype($r)."\n";
+            exit(21);
+          }
+          $rows=$r['message']['Orders']??array();
+          echo "BAZARA_CLOUD_READ_SUCCESS=yes\n";
+          echo "REMOTE_ORDERS_RETURNED=".count($rows)."\n";
+          $ids=array_flip([105052,105053,105203,105204,105205,105206,105207,105208]);
+          $seen=array();
+          foreach($rows as $v){
+            if(!is_array($v))continue;
+            $client=(int)($v['OrderClientId']??0);
+            if(!isset($ids[$client]))continue;
+            $seen[$client]=true;
+            echo "REMOTE_ORDER_CLIENT=$client".
+             " REMOTE_ENTITY=".(int)($v['OrderId']??0).
+             " CODE=".(int)($v['OrderCode']??0).
+             " DELETED=".(isset($v['Deleted'])?var_export($v['Deleted'],true):'null').
+             " ROW_VERSION=".(string)($v['RowVersion']??0)."\n";
+          }
+          foreach(array_keys($ids) as $id)echo "REMOTE_CLOUD_HAS_ORDER_".$id."=".(isset($seen[$id])?'yes':'no')."\n";
+          ?>
+          PHP
+          echo "REMOTE_CLOUD_REQUEST_ONLY_NO_SAVES=yes"
+          REMOTE
