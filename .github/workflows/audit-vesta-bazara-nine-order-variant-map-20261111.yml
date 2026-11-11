@@ -1,0 +1,24 @@
+name: Audit exact ERP mappings for nine missing orders
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/audit-vesta-bazara-nine-order-variant-map-20261111.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Exact SKU and attribute read-only mapping audit
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e scp -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/audit-vesta-bazara-all-missing-variations-20261111.php "root@$HOST:/tmp/audit-vesta-bazara-all-missing-variations-20261111.php"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" \
+            'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=384M' < scripts/audit-vesta-bazara-all-missing-variations-20261111.php
