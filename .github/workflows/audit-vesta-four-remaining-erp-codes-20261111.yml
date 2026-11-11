@@ -1,0 +1,45 @@
+name: Resolve remaining four Bazaar variation codes exactly
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/audit-vesta-four-remaining-erp-codes-20261111.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Compare Woo parent codes against all cached Bazaar product and property IDs
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          echo '===== KNOWN ERP PRODUCT CODES (PARENT WOO IDs) ====='
+          docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw --default-character-set=utf8mb4' <<'SQL'
+          SELECT ProductId,ProductCode,ProductName,Deleted FROM wp_bazara_products
+          WHERE ProductCode IN ('94733','37821','42928') ORDER BY ProductCode;
+          SELECT ProductId,ProductDetailId,Properties,Deleted FROM wp_bazara_product_details
+          WHERE ProductId IN (
+            SELECT ProductId FROM wp_bazara_products WHERE ProductCode IN('94733','37821','42928')
+          ) ORDER BY ProductId,ProductDetailId LIMIT 140;
+          SQL
+          echo '===== WOO VARIANT ATTRIBUTES AND PRODUCT CODE ====='
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=256M <<'PHP'
+          <?php
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          foreach([94734,37823,37824,42934] as $v){
+            $p=get_post($v);$q=get_post($p->post_parent);
+            echo "VARIANT=".$v." PARENT=".$p->post_parent." TITLE=".$q->post_title."\n";
+            foreach(get_post_meta($v) as $key=>$vals)if(str_starts_with($key,'attribute_'))echo "ATTRIBUTE=".$key." VALUE=".($vals[0]??'')."\n";
+          }
+          PHP
+          echo FOUR_CANDIDATE_CODES_READONLY_COMPLETE=yes
+          REMOTE
