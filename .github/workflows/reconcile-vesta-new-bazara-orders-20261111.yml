@@ -4,6 +4,7 @@ on:
     branches: [main]
     paths: [".github/workflows/reconcile-vesta-new-bazara-orders-20261111.yml"]
   workflow_dispatch:
+# retry after lock wait (the Bazaar cron owns the same exclusive mutex)
 permissions:
   contents: read
 jobs:
