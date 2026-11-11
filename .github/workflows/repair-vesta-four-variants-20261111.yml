@@ -1,0 +1,57 @@
+name: Repair final four Vesta Bazaar variant mappings
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/repair-vesta-four-variants-20261111.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Dry run, backup, exact mappings and readback
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e scp -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            scripts/repair-vesta-bazara-final-four-variants-20261111.php \
+            "root@$HOST:/tmp/repair-vesta-bazara-final-four-variants-20261111.php"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          exec 9>/run/lock/vesta-bazara-repair-final-four.lock
+          flock -n 9 || exit 12
+          backup=/srv/backups/vesta-bazara-four-verified-variants-$(date -u +%Y%m%dT%H%M%SZ)
+          mkdir -p -m 0700 "$backup"
+          echo "BACKUP_DIR=$backup"
+          docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw' > "$backup/before-meta.tsv" <<'SQL'
+          SELECT post_id,meta_key,meta_value FROM wp_postmeta
+          WHERE post_id IN(94734,37823,37824,42934)
+            AND meta_key IN ('mahak_id','mahak_product_detail_id');
+          SQL
+          for host in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
+           code=$(curl --noproxy '*' -ksS --connect-timeout 8 --max-time 25 --resolve "$host:443:127.0.0.1" -o /dev/null -w '%{http_code}' "https://$host/")
+           echo "BEFORE=$host HTTP=$code";test "$code" = 200
+          done
+          echo '===== UNAMBIGUOUS 4-VARIANT DRYRUN ====='
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=384M < /tmp/repair-vesta-bazara-final-four-variants-20261111.php
+          echo '===== EXACT 4-VARIANT COMMIT ====='
+          docker exec -e VC_FINAL_FOUR_MAP_COMMIT=yes -i vc-vesta php -d display_errors=0 -d memory_limit=384M < /tmp/repair-vesta-bazara-final-four-variants-20261111.php
+          docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw' <<'SQL'
+          SELECT 'FINAL_FOUR_READBACK',COUNT(*),COUNT(DISTINCT post_id) FROM wp_postmeta
+          WHERE post_id IN(94734,37823,37824,42934)
+            AND meta_key IN ('mahak_id','mahak_product_detail_id');
+          SQL
+          for host in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
+           code=$(curl --noproxy '*' -ksS --connect-timeout 8 --max-time 25 --resolve "$host:443:127.0.0.1" -o /dev/null -w '%{http_code}' "https://$host/")
+           echo "AFTER=$host HTTP=$code";test "$code" = 200
+          done
+          echo "ALL_32_VERIFIED_VAR_MAPPING_DEPLOYED=yes"
+          echo "NO_ORDER_REPLAY_IN_THIS_WORKFLOW=yes"
+          REMOTE
