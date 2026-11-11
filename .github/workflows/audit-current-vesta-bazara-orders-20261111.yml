@@ -4,6 +4,7 @@ on:
     branches: [main]
     paths: [".github/workflows/audit-current-vesta-bazara-orders-20261111.yml"]
   workflow_dispatch:
+# progress check after the 32 exact variant links and serialized reconciliation
 permissions:
   contents: read
 jobs:
