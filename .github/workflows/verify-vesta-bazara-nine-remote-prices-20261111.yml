@@ -1,0 +1,63 @@
+name: Verify Vesta new orders exist in Bazaar cloud and prices are Rial
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/verify-vesta-bazara-nine-remote-prices-20261111.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Fresh read-only cloud confirmation and numeric price comparison
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          echo "CLOUD_AUDIT_UTC=$(date -u +%FT%TZ)"
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=512M -d max_execution_time=120 <<'PHP'
+          <?php
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          $ids=[105219,105220,105221,105223,105225,105226,105227,105228,105230];
+          $api=new BazaraApi(true);$r=$api->get_all_data('',array('fromOrderVersion'=>5144000000));
+          if(!is_array($r)||empty($r['success'])||!isset($r['message']['Orders'])){echo "CLOUD_READ_FAILED_ABORT=yes\n";exit(23);}
+          $rows=$r['message']['Orders'];$by=[];
+          foreach($rows as $x){
+            if(!is_array($x))continue;
+            $id=(int)($x['OrderClientId']??0);
+            if(in_array($id,$ids,true))$by[$id]=$x;
+          }
+          echo "BAZARA_CLOUD_READ_SUCCESS=yes REMOTE_RECENT_ROW_COUNT=".count($rows)."\n";
+          foreach($ids as $id){
+            $x=$by[$id]??null;
+            if(!$x){echo "CLOUD_MISSING_CLIENT_ID=$id\n";continue;}
+            echo "CLOUD_CONFIRMED_CLIENT_ID=$id ERP_ID=".(int)($x['OrderId']??0).
+                 " ORDER_CODE=".(int)($x['OrderCode']??0).
+                 " REMOTE_DELETED=".var_export($x['Deleted']??null,true)."\n";
+          }
+          echo "CLOUD_CONFIRMED_NINE_COUNT=".count($by)."\n";
+          if(count($by)!==9)exit(24);
+          $opts=get_option('bazara_visitor_settings',[]);
+          echo "SITE_CURRENCY=".get_woocommerce_currency().
+            " OUTBOUND_RIAL_PATCH=".(strpos(file_get_contents('/var/www/html/wp-content/plugins/bazara/classes/class.bazara.api.php'),'VC_BAZARA_OUTBOUND_RIAL_ONLY_20261110')!==false?'yes':'no')."\n";
+          ?>
+          PHP
+          echo '===== CACHED DETAIL PRICES (WILL GROW AS CLOUD SYNC CATCHES UP) ====='
+          docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw --default-character-set=utf8mb4' <<'SQL'
+          SELECT b.OrderClientId,d.ProductDetailId,d.Count1,d.Price
+          FROM wp_bazara_orders b JOIN wp_bazara_order_details d ON d.OrderId=b.OrderId
+          WHERE b.OrderClientId IN(105219,105220,105221,105223,105225,105226,105227,105228,105230)
+          ORDER BY b.OrderClientId,d.ProductDetailId LIMIT 65;
+          SELECT 'LATEST_NINE_LOCAL_CACHE_COUNT',COUNT(*) FROM wp_bazara_orders
+          WHERE OrderClientId IN (105219,105220,105221,105223,105225,105226,105227,105228,105230);
+          SQL
+          echo NINE_CLOUD_AND_RIAL_AUDIT_FINISHED=yes
+          REMOTE
