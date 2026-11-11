@@ -1,0 +1,62 @@
+name: Diagnose 9 Vesta newly missed Bazaar orders safely
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/diagnose-vesta-new-bazara-backlog-20261111.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read-only inspect missing order items and sync error categories
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          echo "AUDIT_UTC=$(date -u +%FT%TZ)"
+          echo '===== WOO COMMERCE ORDER ITEMS, PRODUCT MAPPING, ORDER ERRORS ====='
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=384M <<'PHP'
+          <?php
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          global $wpdb;
+          $ids=[105219,105220,105221,105223,105225,105226,105227,105228,105230];
+          foreach($ids as $id){
+            $o=wc_get_order($id);
+            if(!$o){echo "ORDER=".$id." MISSING\n";continue;}
+            echo "ORDER=".$id." STATUS=".$o->get_status()." ERP_MARKER=".((int)$o->get_meta('mahak_id'))."\n";
+            $e=$o->get_meta('mahak_error');
+            if($e){$s=(string)$e;echo "ORDER_ERROR=".$id." CLASS=".(
+               stripos($s,'stock')!==false||mb_stripos($s,'موجودی')!==false?'stock':
+               (stripos($s,'product')!==false||mb_stripos($s,'کالا')!==false?'product':
+               (stripos($s,'price')!==false||mb_stripos($s,'قیمت')!==false?'price':'other'))
+               ." LEN=".strlen($s)."\n";}
+            foreach($o->get_items('line_item') as $it){
+              $p=$it->get_product();$pid=$it->get_product_id();$vid=$it->get_variation_id();
+              $key=$vid?:$pid;
+              $pmap=get_post_meta($key,'mahak_id',true);
+              $dmap=get_post_meta($key,'mahak_product_detail_id',true);
+              $parentMap=get_post_meta($pid,'mahak_id',true);
+              echo "ITEM_ORDER=".$id." PRODUCT=".$pid." VARIATION=".$vid." QTY=".$it->get_quantity().
+                " ERP_PRODUCT=".$pmap." ERP_DETAIL=".$dmap." PARENT_ERP=".$parentMap.
+                " STOCK_STATUS=".($p?$p->get_stock_status():'missing')."\n";
+            }
+          }
+          PHP
+          echo '===== RECENT BAZARA SUBMISSION LOG CATEGORY ====='
+          docker logs --since 90m vc-vesta 2>&1 | grep -E 'VC_BAZARA_CATCHUP order=[0-9]+ ok=(yes|no)|Bazara Order Processing: Insufficient stock' | sed -E 's/(Required|Processed|Remaining): [0-9.]+/\1:[N]/g' | tail -22 || true
+          echo '===== SCHEDULER ORDER EVENTS ====='
+          docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw --default-character-set=utf8mb4' <<'SQL'
+          SELECT action_id,status,scheduled_date_gmt,last_attempt_gmt FROM wp_actionscheduler_actions
+          WHERE hook='bazara_run_sending_orders' ORDER BY action_id DESC LIMIT 12;
+          SQL
+          echo NEW_BACKLOG_DIAG_COMPLETE=yes
+          REMOTE
