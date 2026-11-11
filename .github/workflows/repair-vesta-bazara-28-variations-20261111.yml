@@ -1,0 +1,55 @@
+name: Repair 28 uniquely verified Vesta Bazaar variants
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/repair-vesta-bazara-28-variations-20261111.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Run mapping preflight, preserve rollback snapshot, apply verified mapping and check storefront
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'mkdir -p -m 0700 /srv/backups/vesta-bazara-variation-20261111'
+          sshpass -e scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            scripts/repair-vesta-bazara-new-variations-20261111.php \
+            "root@$HOST:/srv/backups/vesta-bazara-variation-20261111/repair-28.php"
+          sshpass -e ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          umask 077
+          exec 9>/run/lock/vesta-bazara-variant-repair-20261111.lock
+          flock -n 9 || exit 13
+          script=/srv/backups/vesta-bazara-variation-20261111/repair-28.php
+          echo "REPAIR_RUN_UTC=$(date -u +%FT%TZ)"
+          php -l "$script"
+          printf '%s\n' '===== PREFLIGHT IN LIVE WORDPRESS ====='
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=384M < "$script"
+          echo '===== BACKUP CURRENT MAPPING VALUES ====='
+          docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw --default-character-set=utf8mb4' <<'SQL' > /srv/backups/vesta-bazara-variation-20261111/mapping-meta-before.tsv
+          SELECT post_id,meta_key,meta_value FROM wp_postmeta
+          WHERE post_id IN(94902,69956,65195,58820,46097,41708,76573,88950,101233,100025,42648,54597,42649,100022,41904,42947,29632,60159,102847,51810,41555,33048,26957,42675,42724,102165,102364,101686)
+            AND meta_key IN ('mahak_id','mahak_product_detail_id')
+          ORDER BY post_id,meta_key;
+          SQL
+          echo MAPPING_BACKUP_COMPLETE=yes
+          echo '===== APPLY VERIFIED MAPPINGS ONLY ====='
+          docker exec -i -e VC_MAP_COMMIT=yes vc-vesta php -d display_errors=0 -d memory_limit=384M < "$script"
+          echo '===== READ BACK AND VERIFY NO NEW META NEEDS CREATION ====='
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=384M < "$script"
+          for host in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
+            http=$(curl --noproxy '*' -ksS --connect-timeout 8 --max-time 25 --resolve "$host:443:127.0.0.1" -o /dev/null -w '%{http_code}' "https://$host/")
+            echo "HOST=$host HTTP=$http"
+            test "$http" = 200
+          done
+          echo "VARIANT_MAPPING_REPAIR_COMPLETE=yes"
+          echo "NO_ORDER_REPLAY_TRIGGERED_BY_THIS_WORKFLOW=yes"
+          REMOTE
