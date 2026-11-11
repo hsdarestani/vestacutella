@@ -37,7 +37,7 @@ jobs:
             if($e){$s=(string)$e;echo "ORDER_ERROR=".$id." CLASS=".(
                stripos($s,'stock')!==false||mb_stripos($s,'موجودی')!==false?'stock':
                (stripos($s,'product')!==false||mb_stripos($s,'کالا')!==false?'product':
-               (stripos($s,'price')!==false||mb_stripos($s,'قیمت')!==false?'price':'other'))
+               (stripos($s,'price')!==false||mb_stripos($s,'قیمت')!==false?'price':'other')))
                ." LEN=".strlen($s)."\n";}
             foreach($o->get_items('line_item') as $it){
               $p=$it->get_product();$pid=$it->get_product_id();$vid=$it->get_variation_id();
