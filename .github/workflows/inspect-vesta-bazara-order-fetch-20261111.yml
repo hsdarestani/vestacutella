@@ -1,0 +1,48 @@
+name: Inspect Vesta Bazaar remote source versus local order cache
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/inspect-vesta-bazara-order-fetch-20261111.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Inspect remote order ingestion and submission code read-only
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+          root=Path('/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara')
+          p=root/'classes/class.bazara.api.php'
+          a=p.read_text(encoding='utf8',errors='replace').splitlines()
+          for start,end in ((1750,1897),(195,245),(3724,3753),(2620,2715)):
+            print('===== SOURCE',start,end,'=====')
+            for i in range(start,min(end,len(a))+1):
+              s=a[i-1].rstrip()
+              if re.search(r'password|secret|apikey|api_key|bearer|authorization',s,re.I):
+                print(i,'[CREDENTIAL OR TOKEN REDACTED]');continue
+              s=re.sub(r'https?://[^\'"\s,)]*','[EXTERNAL_ENDPOINT]',s)
+              print(i,s[:210])
+          f=root/'classes/functions.php'
+          b=f.read_text(encoding='utf8',errors='replace').splitlines()
+          for start,end in ((3256,3302),(4250,4342)):
+            print('===== FUNCTIONS',start,end,'=====')
+            for i in range(start,min(end,len(b))+1):
+              s=b[i-1].rstrip()
+              if re.search(r'password|secret|apikey|api_key|bearer|authorization',s,re.I):
+                print(i,'[CREDENTIAL OR TOKEN REDACTED]');continue
+              print(i,s[:210])
+          PY
+          echo READONLY_SOURCE_INSPECT_COMPLETE=yes
+          REMOTE
