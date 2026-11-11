@@ -8,9 +8,14 @@ require '/var/www/html/wp-load.php';
 global $wpdb;
 $orderIds=[105220,105221,105223,105225,105226,105227,105228,105230];
 $lock=fopen('/tmp/vesta-bazara-order-sync.lock','c');
-if(!$lock||!flock($lock,LOCK_EX|LOCK_NB)){
- echo "BAZARA_RUNNER_BUSY_NO_ACTION=yes\n";exit(16);
+if(!$lock){echo "BAZARA_LOCK_CANNOT_OPEN_ABORT=yes\n";exit(16);}
+$vcLocked=false;
+for($wait=0;$wait<180;$wait++){
+ if(flock($lock,LOCK_EX|LOCK_NB)){$vcLocked=true;break;}
+ usleep(250000);
 }
+if(!$vcLocked){echo "BAZARA_RUNNER_BUSY_45_SECONDS_NO_ACTION=yes\n";exit(16);}
+echo "BAZARA_EXCLUSIVE_RUNNER_LOCK_ACQUIRED=yes\n";
 $plugin='/var/www/html/wp-content/plugins/bazara/classes/class.bazara.api.php';
 $source=file_get_contents($plugin);
 if(strpos($source,'VC_BAZARA_OUTBOUND_RIAL_ONLY_20261110')===false ||
