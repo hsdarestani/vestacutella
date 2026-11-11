@@ -1,0 +1,59 @@
+name: Repair 28 exact Vesta Bazaar variation mappings safely
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/repair-vesta-bazara-28-exact-variations-20261111.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 11
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Backup, exact-match dry run, repair, read-back and health check
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e scp -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+           scripts/repair-vesta-bazara-28-exact-variations-20261111.php \
+           "root@$HOST:/tmp/repair-vesta-bazara-28-exact-variations-20261111.php"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+           "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          exec 9>/run/lock/vesta-bazara-repair-28-variations.lock
+          flock -n 9 || exit 11
+          backup=/srv/backups/vesta-bazara-28-verified-variants-$(date -u +%Y%m%dT%H%M%SZ)
+          mkdir -p -m 0700 "$backup"
+          ids=94902,69956,65195,58820,46097,41708,76573,88950,101233,100025,42648,54597,42649,100022,41904,42947,29632,60159,102847,51810,41555,33048,26957,42675,42724,102165,102364,101686
+          echo "BACKUP_DIR=$backup"
+          docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw' > "$backup/variations-meta-before.tsv" <<SQL
+          SELECT post_id,meta_key,meta_value FROM wp_postmeta
+          WHERE post_id IN ($ids) AND meta_key IN ('mahak_id','mahak_product_detail_id') ORDER BY post_id,meta_key;
+          SQL
+          test ! -s "$backup/variations-meta-before.tsv" || { echo "PREVIOUS_VARIATION_METADATA_PRESENT_ABORT=yes";exit 12; }
+          for host in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
+            code=$(curl --noproxy '*' -ksS --connect-timeout 8 --max-time 25 --resolve "$host:443:127.0.0.1" -o /dev/null -w '%{http_code}' "https://$host/")
+            echo "BEFORE=$host HTTP=$code";test "$code" = 200
+          done
+          echo '===== STRICT VERIFICATION DRY RUN ====='
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=384M < /tmp/repair-vesta-bazara-28-exact-variations-20261111.php | tail -8
+          echo '===== COMMIT ONLY 28 EXACT MATCHES ====='
+          docker exec -e VC_EXACT_MAP_COMMIT=yes -i vc-vesta php -d display_errors=0 -d memory_limit=384M < /tmp/repair-vesta-bazara-28-exact-variations-20261111.php | tail -8
+          echo '===== READ BACK ====='
+          docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw' <<SQL
+          SELECT 'VERIFIED_MAPPING_ROWS',COUNT(*),COUNT(DISTINCT post_id)
+          FROM wp_postmeta WHERE post_id IN ($ids) AND meta_key IN ('mahak_id','mahak_product_detail_id');
+          SQL
+          for host in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
+            code=$(curl --noproxy '*' -ksS --connect-timeout 8 --max-time 25 --resolve "$host:443:127.0.0.1" -o /dev/null -w '%{http_code}' "https://$host/")
+            echo "AFTER=$host HTTP=$code";test "$code" = 200
+          done
+          echo "REPAIR_EXACT_VARIANTS_DEPLOY_COMPLETE=yes"
+          echo "REMAINING_UNRESOLVED_VARIANTS=4"
+          echo "NO_ORDER_REPLAYS_IN_THIS_JOB=yes"
+          REMOTE
