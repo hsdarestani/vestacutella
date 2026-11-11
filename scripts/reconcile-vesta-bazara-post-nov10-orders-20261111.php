@@ -7,7 +7,8 @@ $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/w
 require '/var/www/html/wp-load.php';
 global $wpdb;
 $orderIds=[105220,105221,105223,105225,105226,105227,105228,105230];
-$lock=fopen('/tmp/vesta-bazara-order-sync.lock','c');
+// Open the existing shared lock read-only to avoid Linux protected_regular EACCES for root CLI in sticky /tmp.
+$lock=fopen('/tmp/vesta-bazara-order-sync.lock','r');
 if(!$lock){echo "BAZARA_LOCK_CANNOT_OPEN_ABORT=yes\n";exit(16);}
 $vcLocked=false;
 for($wait=0;$wait<180;$wait++){
