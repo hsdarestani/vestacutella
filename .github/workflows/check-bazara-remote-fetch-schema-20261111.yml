@@ -1,0 +1,47 @@
+name: Check Bazaar remote fetch request format read-only
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/check-bazara-remote-fetch-schema-20261111.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Inspect order GET API read-only invocation
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=12 "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          root=Path('/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara')
+          a=(root/'classes/class.bazara.api.php').read_text(encoding='utf8',errors='replace').splitlines()
+          b=(root/'classes/functions.php').read_text(encoding='utf8',errors='replace').splitlines()
+          def out(i,s):
+            if re.search(r'(?i)password|secret|authorization|bearer|api.?key|http(?:s)?://',s):return
+            print('CODE',i,s.strip()[:190])
+          print('===== GET ALL DATA API RESPONSE HANDLING =====')
+          for i in range(115,210):out(i,a[i-1])
+          print('===== HTTP API ROUTES & INITIALIZATION NAMES =====')
+          for i in range(1,45):out(i,a[i-1])
+          print('===== REQUEST IN EACH get_all_data CALL NEARBY =====')
+          for i,s in enumerate(a,1):
+            if 'get_all_data(' in s and i!=62:
+              print('CALL_LINE',i)
+              for j in range(max(i-11,1),min(i+6,len(a))+1):out(j,a[j-1])
+          print('===== ORDER CURSOR REQUEST FIELDS =====')
+          for i,s in enumerate(a,1):
+            if re.search(r'fromOrderVersion|fromOrderDetailVersion|OrderVersion|OrderDetails',s,re.I) and (i<330 or i>1750 and i<1960):
+              out(i,s)
+          PY
+          echo READONLY_SCHEMA_AUDIT_COMPLETE=yes
+          REMOTE
