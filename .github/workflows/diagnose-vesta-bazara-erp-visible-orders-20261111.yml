@@ -1,0 +1,73 @@
+name: Diagnose Vesta Bazaar ERP visible orders without writes
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/diagnose-vesta-bazara-erp-visible-orders-20261111.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Cross-check Woo, local Bazaar cache, relevant plugin remote order API and dates
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          echo "AUDIT_UTC=$(date -u +%FT%TZ)"
+          db(){ docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw --default-character-set=utf8mb4'; }
+          echo '===== CURRENT LOCAL BAZAAR RECORDS AND SYNCHRONIZATION PERSISTENCE ====='
+          cat <<'SQL'|db
+          SELECT p.ID, p.post_status,p.post_date_gmt,
+            COALESCE(MAX(CASE WHEN pm.meta_key='mahak_id' THEN CAST(pm.meta_value AS SIGNED) END),0) AS marker_id,
+            (SELECT COUNT(*) FROM wp_bazara_orders b WHERE b.OrderClientId=p.ID) AS cache_count,
+            (SELECT MAX(b.OrderId) FROM wp_bazara_orders b WHERE b.OrderClientId=p.ID) AS bazara_order_id,
+            (SELECT MAX(b.OrderDate) FROM wp_bazara_orders b WHERE b.OrderClientId=p.ID) AS bazara_order_date,
+            (SELECT COUNT(*) FROM wp_bazara_order_details d JOIN wp_bazara_orders b ON d.OrderId=b.OrderId WHERE b.OrderClientId=p.ID) AS cached_line_count
+          FROM wp_posts p LEFT JOIN wp_postmeta pm ON pm.post_id=p.ID AND pm.meta_key='mahak_id'
+          WHERE p.ID IN(105052,105053,105203,105204,105205,105206,105207,105208,105209)
+          GROUP BY p.ID,p.post_status,p.post_date_gmt ORDER BY p.ID;
+          SELECT 'BAZARA_ORDER_CACHE_TOTAL',COUNT(*) FROM wp_bazara_orders;
+          SELECT 'BAZARA_ORDER_CACHE_RECENT_MAX_ID',MAX(OrderId) FROM wp_bazara_orders;
+          SELECT 'BAZARA_ORDER_CACHE_7_RECENT_IDS',GROUP_CONCAT(DISTINCT OrderClientId ORDER BY OrderClientId SEPARATOR ',')
+          FROM wp_bazara_orders WHERE OrderClientId BETWEEN 105052 AND 105208;
+          SQL
+          echo '===== ORDER SEND AND RECEIVING FUNCTIONS (NAMES ONLY) ====='
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          root=Path('/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara')
+          for path in root.rglob('*.php'):
+            if 'vendors' in path.parts or 'libs' in path.parts:continue
+            txt=path.read_text(encoding='utf8',errors='replace')
+            if re.search(r'bazara_orders|orderClientId|OrderClientId|order_save|save_orders|get_all_data|order_status',txt,re.I):
+              if path.name in ('class.bazara.api.php','functions.php','bazara.php','class.woo.php') or 'orders' in path.name:
+                print('FILE',str(path.relative_to(root)))
+                for n,line in enumerate(txt.splitlines(),1):
+                  if re.search(r'function .*order|function .*all_data|function .*sync|wp_bazara_orders|bazara_orders|OrderClientId|orderClientId',line,re.I):
+                    line=re.sub(r'https?://\S+','[ENDPOINT]',line)
+                    if re.search(r'password|secret|authorization|token',line,re.I):continue
+                    print('CODE_LINE',n,line.strip()[:180])
+          PY
+          echo '===== SECURITY-REDACTED OUTBOUND ERP REQUEST CALLSITE ====='
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara/classes/class.bazara.api.php')
+          a=p.read_text(encoding='utf8',errors='replace').splitlines()
+          for i in range(3726,3750):
+            line=a[i-1].strip()
+            if re.search(r'pass|secret|api.?key|bearer|token|authorization|phone|email|address',line,re.I):
+              print('PHP_LINE',i,'[REDACTED]');continue
+            line=re.sub(r'https?://\S+','[ENDPOINT]',line)
+            print('PHP_LINE',i,line[:220])
+          PY
+          echo '===== SERVER AND CLIENT CLOCK ====='
+          date -u +%FT%TZ
+          echo 'READ_ONLY_ERP_VISIBILITY_AUDIT_COMPLETE=yes'
+          REMOTE
