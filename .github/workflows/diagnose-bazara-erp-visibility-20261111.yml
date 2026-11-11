@@ -1,0 +1,78 @@
+name: Diagnose Bazaar ERP invisible orders read-only
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/diagnose-bazara-erp-visibility-20261111.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    steps:
+      - uses: actions/checkout@v4
+      - name: SSH helper
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Audit ERP receipts and cached remote records without replay
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          echo "AUDIT_UTC=$(date -u +%FT%TZ)"
+          db(){ docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw --default-character-set=utf8mb4'; }
+          echo '===== WOO ORDERS AND REMOTE RECEIPTS (NO CUSTOMER INFO) ====='
+          cat <<'SQL' | db
+          SELECT p.ID,p.post_status,p.post_date_gmt,
+                 MAX(CASE WHEN m.meta_key='_order_total' THEN m.meta_value END) AS woo_total_irt,
+                 MAX(CASE WHEN m.meta_key='mahak_id' THEN m.meta_value END) AS erp_ack,
+                 MAX(CASE WHEN m.meta_key='mahak_error' THEN LEFT(m.meta_value,80) END) AS erp_error_summary
+          FROM wp_posts p LEFT JOIN wp_postmeta m ON m.post_id=p.ID AND m.meta_key IN('_order_total','mahak_id','mahak_error')
+          WHERE p.ID IN(105052,105053,105203,105204,105205,105206,105207,105208,105209)
+          GROUP BY p.ID,p.post_status,p.post_date_gmt ORDER BY p.ID;
+          SELECT b.OrderClientId,b.OrderId,b.OrderCode,b.OrderDate,b.Deleted,b.RowVersion,
+              COUNT(d.o_d_id) AS cached_detail_count,
+              COALESCE(SUM(CAST(d.Price AS DECIMAL(20,2))*d.Count1),0) AS cached_price_times_qty,
+              SUM(CASE WHEN d.Deleted=1 THEN 1 ELSE 0 END) AS deleted_details
+          FROM wp_bazara_orders b LEFT JOIN wp_bazara_order_details d ON b.OrderId=d.OrderId
+          WHERE b.OrderClientId IN(105052,105053,105203,105204,105205,105206,105207,105208,105209)
+          GROUP BY b.OrderClientId,b.OrderId,b.OrderCode,b.OrderDate,b.Deleted,b.RowVersion
+          ORDER BY b.OrderClientId;
+          SELECT 'DUPLICATE_CACHE_CLIENT_IDS',COUNT(*) FROM (
+            SELECT b.OrderClientId FROM wp_bazara_orders b WHERE b.OrderClientId IN (105052,105053,105203,105204,105205,105206,105207,105208) GROUP BY b.OrderClientId HAVING COUNT(*)>1
+          ) x;
+          SELECT 'LATEST_CACHE_ORDER_DATE',MAX(OrderDate) FROM wp_bazara_orders;
+          SQL
+          echo '===== ORDER SAVE API AND REMOTE RECONCILIATION ROUTES ====='
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+          root=Path('/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara')
+          a=(root/'classes/class.bazara.api.php').read_text(encoding='utf8',errors='replace').splitlines()
+          for i,line in enumerate(a,1):
+            if re.search(r'function (bazara_save_order|start_sync_orders|get_all_data|.*order.*|.*sync.*)',line,re.I) and 0<i<4250:
+              print('API_METHOD',i,line.strip()[:140])
+            if (3730<=i<=3744 or 3750<=i<=3765 or 3780<=i<=3804):
+              if re.search(r'password|token|secret|key|authorization',line,re.I):
+                continue
+              line=re.sub(r'https?://[^\s\'"]+','[URL]',line)
+              print('SEND_OR_ACK_LINE',i,line.strip()[:180])
+          for p in (root/'classes').rglob('*.php'):
+            if 'vendors' in p.parts:continue
+            lines=p.read_text(encoding='utf8',errors='replace').splitlines()
+            hits=[]
+            for i,s in enumerate(lines,1):
+              if re.search(r'get_all_data|orderClientId|OrderClientId|OrderCode|GetOrders|SelectOrders|order_view',s,re.I) and not re.search(r'password|secret|token|credential',s,re.I):hits.append(i)
+            if hits:
+              print('OTHER_ORDER_METHOD_FILE',str(p.relative_to(root)), 'LINES',','.join(map(str,hits[:30])))
+          PY
+          echo '===== LAST SCHEDULER ORDER ACTIONS ====='
+          cat <<'SQL' | db
+          SELECT action_id,hook,status,scheduled_date_gmt,last_attempt_gmt,attempts FROM wp_actionscheduler_actions
+          WHERE hook='bazara_run_sending_orders' ORDER BY action_id DESC LIMIT 10;
+          SQL
+          echo "ERP_VISIBILITY_READONLY_AUDIT_COMPLETE=yes"
+          REMOTE
