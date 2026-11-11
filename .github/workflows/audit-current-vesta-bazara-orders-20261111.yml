@@ -42,3 +42,5 @@ jobs:
           SQL
           echo CURRENT_ORDERS_READONLY_AUDIT_DONE=yes
           REMOTE
+
+# Readback after validated 28-variant mapping repair (Nov 11)
