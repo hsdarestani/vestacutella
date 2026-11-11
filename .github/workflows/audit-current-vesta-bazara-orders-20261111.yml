@@ -1,0 +1,44 @@
+name: Audit current new Vesta orders versus Bazaar receipts
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/audit-current-vesta-bazara-orders-20261111.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Count new Woo orders, Bazaar acknowledgments, remote cache, duplicates
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          echo "CHECK_UTC=$(date -u +%FT%TZ)"
+          docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw --default-character-set=utf8mb4' <<'SQL'
+          SELECT p.ID, p.post_date_gmt,p.post_status,
+              (SELECT COALESCE(MAX(CAST(m.meta_value AS SIGNED)),0) FROM wp_postmeta m WHERE m.post_id=p.ID AND m.meta_key='mahak_id') AS erp_id,
+              (SELECT COUNT(*) FROM wp_bazara_orders b WHERE b.OrderClientId=p.ID) AS cache_count
+          FROM wp_posts p
+          WHERE p.post_type='shop_order' AND p.ID>=105208
+          ORDER BY p.ID DESC LIMIT 40;
+          SELECT p.post_status,COUNT(*) AS orders,
+              SUM(EXISTS(SELECT 1 FROM wp_postmeta m WHERE m.post_id=p.ID AND m.meta_key='mahak_id' AND CAST(m.meta_value AS SIGNED)>0)) AS erp_ack_count,
+              SUM(EXISTS(SELECT 1 FROM wp_bazara_orders b WHERE b.OrderClientId=p.ID)) AS cache_count
+          FROM wp_posts p
+          WHERE p.post_type='shop_order' AND p.post_date_gmt >= '2026-11-08 00:00:00'
+          GROUP BY p.post_status;
+          SELECT 'NEW_UNACKED_ELIGIBLE_SINCE_NOV8',COUNT(*)
+          FROM wp_posts p LEFT JOIN wp_postmeta m ON m.post_id=p.ID AND m.meta_key='mahak_id' AND CAST(m.meta_value AS SIGNED)>0
+          WHERE p.post_type='shop_order' AND p.post_date_gmt >= '2026-11-08 00:00:00'
+          AND p.post_status IN ('wc-completed','wc-processing','wc-processing5','wc-pws-packaged','wc-pws-shipping','wc-arrival-shipment')
+          AND m.meta_id IS NULL;
+          SQL
+          echo CURRENT_ORDERS_READONLY_AUDIT_DONE=yes
+          REMOTE
