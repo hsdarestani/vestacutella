@@ -77,7 +77,7 @@ jobs:
               $q++;
             }
             echo "HISTORICAL_COUPON_ORDER=".$id.
-               " EXPECTED_NEW_WOO_GROSS_RIAL=".$s*10.
+               " EXPECTED_NEW_WOO_GROSS_RIAL=".($s*10).
                " EXPECTED_SINGLE_LINE_DISCOUNT_RIAL=".($d*10).
                " EXPECTED_NEW_HEADER_DISCOUNT_RIAL=0".
                " EXPECTED_WOO_TOTAL_RIAL=".((float)$o->get_total()*10).
