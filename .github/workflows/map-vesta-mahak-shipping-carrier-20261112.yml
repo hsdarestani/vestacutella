@@ -1,0 +1,49 @@
+name: Map Vesta shipping to existing verified Mahak freight account
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/map-vesta-mahak-shipping-carrier-20261112.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Strict dryrun then backup and readback-verified freight mapping
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=12 \
+            scripts/map-vesta-carrier-to-existing-mahak-person-20261112.php \
+            "root@$HOST:/tmp/map-vesta-carrier-to-existing-mahak-person-20261112.php"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=12 "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          umask 077
+          exec 9>/run/lock/vesta-bazara-carrier-map-20261112.lock
+          flock -n 9
+          backup=/srv/backups/vesta-bazara-shipping-carrier-$(date -u +%Y%m%dT%H%M%SZ)
+          mkdir -p -m 0700 "$backup"
+          echo "BACKUP_DIR=$backup"
+          docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw --skip-column-names --default-character-set=utf8mb4' \
+            > "$backup/bazara-visitor-option-original.hex" <<'SQL'
+          SELECT HEX(option_value) FROM wp_options WHERE option_name='bazara_visitor_settings' LIMIT 1;
+          SQL
+          test -s "$backup/bazara-visitor-option-original.hex"
+          echo "BAZARA_SETTINGS_BACKUP_CREATED=yes"
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=256M < /tmp/map-vesta-carrier-to-existing-mahak-person-20261112.php | tee /tmp/vesta-carrier-map-dryrun-20261112.log
+          grep -q 'NO_WRITES_DRYRUN=yes' /tmp/vesta-carrier-map-dryrun-20261112.log
+          docker exec -e VC_CARRIER_MAP_COMMIT=yes -i vc-vesta php -d display_errors=0 -d memory_limit=256M < /tmp/map-vesta-carrier-to-existing-mahak-person-20261112.php | tee /tmp/vesta-carrier-map-commit-20261112.log
+          grep -q 'SAFE_SHIPPING_CARRIER_MAPPING_SAVED=yes' /tmp/vesta-carrier-map-commit-20261112.log
+          for host in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
+            code=$(curl --noproxy '*' -ksS --connect-timeout 8 --max-time 25 --resolve "$host:443:127.0.0.1" -o /dev/null -w '%{http_code}' "https://$host/")
+            echo "SITE=$host HTTP=$code";test "$code" = 200
+          done
+          echo "EXISTING_ERP_FREIGHT_ACCOUNT_MAPPING_DEPLOY_SUCCESS=yes"
+          echo "NO_ORDER_RESENDS_AND_NO_INVOICE_EDITS_IN_MAPPING=yes"
+          REMOTE
