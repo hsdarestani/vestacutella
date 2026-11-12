@@ -14,7 +14,7 @@ jobs:
       - name: Download pinned CI-tested Vesta Mahak MU bridge
         run: |
           set -Eeuo pipefail
-          curl -fsSL --retry 3 --connect-timeout 10 'https://raw.githubusercontent.com/hsdarestani/ordersvesta/9760c8af16db3f8792f1c4579c6e9a7ecea15b79/wordpress/mu-plugins/vesta-mahak-product-bridge.php' -o /tmp/vesta-mahak-product-bridge.php
+          curl -fsSL --retry 3 --connect-timeout 10 'https://raw.githubusercontent.com/hsdarestani/ordersvesta/65421aa299508f33c70c53d1464b9a467faa831d/wordpress/mu-plugins/vesta-mahak-product-bridge.php' -o /tmp/vesta-mahak-product-bridge.php
           test -s /tmp/vesta-mahak-product-bridge.php
       - name: Stage plugin on Vesta production host
         env:
