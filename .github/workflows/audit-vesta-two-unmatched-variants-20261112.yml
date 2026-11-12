@@ -39,6 +39,6 @@ jobs:
               foreach($details as $d)echo "DETAIL=".$d->ProductDetailId." PROPS=".$d->Properties." DELETED=".$d->Deleted."\n";
             }
           }
-          echo TWO_UNMATCHED_AUDIT_COMPLETE=yes
+          echo "TWO_UNMATCHED_AUDIT_COMPLETE=yes\n";
           PHP
           REMOTE
