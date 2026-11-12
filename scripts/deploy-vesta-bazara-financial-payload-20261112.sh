@@ -138,9 +138,9 @@ once(
 'PAYMENT_GATEWAY_LABEL')
 
 # Financial invariant guard before calling SetAll; no ERP submission if Woo total does not reconcile.
-once(
-"""        $result = $this->set_all_data($token, $data);""",
-"""        // Financial invariant: do not send a document whose line items do not sum to Woo total.
+# Same SetAll call also exists in wallet top-up path. Guard only the final regular Woo order call.
+vc_set_all_call = """        $result = $this->set_all_data($token, $data);"""
+vc_guarded_call = """        // Financial invariant: do not send a document whose line items do not sum to Woo total.
         // Tax and fee handling is not implemented by the vendor plugin; reject such exceptional orders.
         $vc_expected_irt = (float)$order->get_total();
         $vc_item_sum_irt = 0.0;
@@ -153,8 +153,11 @@ once(
             return array('success' => false,
                 'message' => 'Bazara financial guard: nonreconciling tax, fee, or order totals');
         }
-        $result = $this->set_all_data($token, $data);""",
-'FINANCIAL_PARITY_GUARD')
+        $result = $this->set_all_data($token, $data);"""
+if part.count(vc_set_all_call)!=2:
+  raise SystemExit('ABORT_UNEXPECTED_SET_ALL_CALL_COUNT_'+str(part.count(vc_set_all_call)))
+i=part.rfind(vc_set_all_call)
+part=part[:i]+vc_guarded_call+part[i+len(vc_set_all_call):]
 
 if original==part:raise SystemExit('NO_SOURCE_CHANGES')
 next_content=(head+part+tail).encode()
