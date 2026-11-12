@@ -1,0 +1,66 @@
+name: Verify Vesta finance outbound deployment and current order syncing
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/verify-vesta-bazara-finance-live-20261112.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 11
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Inspect new order receipts and remote shipping after code deployment
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=12 "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          echo "LIVE_AUDIT_UTC=$(date -u +%FT%TZ)"
+          test -f /srv/vestacutella/runtime/vesta/wp-content/plugins/bazara/classes/class.bazara.api.php
+          grep -Fc 'VC_BAZARA_FINANCIAL_PAYLOAD_V1_20261112' /srv/vestacutella/runtime/vesta/wp-content/plugins/bazara/classes/class.bazara.api.php | awk '{print "FINANCE_PATCH_MARKER_COUNT="$1}'
+          docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw --default-character-set=utf8mb4' <<'SQL'
+          SELECT p.ID,p.post_date_gmt,p.post_status,
+             MAX(CASE WHEN m.meta_key='_order_total' THEN m.meta_value END) total_toman,
+             MAX(CASE WHEN m.meta_key='_order_shipping' THEN m.meta_value END) shipping_toman,
+             MAX(CASE WHEN m.meta_key='mahak_id' THEN m.meta_value END) erp_id,
+             (SELECT COUNT(*) FROM wp_bazara_orders b WHERE b.OrderClientId=p.ID) remote_cache
+          FROM wp_posts p LEFT JOIN wp_postmeta m ON m.post_id=p.ID AND m.meta_key IN('_order_total','_order_shipping','mahak_id')
+          WHERE p.post_type='shop_order' AND p.ID>=105230
+          GROUP BY p.ID,p.post_date_gmt,p.post_status ORDER BY p.ID DESC LIMIT 30;
+          SELECT 'UNACKED_ELIGIBLE_SINCE_NOV11',COUNT(*)
+          FROM wp_posts p LEFT JOIN wp_postmeta m ON m.post_id=p.ID AND m.meta_key='mahak_id' AND CAST(m.meta_value AS SIGNED)>0
+          WHERE p.post_type='shop_order' AND p.post_date_gmt>='2026-11-11 00:00:00'
+          AND p.post_status IN('wc-processing','wc-completed','wc-processing5','wc-pws-packaged','wc-pws-shipping','wc-arrival-shipment')
+          AND m.meta_id IS NULL;
+          SQL
+          echo '===== ERP RECENT NEW REMOTE ORDER SOURCE FIELDS ====='
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=384M -d max_execution_time=90 <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          $api=new BazaraApi(true);
+          $r=$api->get_all_data('',array('fromOrderVersion'=>5147300000));
+          if(!is_array($r)||empty($r['success'])){echo "ERP_REMOTE_CHECK=failed\n";exit(20);}
+          $rows=$r['message']['Orders']??[];
+          $number=0;
+          foreach($rows as $a){
+             if((int)($a['OrderClientId']??0)<105230)continue;
+             echo "REMOTE_ORDER_ID=".(int)($a['OrderClientId']??0).
+               " CLOUD_ENTITY_ID=".(int)($a['OrderId']??0).
+               " SEND_COST=".($a['SendCost']??'missing').
+               " DISCOUNT=".($a['Discount']??'missing').
+               " PAYMENT_SOURCE_DESCRIPTION_PRESENT=".(strpos((string)($a['Description']??''),'درگاه سایت:')!==false?'yes':'no').
+               " ROW_VERSION=".($a['RowVersion']??'')."\n";
+             if(++$number>=20)break;
+          }
+          echo "CLOUD_RECENT_ORDERS_MATCHED=".$number."\n";
+          PHP
+          echo POST_DEPLOY_VERIFICATION_READONLY_DONE=yes
+          REMOTE
