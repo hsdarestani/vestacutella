@@ -1,0 +1,44 @@
+name: Inspect exact Mahak product create rejection (read-only)
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/inspect-mahak-product-rejection-20261112.yml]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Inspect save response handling and recent vendor error log without API writes
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=12 "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          root=Path('/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara')
+          p=root/'classes/class.bazara.api.php'
+          a=p.read_text(encoding='utf8',errors='replace').splitlines()
+          for j in range(237,255):
+            s=a[j-1].strip()
+            if re.search('password|token|secret|url|auth|headers|curl|post_data',s,re.I):s='[NETWORK REDACTED]'
+            print('SETALL_CODE_LINE',j,s[:210])
+          for file in root.rglob('*.php'):
+            try:t=file.read_text(encoding='utf8',errors='replace')
+            except:continue
+            for match in re.finditer(r'(?:class\s+Bz_Import_Export_For_Woo_Basic_Logwriter|function\s+write_log\s*\()',t):
+              lines=t.splitlines()
+              i=t[:match.start()].count('\n')
+              print('LOG_WRITER_FILE=',str(file.relative_to(root)),'LINE=',i+1)
+              for s in lines[i:i+38]:
+                if re.search('password|token|secret|url|authorization|http|curl',s,re.I):s='[REDACTED]'
+                print('LOGGER_CODE',s.strip()[:220])
+          PY
+          echo "INSPECT_READONLY_FINISHED=yes"
+          REMOTE
