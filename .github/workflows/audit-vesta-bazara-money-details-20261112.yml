@@ -1,0 +1,94 @@
+name: Audit Bazaar accounting formulas and shipping payment mappings deep
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/audit-vesta-bazara-money-details-20261112.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Inspect money source lines, payment mapping, shipping and discount sample
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          echo "AUDIT_UTC=$(date -u +%FT%TZ)"
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          base=Path('/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara/classes')
+          paths=[base/'class.bazara.api.php',base/'functions.php']
+          for p in paths:
+            a=p.read_text(encoding='utf8',errors='replace').splitlines()
+            print('FILE',p.name)
+            regions= ((2912,2976),(3135,3182),(3375,3426),(3440,3550)) if p.name=='class.bazara.api.php' else ((3560,3715),(3855,3883))
+            for start,end in regions:
+              print('SECTION',start,end)
+              for i in range(start,min(end,len(a))+1):
+                s=a[i-1].strip()
+                if re.search(r'password|token|secret|authorization|api.?key',s,re.I):s='[REDACTED]'
+                s=re.sub(r'https?://[^\s\'"]+','[URL]',s)
+                print(i,s[:240])
+            for i,s in enumerate(a,1):
+              if re.search(r'function (get_selected_shipping_person_id|get_order_item_discount|get_order_item_shipping_amount_hpos|get_order_item_meta_payment_hpos|bazara_payment_method_is_cod)',s):
+                print('FOUND_FUNCTION',i,s.strip())
+                for j in range(i,min(i+50,len(a)+1)):
+                  line=a[j-1].strip()
+                  if re.search(r'pass|token|secret|key|authorization|http',line,re.I):line='[REDACTED]'
+                  print('FOUND_CONTEXT',j,line[:210])
+          PY
+          docker exec -i vc-vesta php -d memory_limit=384M -d display_errors=0 <<'PHP'
+          <?php
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          global $wpdb;
+          $opt=get_option('bazara_visitor_settings',[]);
+          $b=json_decode(stripslashes($opt['banksMethods']??''),true);
+          foreach(is_array($b)?$b:[] as $x){
+            echo "BANK_METHOD_GATEWAY=".preg_replace('/[^a-z0-9_-]/i','',(string)($x['method']??'')).
+                " ERP_BANK_CODE=".preg_replace('/[^0-9]/','',(string)($x['name']??''))."\n";
+          }
+          echo "BANK_METHOD_MAP_COUNT=".count(is_array($b)?$b:[])."\n";
+          foreach($opt as $key=>$val)if(preg_match('/ship|carrier|transport|send|bank|receipt|cheque|cash|factor|invoice|discount|shipping/i',$key)){
+            if(preg_match('/credential|password|token|secret|url|api/i',$key))continue;
+            if(is_scalar($val)&&!preg_match('/(?i)methods|person|name|mapping/',$key))
+              echo "OPTION_FIELD=".$key." VALUE=".preg_replace('/[^a-zA-Z0-9_-]/','',(string)$val)."\n";
+          }
+          $ids=$wpdb->get_col("SELECT ID FROM {$wpdb->posts} WHERE post_type='shop_order' AND ID>80000 ORDER BY ID DESC LIMIT 350");
+          $n=0;
+          foreach($ids as $id){
+            $o=wc_get_order($id);
+            if(!$o||!in_array($o->get_status(),['processing','completed'],true))continue;
+            $disc=(float)$o->get_discount_total();
+            $lineDelta=0;
+            foreach($o->get_items('line_item') as $item)$lineDelta+=(float)$item->get_subtotal()-(float)$item->get_total();
+            if($disc>0 || $lineDelta>0){
+              echo "DISCOUNT_ORDER=".$id." METHOD=".$o->get_payment_method()." ORDER_DISCOUNT=".$disc.
+               " ITEM_SUBTOTAL_DELTA=".$lineDelta." SUBTOTAL=".$o->get_subtotal().
+               " SHIPPING=".$o->get_shipping_total()." ORDER_TOTAL=".$o->get_total().
+               " COUPON_COUNT=".count($o->get_items('coupon'))." ERP_ACK=".(int)$o->get_meta('mahak_id')."\n";
+              foreach($o->get_items('line_item') as $item)echo "DISCOUNT_ITEM_ORDER=".$id.
+                 " QTY=".$item->get_quantity()." SUBTOTAL=".$item->get_subtotal().
+                 " TOTAL=".$item->get_total()."\n";
+              if(++$n>=7)break;
+            }
+          }
+          echo "DISCOUNT_SAMPLE_COUNT=".$n."\n";
+          foreach([105317,105316,105313,105312,105311] as $id){
+            $o=wc_get_order($id);
+            if(!$o)continue;
+            foreach($o->get_items('shipping') as $item)echo "SHIPPING_ORDER=".$id." METHOD=".$item->get_method_id().
+             " INSTANCE=".$item->get_instance_id()." COST=".$item->get_total()."\n";
+          }
+          PHP
+          echo FINANCE_SOURCE_AUDIT_COMPLETE=yes
+          REMOTE
