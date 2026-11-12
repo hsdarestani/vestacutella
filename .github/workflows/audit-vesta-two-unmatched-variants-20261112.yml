@@ -1,0 +1,44 @@
+name: Investigate two unresolved Vesta Bazaar product variants by code
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/audit-vesta-two-unmatched-variants-20261112.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Compare two Woo variation codes to ERP product details read-only
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=12 "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=384M <<'PHP'
+          <?php
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          global $wpdb;
+          foreach([37110,78444] as $vid){
+            $p=get_post($vid);$par=$p?get_post($p->post_parent):null;
+            if(!$p || !$par){echo "MISSING_POST=$vid\n";continue;}
+            echo "VAR=$vid PARENT=".$par->ID." PARENT_TITLE=".str_replace(["\r","\n"],' ',$par->post_title).
+                " VAR_SKU=".get_post_meta($vid,'_sku',true)."\n";
+            foreach(get_post_meta($vid) as $k=>$v)if(str_starts_with($k,'attribute_'))echo "ATTR=".$k." VALUE=".($v[0]??'')."\n";
+            $rows=$wpdb->get_results($wpdb->prepare("SELECT ProductId,ProductCode,ProductName,Deleted FROM {$wpdb->prefix}bazara_products WHERE ProductCode=%s OR ProductName=%s",strval($par->ID),$par->post_title));
+            foreach($rows as $r){
+              echo "MATCH_PRODUCT=".$r->ProductId." CODE=".$r->ProductCode." NAME=".$r->ProductName." DELETED=".$r->Deleted."\n";
+              $details=$wpdb->get_results($wpdb->prepare("SELECT ProductDetailId,Properties,Deleted FROM {$wpdb->prefix}bazara_product_details WHERE ProductId=%d",$r->ProductId));
+              foreach($details as $d)echo "DETAIL=".$d->ProductDetailId." PROPS=".$d->Properties." DELETED=".$d->Deleted."\n";
+            }
+          }
+          echo TWO_UNMATCHED_AUDIT_COMPLETE=yes
+          PHP
+          REMOTE
