@@ -1,0 +1,59 @@
+name: Read-only feasibility of Telegram bot creating Mahak accounting products
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/audit-mahak-product-creation-capability-20261112.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Inspect installed Bazara product write routines and mappings without executing them
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=12 "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          echo "AUDIT_UTC=$(date -u +%FT%TZ)"
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          root=Path('/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara')
+          classes=root/'classes'/'class.bazara.api.php'
+          if not classes.is_file():raise SystemExit('PLUGIN_SOURCE_UNAVAILABLE')
+          keys=['set_all_data','products','productDetails','create_product','save_product','ProductDetailClientId','ProductClientId','productClientId','ProductCategories','visitorProducts']
+          patterns=re.compile(r'function\s+[\w]*(product|set_all_data)[\w]*\b|[\'"](?:products|productDetails|ProductCategories|visitorProducts|productClientId|productDetailClientId)[\'"]\s*=>|SetAll|sync_products|product_added',re.I)
+          files=sorted(root.rglob('*.php'))
+          print('BAZARA_PHP_FILE_COUNT',len(files))
+          hits=0
+          for p in files:
+            if hits>125:break
+            try:lines=p.read_text(encoding='utf8',errors='replace').splitlines()
+            except:continue
+            for i,line in enumerate(lines,1):
+              if not patterns.search(line):continue
+              if any(k in line.lower() for k in ['password','secret','authorization','api_key','login','token','http']):continue
+              print('CODE_HIT',p.relative_to(root),i,line.strip()[:195])
+              hits+=1
+              if hits>125:break
+          print('BAZARA_PRODUCT_API_CODE_HITS',hits)
+          # Show exact send-all method signature and return semantics, not credentials.
+          a=classes.read_text(encoding='utf8',errors='replace').splitlines()
+          for i,line in enumerate(a):
+            if re.search(r'function\s+set_all_data\s*\(',line,re.I):
+              print('SET_ALL_DEFINITION_AT',i+1)
+              for j in range(i,min(i+21,len(a))):
+                s=a[j]
+                if re.search(r'key|token|pass|secret|http|auth|url|cookie',s,re.I):s='[REDACTED]'
+                print('METHOD_LINE',j+1,s.strip()[:165])
+              break
+          PY
+          echo "NO_CREATE_API_CALLED=yes"
+          echo "READ_ONLY_MAHAK_CAPABILITY_AUDIT_FINISHED=yes"
+          REMOTE
