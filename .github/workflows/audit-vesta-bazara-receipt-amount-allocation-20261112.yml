@@ -40,7 +40,7 @@ jobs:
           foreach($ids as $id){
             $o=wc_get_order($id);$rr=$receipts[$id][0]??[];
             echo "PAID_WOO_ORDER=".$id." GATEWAY=".($o?$o->get_payment_method():'none').
-              " TOTAL_RIAL=".(float)($o?$o->get_total():0)*10.
+              " TOTAL_RIAL=".((float)($o?$o->get_total():0)*10).
               " ERP_ID=".(int)($orders[$id]['OrderId']??0).
               " ERP_RECEIPT_ID=".(int)($rr['ReceiptId']??0).
               " ERP_RECEIPT_CLIENT=".(int)($rr['ReceiptClientId']??0).
