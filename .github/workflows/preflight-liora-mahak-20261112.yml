@@ -1,0 +1,41 @@
+name: Preflight Vesta Liora Mahak bridge environment
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/preflight-liora-mahak-20261112.yml]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read only live WordPress MU plugins and Bazara API readiness
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=12 "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          test -d /srv/vestacutella/runtime/vesta/wp-content && echo WP_CONTENT_PRESENT=yes
+          if test -d /srv/vestacutella/runtime/vesta/wp-content/mu-plugins; then
+            echo MU_PLUGINS_PRESENT=yes
+          else
+            echo MU_PLUGINS_PRESENT=no
+          fi
+          docker ps --format '{{.Names}}' | grep -Fx vc-vesta >/dev/null
+          echo VESTA_CONTAINER_RUNNING=yes
+          docker exec -i vc-vesta php -d display_errors=0 -r '
+          $_SERVER["HTTP_HOST"]="vesta-cosmetics.ir";
+          $_SERVER["SERVER_NAME"]="vesta-cosmetics.ir";
+          $_SERVER["HTTPS"]="on";
+          $_SERVER["SERVER_PORT"]="443";
+          $_SERVER["REQUEST_URI"]="/";
+          require "/var/www/html/wp-load.php";
+          echo "BAZARA_API_LOADED=".(class_exists("BazaraApi")?"yes":"no").PHP_EOL;
+          echo "VBB_SIGNED_AUTH_LOADED=".(function_exists("vbb_v2_authorize")?"yes":"no").PHP_EOL;
+          '
+          echo PREFLIGHT_FINISHED=yes
+          REMOTE
