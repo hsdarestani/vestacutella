@@ -43,7 +43,7 @@ jobs:
             try: lines=p.read_text(encoding='utf8',errors='replace').splitlines()
             except:continue
             for i,s in enumerate(lines,1):
-              if re.search(r'(?i)([\\x27\\x22]Products[\\x27\\x22]\\s*=>|[\\x27\\x22]ProductDetails[\\x27\\x22]\\s*=>|[\\x27\\x22]products[\\x27\\x22]\\s*=>|[\\x27\\x22]productDetails[\\x27\\x22]\\s*=>|set_all_data\\s*\\()',s):
+              if ('set_all_data(' in s or "['Products']" in s or "['ProductDetails']" in s or "'Products' =>" in s or "'ProductDetails' =>" in s or "'products' =>" in s or "'productDetails' =>" in s):
                 if re.search(r'password|secret|key|auth|url|http',s,re.I):continue
                 print('API_USE',p.relative_to(root),i,s.strip()[:200])
           PY
@@ -57,7 +57,7 @@ jobs:
           $api=new BazaraApi(true);
           $login=$api->login_token();
           echo 'BAZARA_AUTHENTICATED_LOGIN='.((is_array($login)&&!empty($login['success']))?'yes':'no')."\n";
-          $response=$api->get_all_data('',array('fromProductVersion'=>0,'fromProductDetailVersion'=>0));
+          $response=$api->get_all_data('',array('fromProductVersion'=>5148000000,'fromProductDetailVersion'=>5148000000));
           echo 'BAZARA_AUTH_PRODUCT_GET='.((is_array($response)&&!empty($response['success']))?'yes':'no')."\n";
           if(is_array($response)&&!empty($response['success'])){
              $all=$response['message']??[];
