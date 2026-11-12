@@ -1,0 +1,24 @@
+name: Validate delivery charge through a fresh safe order 105313
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/canary-vesta-bazara-shipping-105313-20261112.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Send at most one cloud-absent paid order and read back actual ERP shipping
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=12 \
+            "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=512M -d max_execution_time=0' \
+            < scripts/canary-vesta-bazara-shipping-105313-20261112.php
