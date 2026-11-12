@@ -1,0 +1,52 @@
+name: Audit unused Shopino payment account mapping in Mahak
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/audit-vesta-shopino-erp-bank-20261112.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read-only find existing BankId for Shopino settlements
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=12 "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=256M <<'PHP'
+          <?php
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          global $wpdb;
+          $rows=$wpdb->get_results("SELECT * FROM {$wpdb->prefix}bazara_banks",ARRAY_A);
+          echo "BANK_ROWS=".count($rows)."\n";
+          $found=0;
+          foreach($rows as $b){
+            $names=[];
+            foreach(['Name','BankName','Title','Description','bankName','name','BankAccountName'] as $k){
+              if(isset($b[$k]))$names[]=(string)$b[$k];
+            }
+            $joined=implode(' ',$names);
+            if(preg_match('/شاپینو|شاپينو|shopino|شاپ\s*ینو|shop\s*ino/i',$joined)){
+              echo "SHOPINO_BANK_CANDIDATE_ID=".($b['BankId']??'none').
+                " BANK_LABEL=".preg_replace('/[\r\n]/',' ',$joined).
+                " DELETED=".($b['Deleted']??'unknown')."\n";$found++;
+            }
+          }
+          echo "SHOPINO_EXPLICIT_ERP_BANK_MATCHES=".$found."\n";
+          foreach([471150,471166,471167,471169,471149] as $bankId){
+            foreach($rows as $b)if((int)($b['BankId']??0)===$bankId){
+              echo "KNOWN_GATEWAY_BANK_ID=".$bankId." NAME=".preg_replace('/[\r\n]/',' ',(string)($b['BankName']??$b['Name']??''))."\n";
+            }
+          }
+          echo "SHOPINO_BANK_READONLY_AUDIT_COMPLETE=yes\n";
+          PHP
+          REMOTE
