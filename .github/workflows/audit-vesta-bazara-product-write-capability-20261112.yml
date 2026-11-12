@@ -1,0 +1,75 @@
+name: Assess Mahak Bazara catalog write capability for Liora bot read-only
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/audit-vesta-bazara-product-write-capability-20261112.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read only installed vendor API product create and authenticated cloud profile
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=12 "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          echo "AUDIT_TIME=$(date -u +%FT%TZ)"
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          root=Path('/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara')
+          fn=root/'classes'/'class.bazara.api.php'
+          t=fn.read_text(encoding='utf8',errors='replace').splitlines()
+          print('=== BAZARA REST ENTRY AND SETALL SERIALIZATION ===')
+          for lo,hi in [(15,58),(228,258),(700,760),(2055,2145)]:
+            print('REGION',lo,hi)
+            for i in range(lo,hi+1):
+              s=t[i-1].strip()
+              if re.search(r'credential|pass|token|secret|key|auth|curl|url|http|base',s,re.I):
+                if not re.search(r'(function|get_all_data|set_all_data|public|private|data|json)',s,re.I):continue
+                s='[CREDENTIAL/NETWORK CODE REDACTED]'
+              print('PHP_LINE',i,s[:190])
+          print('=== INSTALLED CODE ACTUALLY PRODUCING PRODUCT OUTBOUND PAYLOADS ===')
+          for p in root.rglob('*.php'):
+            if any(q in str(p) for q in ('vendor/','libraries/','lib/')):continue
+            try: lines=p.read_text(encoding='utf8',errors='replace').splitlines()
+            except:continue
+            for i,s in enumerate(lines,1):
+              if re.search(r'(?i)([\\x27\\x22]Products[\\x27\\x22]\\s*=>|[\\x27\\x22]ProductDetails[\\x27\\x22]\\s*=>|[\\x27\\x22]products[\\x27\\x22]\\s*=>|[\\x27\\x22]productDetails[\\x27\\x22]\\s*=>|set_all_data\\s*\\()',s):
+                if re.search(r'password|secret|key|auth|url|http',s,re.I):continue
+                print('API_USE',p.relative_to(root),i,s.strip()[:200])
+          PY
+          echo '=== LIVE AUTHENTICATED CLOUD PRODUCT READ (NO WRITES) ==='
+          docker exec -i vc-vesta php -d memory_limit=384M -d display_errors=0 -d max_execution_time=75 <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          $api=new BazaraApi(true);
+          $login=$api->login_token();
+          echo 'BAZARA_AUTHENTICATED_LOGIN='.((is_array($login)&&!empty($login['success']))?'yes':'no')."\n";
+          $response=$api->get_all_data('',array('fromProductVersion'=>0,'fromProductDetailVersion'=>0));
+          echo 'BAZARA_AUTH_PRODUCT_GET='.((is_array($response)&&!empty($response['success']))?'yes':'no')."\n";
+          if(is_array($response)&&!empty($response['success'])){
+             $all=$response['message']??[];
+             foreach(['Products','ProductDetails','VisitorProducts'] as $k)
+                echo 'BAZARA_RESPONSE_'.$k.'_COUNT='.(is_array($all[$k]??null)?count($all[$k]):0)."\n";
+          }
+          $opt=get_option('bazara_visitor_settings',[]);
+          foreach(['chkProducts','chkProductSync','chkProductExport','chkSyncProducts','selectCurrencySoftware','selectCurrencyPlugin'] as $k)
+           if(isset($opt[$k])&&is_scalar($opt[$k])){
+             echo 'OPTION_'.$k.'='.preg_replace('/[^a-zA-Z0-9_-]/','',(string)$opt[$k])."\n";
+           }
+          PHP
+          echo NO_PRODUCTS_CREATED_OR_MODIFIED=yes
+          echo AUTH_AND_VENDOR_CODE_AUDIT_FINISHED=yes
+          REMOTE
