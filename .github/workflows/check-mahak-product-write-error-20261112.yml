@@ -1,0 +1,123 @@
+name: Capture reason for Mahak product-create rejection
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/check-mahak-product-write-error-20261112.yml]
+permissions:
+  contents: read
+jobs:
+  test-product-create:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Write exactly one distinguishable test product and verify cloud readback
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=12 "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=384M -d max_execution_time=105 <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          $api=new BazaraApi(true);
+          $auth=$api->login_token();
+          if(!is_array($auth)||empty($auth['success'])){echo "AUTH=fail\n";exit(21);}
+          echo "AUTH=ok\n";
+          $code='998812';
+          $name='تست اتصال لیورا به محک 2026-11-12 - کالای آزمایشی غیرفروشی';
+          $marker='LIORA-MAHAK-TEST-20261112-01';
+          $read=function()use($api){
+            $r=$api->get_all_data('',array('fromProductVersion'=>0,'fromProductDetailVersion'=>0));
+            return is_array($r)&&!empty($r['success'])?($r['message']??[]):null;
+          };
+          $before=$read();
+          if(!is_array($before)){echo "READ_BEFORE=failed\n";exit(22);}
+          $find=function($all)use($code,$marker){
+             $p=[];$d=[];
+             foreach(($all['Products']??[]) as $i){
+               $a=(array)$i;
+               if((string)($a['ProductCode']??'')===$code||strpos((string)($a['Name']??''),$marker)!==false)$p[]=$a;
+             }
+             foreach(($all['ProductDetails']??[]) as $i){
+               $a=(array)$i;
+               if((string)($a['Barcode']??'')===$marker)$d[]=$a;
+             }
+             return ['products'=>$p,'details'=>$d];
+          };
+          $existing=$find($before);
+          echo 'BASELINE_PRODUCT_COUNT='.count($before['Products']??[])."\n";
+          echo 'BASELINE_DETAIL_COUNT='.count($before['ProductDetails']??[])."\n";
+          echo 'PRODUCT_CODE='.$code."\n";
+          if(count($existing['products'])||count($existing['details'])){
+             echo "TEST_ABORTED=code_or_barcode_already_exists\n";exit(23);
+          }
+          $pcid=1501111211;$dcid=1501111212;
+          $p=[
+            'productId'=>0,'productClientId'=>$pcid,'productCode'=>$code,
+            'productCategoryId'=>418353,
+            'name'=>$name,'unitName'=>'عدد','unitName2'=>'عدد',
+            'unitRatio'=>0,'taxPercent'=>0,'chargePercent'=>0,
+            'type'=>0,'description'=>'TEST ONLY - NO SALE - LIORA MAHAK 2026-11-12',
+            'deleted'=>false
+          ];
+          $d=[
+            'productDetailId'=>0,'productDetailClientId'=>$dcid,'productDetailCode'=>1,
+            'productId'=>0,'productClientId'=>$pcid,'productCode'=>$code,
+            'properties'=>'','properties2'=>'','count1'=>0,'count2'=>0,
+            'barcode'=>$marker,'price1'=>0,'price2'=>0,
+            'defaultSellPriceLevel'=>1,'defaultDiscountLevel'=>1,
+            'deleted'=>false
+          ];
+          echo "WRITE_ATTEMPT=one_product_plus_one_detail\n";
+          $result=$api->set_all_data('',array('products'=>[$p],'productDetails'=>[$d]));
+          $decoded=is_string($result)?json_decode($result,true):$result;
+          if(!is_array($decoded)){$decoded=['raw'=>$result];}
+          echo 'WRITE_RETURN_TYPE='.gettype($result)."\n";
+          echo 'WRITE_SUCCESS_FIELD='.json_encode($decoded['success']??null)."\n";
+          echo 'WRITE_RESULT_FIELD='.json_encode($decoded['data']['Result']??null)."\n";
+          $data=$decoded['data']??[];
+          echo 'WRITE_RESPONSE_FIELDS='.implode(',',array_keys((array)$data))."\n";
+          $rejection=$decoded['message']??'';
+          $parsed=is_string($rejection)?json_decode($rejection,true):$rejection;
+          echo 'REJECTION_IS_JSON='.(is_array($parsed)?'yes':'no')."\n";
+          if(is_array($parsed)){
+             echo 'REJECTION_RESULT='.json_encode($parsed['Result']??null)."\n";
+             echo 'REJECTION_KEYS='.implode(',',array_keys($parsed))."\n";
+             foreach(['Message','ErrorMessage','Error','Code'] as $field){
+                 if(isset($parsed[$field])&&is_scalar($parsed[$field])){
+                    echo 'REJECTION_'.$field.'='.mb_substr(preg_replace('/[^\\p{L}\\p{N} _.-]/u','',(string)$parsed[$field]),0,180)."\n";
+                 }
+             }
+          }
+
+          foreach(['Message','ErrorMessage','Errors','Description','Result'] as $k){
+            if(isset($data[$k])&&is_scalar($data[$k]))
+               echo 'WRITE_'.$k.'='.substr(preg_replace('/[^a-zA-Z0-9\\p{L}\\p{N} _.-]/u','',(string)$data[$k]),0,180)."\n";
+          }
+          // Readback is authoritative; server success alone does NOT prove desktop Mahak creation.
+          sleep(2);
+          $after=$read();
+          if(!is_array($after)){echo "READ_AFTER=failed\n";exit(24);}
+          $found=$find($after);
+          echo 'READBACK_PRODUCT_COUNT='.count($found['products'])."\n";
+          echo 'READBACK_DETAIL_BARCODE_COUNT='.count($found['details'])."\n";
+          foreach($found['products'] as $i){
+             echo 'READBACK_PRODUCT_ID='.($i['ProductId']??'none')."\n";
+             echo 'READBACK_PRODUCT_CODE='.($i['ProductCode']??'none')."\n";
+             echo 'READBACK_PRODUCT_NAME='.($i['Name']??'none')."\n";
+          }
+          foreach($found['details'] as $i){
+             echo 'READBACK_DETAIL_ID='.($i['ProductDetailId']??'none')."\n";
+             echo 'READBACK_DETAIL_PRICE1='.($i['Price1']??'none')."\n";
+             echo 'READBACK_DETAIL_COUNT1='.($i['Count1']??'none')."\n";
+          }
+          echo "DESKTOP_SYNC_VERIFIED=no\n";
+          echo "TEST_FINISHED=yes\n";
+          PHP
+          REMOTE
