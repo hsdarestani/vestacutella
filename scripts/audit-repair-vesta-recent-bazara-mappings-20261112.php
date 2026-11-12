@@ -21,7 +21,11 @@ function vc_norm($s){
  $s=preg_replace('/[^\p{L}\p{N}\s]/u',' ',$s);
  return trim(preg_replace('/\s+/u',' ',$s));
 }
-function vc_attr($s){$s=preg_replace('/\s+/u','',vc_norm($s));return preg_replace_callback('/\d+/',function($m){return (string)(int)$m[0];},$s);}
+function vc_attr($s){
+ $s=preg_replace('/\s+/u','',vc_norm($s));
+ $s=preg_replace('/^کد/u','',$s);
+ return preg_replace_callback('/\d+/',function($m){return (string)(int)$m[0];},$s);
+}
 $remoteProducts=$wpdb->get_results("SELECT ProductId,ProductCode,ProductName,Deleted FROM {$wpdb->prefix}bazara_products",ARRAY_A);
 $remoteDetails=$wpdb->get_results("SELECT ProductId,ProductDetailId,Properties,Deleted FROM {$wpdb->prefix}bazara_product_details",ARRAY_A);
 $productByCode=[];$byTitle=[];$detailByProduct=[];
