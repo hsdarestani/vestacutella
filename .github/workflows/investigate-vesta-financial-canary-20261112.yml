@@ -1,0 +1,79 @@
+name: Investigate ambiguous Vesta financial canary acknowledgment without replay
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/investigate-vesta-financial-canary-20261112.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Independently verify ERP canary order, receipt and exact shipping without writes
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=12 "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          echo "CANARY_AUDIT_UTC=$(date -u +%FT%TZ)"
+          docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw --default-character-set=utf8mb4' <<'SQL'
+          SELECT p.ID,p.post_status,MAX(CASE WHEN m.meta_key='mahak_id' THEN m.meta_value END) AS erp_marker,
+                 COUNT(DISTINCT CASE WHEN m.meta_key='mahak_error' THEN m.meta_id END) AS error_meta_count,
+                 (SELECT COUNT(*) FROM wp_bazara_orders b WHERE b.OrderClientId=p.ID) AS remote_cached
+          FROM wp_posts p LEFT JOIN wp_postmeta m ON m.post_id=p.ID AND m.meta_key IN('mahak_id','mahak_error')
+          WHERE p.ID=105309 GROUP BY p.ID,p.post_status;
+          SQL
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=384M -d max_execution_time=100 <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          $e=(string)get_post_meta(105309,'mahak_error',true);
+          echo "WOO_LAST_MAHAK_ERROR_BYTES=".strlen($e)."\n";
+          if($e){
+           $x=json_decode($e,true);
+           echo "WOO_ERROR_IS_JSON=".(is_array($x)?'yes':'no')."\n";
+           echo "WOO_ERROR_TOP_KEYS=".(is_array($x)?implode(',',array_map(function($s){return preg_replace('/[^a-zA-Z]/','',(string)$s);},array_keys($x))):'none')."\n";
+          }
+          $api=new BazaraApi(true);
+          $r=$api->get_all_data('',[
+           'fromOrderVersion'=>5144000000,
+           'fromOrderDetailVersion'=>5144000000,
+           'fromReceiptVersion'=>5144000000,
+           'fromChequeVersion'=>5144000000
+          ]);
+          if(!is_array($r)||empty($r['success'])){echo "CANARY_REMOTE_CLOUD_READ_FAILED=yes\n";exit(22);}
+          $orders=$r['message']['Orders']??[];
+          $matches=[];
+          foreach($orders as $x){
+            if((int)($x['OrderClientId']??0)===105309){
+             $matches[]=$x;
+             echo "REMOTE_105309_ID=".(int)($x['OrderId']??0).
+               " ORDER_TYPE=".($x['OrderType']??'missing').
+               " SEND_COST=".($x['SendCost']??'missing').
+               " DISCOUNT=".($x['Discount']??'missing').
+               " DELETED=".var_export($x['Deleted']??null,true).
+               " LABEL_PRESENT=".(str_contains((string)($x['Description']??''),'درگاه سایت:')?'yes':'no')."\n";
+            }
+          }
+          echo "REMOTE_105309_ORDER_COUNT=".count($matches)."\n";
+          foreach(['OrderDetails','Receipts','Cheques'] as $key){
+            $list=$r['message'][$key]??[];$cnt=0;
+            foreach($list as $x){
+              if(!in_array((int)($x['OrderId']??0),array_map(function($o){return (int)($o['OrderId']??0);},$matches),true))continue;
+              $cnt++;
+              if($key==='OrderDetails')echo "CLOUD_105309_DETAIL PRICE=".($x['Price']??'missing')." QTY=".($x['Count1']??'missing')." DISCOUNT=".($x['Discount']??'missing')."\n";
+              if($key==='Receipts')echo "CLOUD_105309_RECEIPT ID=".($x['ReceiptId']??'missing')." CLIENT=".($x['ReceiptClientId']??'missing')." CASH_AMOUNT=".($x['CashAmount']??'missing')."\n";
+              if($key==='Cheques')echo "CLOUD_105309_CHEQUE LINKED_TO_ORDER=yes\n";
+            }
+            echo "CLOUD_105309_".$key."_COUNT=".$cnt."\n";
+          }
+          echo "CANARY_CLOUD_READONLY_AUDIT_COMPLETE=yes\n";
+          PHP
+          REMOTE
