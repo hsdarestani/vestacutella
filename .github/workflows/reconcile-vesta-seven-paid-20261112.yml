@@ -1,0 +1,24 @@
+name: Reconcile seven mapped paid Vesta ERP invoices and verify shipping
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/reconcile-vesta-seven-paid-20261112.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 13
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Cloud dedup then serially sync and financial verify each paid invoice
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=12 \
+            "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=512M -d max_execution_time=0' \
+            < scripts/reconcile-vesta-seven-paid-bazara-20261112.php
