@@ -1,0 +1,69 @@
+name: Verify paid amount allocation to Bazaar receipt and cheque for two payment methods
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/audit-vesta-bazara-receipt-amount-allocation-20261112.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Correlate money, receipt IDs and cheque bank IDs without customer data
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=12 "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=384M -d max_execution_time=100 <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          $api=new BazaraApi(true);
+          $r=$api->get_all_data('',['fromOrderVersion'=>5144000000,'fromReceiptVersion'=>5144000000,'fromChequeVersion'=>5144000000]);
+          if(!is_array($r)||empty($r['success'])){echo "FAILED_CLOUD_RECEIPT_READ=yes\n";exit(20);}
+          $ids=[105232,105302,105309,105313,105317];
+          $orders=[];$receipts=[];
+          foreach($r['message']['Orders']??[] as $o)if(in_array((int)($o['OrderClientId']??0),$ids,true))$orders[(int)$o['OrderClientId']]=$o;
+          foreach($r['message']['Receipts']??[] as $x){
+            foreach($ids as $id)if((int)($x['ReceiptClientId']??0)===$id|| (int)($x['OrderId']??0)===(int)($orders[$id]['OrderId']??0)){
+              $receipts[$id][]=$x;break;
+            }
+          }
+          foreach($ids as $id){
+            $o=wc_get_order($id);$rr=$receipts[$id][0]??[];
+            echo "PAID_WOO_ORDER=".$id." GATEWAY=".($o?$o->get_payment_method():'none').
+              " TOTAL_RIAL=".(float)($o?$o->get_total():0)*10.
+              " ERP_ID=".(int)($orders[$id]['OrderId']??0).
+              " ERP_RECEIPT_ID=".(int)($rr['ReceiptId']??0).
+              " ERP_RECEIPT_CLIENT=".(int)($rr['ReceiptClientId']??0).
+              " ERP_CASH_AMOUNT=".($rr['CashAmount']??'missing').
+              " ERP_BANK_ID=".($rr['BankId']??'missing')."\n";
+          }
+          $arr=$r['message']['Cheques']??[];
+          echo "CLOUD_TOTAL_CHEQUE_ROWS=".count(is_array($arr)?$arr:[])."\n";
+          foreach($arr as $x){
+            $refReceipt=(int)($x['ReceiptId']??0);
+            $refClient=(int)($x['ReceiptClientId']??0);
+            $refOrder=(int)($x['OrderId']??0);
+            foreach($ids as $id){
+              if($refReceipt!==(int)($receipts[$id][0]['ReceiptId']??-1) &&
+                 $refClient!==$id && $refOrder!==(int)($orders[$id]['OrderId']??0))continue;
+              $keys=[];
+              foreach(['ChequeId','ChequeClientId','ReceiptId','ReceiptClientId','OrderId','BankId',
+                'bankId','Amount','amount','Type','type','Deleted','RowVersion'] as $k){
+                if(array_key_exists($k,$x))$keys[$k]=$x[$k];
+              }
+              echo "ERP_LINKED_CHEQUE_WOO_ORDER=".$id." FIELDS=".json_encode($keys,JSON_UNESCAPED_UNICODE)."\n";
+            }
+          }
+          echo "RECEIPT_AMOUNT_LINK_READ_ONLY_VERIFIED=yes\n";
+          PHP
+          REMOTE
