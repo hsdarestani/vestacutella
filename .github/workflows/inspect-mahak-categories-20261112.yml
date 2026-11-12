@@ -1,0 +1,53 @@
+name: Inspect Mahak category records for bot UI
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/inspect-mahak-categories-20261112.yml]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read-only category and cloud product status
+        env:
+          HOST: \${{ secrets.HOST }}
+          SSHPASS: \${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=12 "root@$HOST" 'bash -s' <<'REMOTE'
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=384M -d max_execution_time=90 <<'PHP'
+          <?php
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          $api=new BazaraApi(true);
+          $login=$api->login_token();
+          echo "AUTH=".((is_array($login)&&!empty($login['success']))?'OK':'NO')."\n";
+          foreach([
+             ['fromProductCategoryVersion'=>0],
+             ['fromProductCategoryVersion'=>0,'fromProductVersion'=>0,'fromProductDetailVersion'=>0]
+          ] as $params){
+            $r=$api->get_all_data('', $params);
+            echo 'GET_SUCCESS='.((is_array($r)&&!empty($r['success']))?'yes':'no')."\n";
+            if(!is_array($r)||empty($r['success']))continue;
+            $data=$r['message']??[];
+            echo 'DATA_KEYS='.implode(',',array_keys((array)$data))."\n";
+            foreach(['ProductCategories','Categories'] as $k){
+              $v=$data[$k]??[];
+              echo $k.'_COUNT='.(is_array($v)?count($v):0)."\n";
+              foreach(array_slice((array)$v,0,5) as $item){
+                $a=(array)$item;echo 'CATEGORY_FIELDS='.implode(',',array_keys($a))."\n";
+                $filtered=[];
+                foreach($a as $field=>$value){
+                  if(preg_match('/id|name|code|deleted/i',$field)&&is_scalar($value))$filtered[$field]=(string)$value;
+                }
+                echo 'CATEGORY_SAMPLE='.json_encode($filtered,JSON_UNESCAPED_UNICODE)."\n";
+              }
+            }
+          }
+          echo 'READ_ONLY=yes'."\n";
+          PHP
+          REMOTE
