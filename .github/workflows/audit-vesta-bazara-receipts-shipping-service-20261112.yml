@@ -1,0 +1,78 @@
+name: Validate Bazaar shipping service and invoice receipt linkage capability
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/audit-vesta-bazara-receipts-shipping-service-20261112.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 11
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Search real ERP carrier product and remote receipt fields without changing orders
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=12 "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          echo "AUDIT_UTC=$(date -u +%FT%TZ)"
+          echo '===== ERP POSSIBLE SHIPPING PRODUCT ENTRIES ====='
+          docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw --default-character-set=utf8mb4' <<'SQL'
+          SELECT ProductId,ProductCode,ProductName,Deleted FROM wp_bazara_products
+          WHERE ProductName LIKE '%ارسال%'
+             OR ProductName LIKE '%پست%'
+             OR ProductName LIKE '%حمل%'
+             OR ProductName LIKE '%کرایه%'
+             OR ProductName LIKE '%delivery%'
+             OR ProductName LIKE '%shipping%'
+          LIMIT 40;
+          SQL
+          echo '===== CONFIGURED CARRIER DETAILS AND REPORT OF MISSING BANK METHODS ====='
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=384M -d max_execution_time=110 <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          $options=get_option('bazara_visitor_settings',[]);
+          $methods=json_decode(stripslashes($options['carrierMethods']??''),true);
+          foreach(is_array($methods)?$methods:[] as $item){
+             $name=(string)($item['name']??'');
+             echo "CARRIER_METHOD=".$item['method']." VALUE_TYPE=".gettype($item['name']??null).
+              " VALUE_IS_NUMERIC=".(is_numeric($name)?'yes':'no')." VALUE_LENGTH=".strlen($name).
+              " VALUE_SHA256_PREFIX=".substr(hash('sha256',$name),0,8)."\n";
+          }
+          $ship225=get_order_item_meta_shipping(105225);
+          $ship316=get_order_item_meta_shipping(105316);
+          echo "GET_SHIPPING_ORDER_105225=".($ship225->shipping_method??'none')."\n";
+          echo "GET_SHIPPING_ORDER_105316=".($ship316->shipping_method??'none')."\n";
+          $api=new BazaraApi(true);
+          $inputs=['fromReceiptVersion'=>5144000000,'fromChequeVersion'=>5144000000,'fromOrderVersion'=>5146840000];
+          $r=$api->get_all_data('',$inputs);
+          if(!is_array($r)||empty($r['success'])){echo "REMOTE_RECEIPT_READ_FAILED=yes\n";exit(21);}
+          echo "REMOTE_RESPONSE_ENTITY_KEYS=".implode(',',array_map(function($k){return preg_replace('/[^a-zA-Z]/','',$k);},array_keys($r['message']??[])))."\n";
+          foreach(['Receipts','Cheques','Orders'] as $key){
+            $arr=$r['message'][$key]??[];
+            echo "REMOTE_".$key."_COUNT=".count(is_array($arr)?$arr:[])."\n";
+            $n=0;
+            foreach(is_array($arr)?$arr:[] as $x){
+              if(!is_array($x))continue;
+              $client=(int)($x['OrderClientId']??0);
+              $id=(int)($x['ReceiptClientId']??$x['ChequeClientId']??0);
+              if(!in_array($client,[105052,105225,105228,105230],true)&&!in_array($id,[105052,105225,105228,105230],true))continue;
+              $allowed=['OrderClientId','OrderId','ReceiptId','ReceiptClientId','ChequeClientId','ChequeId','BankId','CashCode','CashAmount','Amount','Type','Deleted','RowVersion','OrderCode'];
+              $o=[];
+              foreach($allowed as $key2)if(array_key_exists($key2,$x))$o[$key2]=$x[$key2];
+              echo "REMOTE_ASSOC_".$key."=".json_encode($o,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES)."\n";
+              if(++$n>15)break;
+            }
+          }
+          echo "FINANCE_RECEIPT_READ_COMPLETE=yes\n";
+          PHP
+          echo READONLY_FINANCE_SERVICE_AUDIT_COMPLETE=yes
+          REMOTE
