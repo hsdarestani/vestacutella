@@ -1,0 +1,55 @@
+name: Audit recent Vesta paid orders after ERP mapping and shipping finance repairs
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/audit-vesta-after-finance-variant-mapping-20261112.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 11
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Compare all recent Woo marker with live cloud and test linked receipt
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=12 "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          echo "AUDIT_UTC=$(date -u +%FT%TZ)"
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=384M -d max_execution_time=100 <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          $ids=[105232,105274,105281,105282,105283,105302,105309,105310,105311,105312,105313,105314,105316,105317];
+          $api=new BazaraApi(true);
+          $r=$api->get_all_data('',['fromOrderVersion'=>5144000000,'fromReceiptVersion'=>5144000000,'fromChequeVersion'=>5144000000]);
+          if(!is_array($r)||empty($r['success'])){echo "CLOUD_REMOTE_READ_FAILED=yes\n";exit(21);}
+          $orders=[];$receipts=[];$cheques=[];
+          foreach($r['message']['Orders']??[] as $x)if(in_array((int)($x['OrderClientId']??0),$ids,true))$orders[(int)$x['OrderClientId']]=$x;
+          foreach($r['message']['Receipts']??[] as $x)if(in_array((int)($x['ReceiptClientId']??0),$ids,true))$receipts[(int)$x['ReceiptClientId']]=$x;
+          foreach($r['message']['Cheques']??[] as $x)if(in_array((int)($x['ReceiptClientId']??0),$ids,true))$cheques[(int)$x['ReceiptClientId']][]=$x;
+          $missing=0;
+          foreach($ids as $id){
+           $o=wc_get_order($id);$x=$orders[$id]??null;
+           $marker=$o?(int)$o->get_meta('mahak_id'):0;
+           $remoteId=$x?(int)($x['OrderId']??0):0;
+           $s=$o?(float)$o->get_shipping_total():0;
+           echo "ORDER_ID=$id GATEWAY=".($o?$o->get_payment_method():'none').
+              " WOO_TOTAL=".($o?$o->get_total():0).
+              " WOO_SHIPPING=".$s." MARKER=".$marker." REMOTE_ID=".$remoteId.
+              " REMOTE_SHIP=".($x?($x['SendCost']??'missing'):'none').
+              " RECEIPT_ID=".(int)($receipts[$id]['ReceiptId']??0).
+              " CHEQUES=".count($cheques[$id]??[])."\n";
+           if(!$remoteId)$missing++;
+          }
+          echo "CLOUD_ORDERS_FOUND=".count($orders)." CLOUD_ORDERS_MISSING=".$missing."\n";
+          echo "CHECK_COMPLETE_READONLY=yes\n";
+          PHP
+          REMOTE
