@@ -1,0 +1,73 @@
+name: Audit Bazaar remote invoice fields shipping and discount on paid orders
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/audit-vesta-bazara-remote-invoice-fields-20261112.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 11
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read remote order fields without names, addresses, or other PII
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=12 "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          echo "AUDIT_UTC=$(date -u +%FT%TZ)"
+          echo '===== LOCAL REMOTE ORDER DETAIL VERSION AND SHIPPING MAPPING ====='
+          docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw --default-character-set=utf8mb4' <<'SQL'
+          SHOW COLUMNS FROM wp_bazara_order_details;
+          SELECT o.OrderClientId,o.OrderId,o.RowVersion,COUNT(d.o_d_id) AS line_count,
+                 MIN(d.RowVersion) min_detail_version,MAX(d.RowVersion) max_detail_version
+          FROM wp_bazara_orders o LEFT JOIN wp_bazara_order_details d ON d.OrderId=o.OrderId
+          WHERE o.OrderClientId IN(105052,105203,105204,105208,105219,105225,105228,105230)
+          GROUP BY o.OrderClientId,o.OrderId,o.RowVersion ORDER BY o.OrderClientId;
+          SQL
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=384M -d max_execution_time=120 <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          $opt=get_option('bazara_visitor_settings',[]);
+          $cs=json_decode(stripslashes($opt['carrierMethods']??''),true);
+          foreach(is_array($cs)?$cs:[] as $x)echo "CARRIER_METHOD=".preg_replace('/[^a-zA-Z0-9_-]/','',(string)($x['method']??'')).
+                 " ERP_CARRIER_ID=".preg_replace('/[^0-9]/','',(string)($x['name']??''))."\n";
+          echo "CARRIER_MAPPING_COUNT=".count(is_array($cs)?$cs:[])."\n";
+          $api=new BazaraApi(true);$res=$api->get_all_data('',[
+            'fromOrderVersion'=>5144290000,
+            'fromOrderDetailVersion'=>5144290000
+          ]);
+          if(!is_array($res)||empty($res['success'])){echo "REMOTE_RESULT=failed\n";exit(20);}
+          foreach(['Orders','OrderDetails','Receipts','Cheques'] as $k){
+             $values=$res['message'][$k]??[];
+             echo "REMOTE_ENTITY_COUNT_$k=".count(is_array($values)?$values:[])."\n";
+             $match=0;
+             foreach(is_array($values)?$values:[] as $v){
+               if(!is_array($v))continue;
+               $cid=(int)($v['OrderClientId']??$v['orderClientId']??0);
+               $oid=(int)($v['OrderId']??0);
+               if(!in_array($cid,[105052,105208,105219,105225,105228,105230],true) &&
+                  !in_array($oid,[308577938,308578979,308745476,308745884,308745913,308745922],true))continue;
+               $allowed=['OrderClientId','OrderId','OrderCode','OrderType','orderType',
+                 'CarrierType','CarrierID','sendCost','SendCost','CarryingAsExpense','DriverCurrencyType',
+                 'Discount','discount','discountType','Price','price','Count1','count1',
+                 'OrderDetailId','ProductDetailId','ReceiptClientId','receiptClientId','ReceiptId',
+                 'ChequeClientId','ChequeId','Amount','amount','cashAmount','BankId','bankId','RowVersion','Deleted'];
+               $trim=[];
+               foreach($allowed as $field)if(array_key_exists($field,$v))$trim[$field]=$v[$field];
+               echo "REMOTE_ENTITY_$k=".json_encode($trim,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES)."\n";
+               if(++$match>=20)break;
+             }
+          }
+          echo "READONLY_REMOTE_FINANCE_FIELDS_OK=yes\n";
+          PHP
+          echo DEEP_REMOTE_INVOICE_AUDIT_DONE=yes
+          REMOTE
