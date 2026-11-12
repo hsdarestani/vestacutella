@@ -1,0 +1,62 @@
+name: Check one accepted Mahak test product readback and sync direction
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/check-mahak-accepted-product-20261112.yml]
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read-only cloud Mahak catalog and sanitized API methods
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=12 "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          p=Path('/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara/classes/class.bazara.api.php')
+          a=p.read_text(encoding='utf8',errors='replace').splitlines()
+          for i,s in enumerate(a,1):
+             if re.search(r'function\s+(login_token|get_all_data|set_all_data)\s*\(',s,re.I):
+               print('METHOD_DECL',i,s.strip()[:190])
+               for j in range(i,min(i+19,len(a)+1)):
+                 line=a[j-1].strip()
+                 if re.search(r'url|password|token|secret|authorization|curl|headers|key|post_data',line,re.I):continue
+                 print('METHOD_BODY',j,line[:170])
+          PY
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=512M -d max_execution_time=90 <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          $api=new BazaraApi(true);
+          $login=$api->login_token();
+          echo 'AUTH='.((is_array($login)&&!empty($login['success']))?'ok':'failed')."\n";
+          if(!is_array($login)||empty($login['success']))exit(22);
+          $r=$api->get_all_data('',array('fromProductVersion'=>0,'fromProductDetailVersion'=>0));
+          if(!is_array($r)||empty($r['success'])){echo "READ=failed\n";exit(23);}
+          $x=$r['message']??[];
+          $numProduct=0;$numDetail=0;$pid=0;
+          foreach(($x['Products']??[]) as $p){
+            $a=(array)$p;
+            if((string)($a['ProductCode']??'')==='998812'||strpos((string)($a['Name']??''),'تست اتصال لیورا')!==false){$numProduct++;$pid=$a['ProductId']??0;}
+          }
+          foreach(($x['ProductDetails']??[]) as $d){
+            $a=(array)$d;
+            if((string)($a['Barcode']??'')==='LIORA-MAHAK-TEST-20261112-01'||((int)($a['ProductId']??0)===(int)$pid&&$pid))$numDetail++;
+          }
+          echo 'CLOUD_TOTAL_PRODUCTS='.count($x['Products']??[])."\n";
+          echo 'CLOUD_TEST_PRODUCT_MATCHES='.$numProduct."\n";
+          echo 'CLOUD_TEST_DETAIL_MATCHES='.$numDetail."\n";
+          echo 'NO_WRITE=yes'."\n";
+          PHP
+          REMOTE
