@@ -1,0 +1,42 @@
+name: Recover false ERP acknowledgment for paid order 105309 safely
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/recover-vesta-false-ack-105309-20261112.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Backup old marker, remote dedup, single attempt, verify shipping invoice directly
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=12 \
+            scripts/recover-vesta-false-ack-105309-20261112.php "root@$HOST:/tmp/recover-vesta-false-ack-105309-20261112.php"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=12 "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          umask 077
+          exec 9>/run/lock/vesta-bazara-false-ack-105309-repair.lock
+          flock -n 9
+          backup=/srv/backups/vesta-bazara-false-ack-105309-$(date -u +%Y%m%dT%H%M%SZ)
+          mkdir -p -m 0700 "$backup"
+          docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw --default-character-set=utf8mb4' \
+            > "$backup/original-105309-erp-metadata.tsv" <<'SQL'
+          SELECT post_id,meta_key,meta_value FROM wp_postmeta
+          WHERE post_id=105309 AND meta_key IN('mahak_id','mahak_error')
+          ORDER BY meta_key;
+          SQL
+          test -s "$backup/original-105309-erp-metadata.tsv"
+          echo "FALSE_ACK_ORIGINAL_META_BACKUP_SAVED=yes"
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=512M -d max_execution_time=0 \
+            < /tmp/recover-vesta-false-ack-105309-20261112.php
+          echo "FALSE_ACK_RECOVERY_CLOUD_VERIFIED_COMPLETE=yes"
+          REMOTE
