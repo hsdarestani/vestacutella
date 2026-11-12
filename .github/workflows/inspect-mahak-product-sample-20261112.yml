@@ -1,0 +1,52 @@
+name: Inspect Mahak Product schema for single authorized product-write test
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/inspect-mahak-product-sample-20261112.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read one real product schema and client ID fields without modifying anything
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=12 "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=384M -d max_execution_time=90 <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          $api=new BazaraApi(true);
+          $auth=$api->login_token();
+          if(!is_array($auth)||empty($auth['success'])){echo "LOGIN_FAILED\n";exit(10);}
+          $resp=$api->get_all_data('',array('fromProductVersion'=>5148000000,'fromProductDetailVersion'=>5148000000));
+          if(!is_array($resp)||empty($resp['success'])){echo "PRODUCT_FETCH_FAILED\n";exit(11);}
+          $raw=$resp['message']??[];
+          foreach(['Products','ProductDetails','ProductCategories','Units','Stores'] as $key){
+            $items=$raw[$key]??[];
+            echo 'LIST_'.$key.'_COUNT='.(is_array($items)?count($items):0)."\n";
+            if(!is_array($items)||!count($items))continue;
+            $first=(array)reset($items);
+            echo 'LIST_'.$key.'_FIELDS='.implode(',',array_keys($first))."\n";
+            foreach($first as $k=>$v){
+              if(!preg_match('/product|code|name|unit|categor|group|detail|price|count|store|deleted|barcode|client|id|tax/i',(string)$k))continue;
+              if(is_scalar($v)||is_null($v)){
+                 $val=is_null($v)?'null':(string)$v;
+                 $val=preg_replace('/[^\p{L}\p{N} _.-]/u','',$val);
+                 echo 'SAMPLE_'.$key.'_'.$k.'='.mb_substr($val,0,68)."\n";
+              } 
+            }
+          }
+          echo "READ_ONLY_SCHEMA_AUDIT_DONE=yes\n";
+          PHP
+          REMOTE
