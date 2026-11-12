@@ -1,0 +1,75 @@
+name: Inspect Mahak SaveAllData product direction and API schema metadata only
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/inspect-vesta-mahak-product-write-contract-20261112.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read only vendor send method, live login metadata field names, and Swagger availability
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=12 "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          p=Path('/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara/classes/class.bazara.api.php')
+          lines=p.read_text(encoding='utf-8',errors='replace').splitlines()
+          print('=== SET_ALL_DATA PHP IMPLEMENTATION (SANITIZED) ===')
+          for i in range(236,255):
+            s=lines[i-1].strip()
+            if any(w in s.lower() for w in ['url','token','secret','password','auth','curl','key','post_data','headers','http']):
+              s='[NETWORK/SECRET SOURCE REDACTED]'
+            print('LINE',i,s[:190])
+          print('=== PRODUCT_DETAILS STORED TO LOCAL WOO, NOT ERP ===')
+          for i in range(1080,1110):
+            s=lines[i-1].strip()
+            if re.search(r'password|secret|token|http|auth|url',s,re.I):s='[REDACTED]'
+            print('LINE',i,s[:210])
+          print('=== ALL CLOUD SAVE CALLS IN INSTALLED PLUGIN ===')
+          for i,s in enumerate(lines,1):
+            if 'set_all_data(' in s and 'function set_all_data' not in s:
+              print('SAVE_CALL_LINE',i,s.strip()[:170])
+          PY
+          echo '=== LIVE LOGIN METADATA ONLY (NO VALUES/TOKENS) ==='
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=256M -d max_execution_time=80 <<'PHP'
+          <?php
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          $api=new BazaraApi(true);
+          $login=$api->login_token();
+          if(!is_array($login)||empty($login['success'])){echo "AUTHORIZATION_LOGIN_FAILED=yes\n";exit(23);}
+          echo "MAHAK_ACCOUNT_LIVE_AUTH=yes\n";
+          echo "LOGIN_ALLOWED_TOP_LEVEL_FIELDS=".implode(',',array_map(function($k){return preg_replace('/[^a-zA-Z_]/','',(string)$k);},array_keys($login)))."\n";
+          $value=$login['message']??null;
+          echo "LOGIN_MESSAGE_TYPE=".gettype($value)."\n";
+          if(is_array($value)){
+            echo "LOGIN_ALLOWED_MESSAGE_KEYS=".implode(',',array_map(function($k){return preg_replace('/[^a-zA-Z_]/','',(string)$k);},array_keys($value)))."\n";
+          }
+          ?>
+          PHP
+          echo '=== CHECK MAHAK API OPENAPI PATHS WITHOUT AUTH OR OUTPUTTING DOMAIN ==='
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+          import urllib.request,urllib.parse
+          s=Path('/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara/classes/class.bazara.api.php').read_text(encoding='utf8',errors='replace')
+          m=re.search(r'private\s+\$base_url\s*=\s*[\x27\x22](https?://[^\x27\x22]+)',s)
+          print('STATIC_API_BASE_URL_IN_SOURCE=', 'yes' if m else 'no')
+          # Do not infer a potentially private endpoint or disclose URLs. No API writes.
+          PY
+          echo "NO_VENDOR_WRITE_ENDPOINT_TESTED=yes"
+          echo "NO_PRODUCTS_CREATED_OR_MODIFIED=yes"
+          echo MAHAK_WRITE_CONTRACT_SOURCE_AUDIT_DONE=yes
+          REMOTE
