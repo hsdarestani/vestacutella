@@ -4,6 +4,7 @@ on:
     branches: [main]
     paths: [.github/workflows/deploy-vesta-bazara-finance-payload-20261112.yml]
   workflow_dispatch:
+# Re-run with corrected last SetAll guard after successful no-write preflight abort
 permissions:
   contents: read
 jobs:
