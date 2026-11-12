@@ -1,0 +1,57 @@
+name: Repair exact Bazaar variants for missing recent orders
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/repair-vesta-bazara-new-variants-20261112.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 11
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Backup, strict dry run and repair only exact unique matching variants
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=12 \
+            scripts/audit-repair-vesta-recent-bazara-mappings-20261112.php \
+            "root@$HOST:/tmp/audit-repair-vesta-recent-bazara-mappings-20261112.php"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=12 "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          umask 077
+          exec 9>/run/lock/vesta-bazara-verified-variant-backlog-20261112.lock
+          flock -n 9
+          backup=/srv/backups/vesta-bazara-latest-exact-variants-$(date -u +%Y%m%dT%H%M%SZ)
+          mkdir -p -m 0700 "$backup"
+          echo "BACKUP_DIR=$backup"
+          docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw' > "$backup/all-recent-order-variation-mappings-before.tsv" <<'SQL'
+          SELECT m.post_id,m.meta_key,m.meta_value FROM wp_postmeta m
+          JOIN wp_posts p ON p.ID=m.post_id
+          WHERE p.post_type IN('product','product_variation') AND m.meta_key IN('mahak_id','mahak_product_detail_id')
+           AND m.post_id IN (37110,78444,37733,37787,54588,42646,54393,37778,37326,102319,42995,102113,102111,102125,102127,102126,42976,102505,33053,51607,69906)
+          ORDER BY m.post_id,m.meta_key;
+          SQL
+          echo "BACKUP_READY=yes"
+          echo '===== SOURCE PRECHECK ====='
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=512M < /tmp/audit-repair-vesta-recent-bazara-mappings-20261112.php | tee "$backup/dryrun.log"
+          grep -q 'UNRESOLVED=0' "$backup/dryrun.log"
+          grep -q 'EXACT_MAPPING_AUDIT_COMPLETE=yes' "$backup/dryrun.log"
+          if ! grep -Eq '^EXACT_MATCHES=(1[0-9]|2[0-9])$' "$backup/dryrun.log";then
+             echo "UNEXPECTED_EXACT_MATCH_COUNT_NO_WRITES=yes";exit 20
+          fi
+          echo '===== EXACT MAPPING COMMIT ====='
+          docker exec -e VC_SAFE_VARIANT_MAP_COMMIT=yes -i vc-vesta php -d display_errors=0 -d memory_limit=512M < /tmp/audit-repair-vesta-recent-bazara-mappings-20261112.php | tee "$backup/commit.log"
+          grep -q 'NO_ORDER_OR_PRICE_CHANGE=yes' "$backup/commit.log"
+          for host in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
+            code=$(curl --noproxy '*' -ksS --connect-timeout 8 --max-time 25 --resolve "$host:443:127.0.0.1" -o /dev/null -w '%{http_code}' "https://$host/")
+            echo "SITE=$host HTTP=$code";test "$code" = 200
+          done
+          echo "RECENT_EXACT_VARIANT_REPAIR_DONE=yes"
+          echo "NO_OLD_ORDERS_REPLAYED=yes"
+          REMOTE
