@@ -1,0 +1,71 @@
+name: Identify Bazaar failed canary entity and available carrier accounts
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/audit-vesta-carrier-error-entity-20261112.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 11
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read-only partial receipt/order error flags and real carrier contacts
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=12 "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          echo "AUDIT_UTC=$(date -u +%FT%TZ)"
+          echo '===== ERP CARRIER-LIKE PERSONS ====='
+          docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw --default-character-set=utf8mb4' <<'SQL'
+          SHOW COLUMNS FROM wp_bazara_persons;
+          SELECT PersonId,PersonCode,FirstName,LastName,Deleted FROM wp_bazara_persons
+          WHERE CONCAT(COALESCE(FirstName,''),' ',COALESCE(LastName,'')) LIKE '%پست%'
+             OR CONCAT(COALESCE(FirstName,''),' ',COALESCE(LastName,'')) LIKE '%تیپاکس%'
+             OR CONCAT(COALESCE(FirstName,''),' ',COALESCE(LastName,'')) LIKE '%حمل%'
+             OR CONCAT(COALESCE(FirstName,''),' ',COALESCE(LastName,'')) LIKE '%پیک%'
+             OR CONCAT(COALESCE(FirstName,''),' ',COALESCE(LastName,'')) LIKE '%ارسال%'
+          LIMIT 35;
+          SQL
+          echo '===== REMOTE PRECISE ORPHAN RECEIPT CHECK ====='
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=384M -d max_execution_time=90 <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          $raw=(string)get_post_meta(105309,'mahak_error',true);
+          echo "ERROR_RAW_LENGTH=".strlen($raw)."\n";
+          $entities=['Orders','OrderDetails','Receipts','Cheques'];
+          foreach($entities as $ent) {
+            echo "ERROR_HAS_ENTITY_".$ent."=".(stripos($raw,$ent)!==false?'yes':'no')."\n";
+          }
+          preg_match_all('/Result[^:]{0,15}[:\\\\"]+(true|false)/i',$raw,$m);
+          echo "ERROR_RESULT_FLAGS=".implode(',',array_slice($m[1],0,30))."\n";
+          echo "ERROR_CONTAINS_WOO_ID=".(strpos($raw,'105309')!==false?'yes':'no')."\n";
+          echo "ERROR_CONTAINS_MARKER_54323444=".(strpos($raw,'54323444')!==false?'yes':'no')."\n";
+          $api=new BazaraApi(true);
+          $r=$api->get_all_data('',['fromReceiptVersion'=>5144000000,'fromChequeVersion'=>5144000000,'fromOrderVersion'=>5144000000]);
+          if(!is_array($r)||empty($r['success'])){echo "CLOUD_ORPHAN_READ_FAIL=yes\n";exit(22);}
+          foreach(['Receipts','Cheques'] as $ent){
+            $arr=$r['message'][$ent]??[];$n=0;
+            foreach($arr as $row){
+              $rcid=(int)($row['ReceiptClientId']??0);
+              $ccid=(int)($row['ChequeClientId']??0);
+              $ocid=(int)($row['OrderClientId']??0);
+              if($rcid!==105309 && $ccid!==105309 && $ocid!==105309)continue;
+              echo "ORPHAN_ENTITY=".$ent." RECEIPT_CLIENT=".$rcid." CHEQUE_CLIENT=".$ccid.
+                " ORDER_CLIENT=".$ocid." ORDER_ID=".(int)($row['OrderId']??0).
+                " ENTITY_ID=".(int)($row[$ent==='Receipts'?'ReceiptId':'ChequeId']??0).
+                " DELETED=".var_export($row['Deleted']??null,true)."\n";$n++;
+            }
+            echo "CLOUD_105309_".$ent."_BY_CLIENT_COUNT=".$n."\n";
+          }
+          echo "READONLY_CARRIER_AND_ORPHAN_AUDIT_COMPLETE=yes\n";
+          PHP
+          REMOTE
