@@ -1,0 +1,100 @@
+name: Final audit Vesta Bazaar invoice receipts shipping gateway discount arithmetic
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/final-vesta-bazara-finance-audit-20261112.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 13
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Reconcile all 14 paid invoices with cloud ERP plus coupons math
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=12 "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          echo "AUDIT_UTC=$(date -u +%FT%TZ)"
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=512M -d max_execution_time=120 <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          global $wpdb;
+          $ids=[105232,105274,105281,105282,105283,105302,105309,105310,105311,105312,105313,105314,105316,105317];
+          $r=(new BazaraApi(true))->get_all_data('',['fromOrderVersion'=>5144000000,
+            'fromOrderDetailVersion'=>5144000000,'fromReceiptVersion'=>5144000000,'fromChequeVersion'=>5144000000]);
+          if(!is_array($r)||empty($r['success'])){echo "ERROR_CLOUD_UNAVAILABLE=yes\n";exit(21);}
+          $map=[];$details=[];$receipts=[];$checks=[];
+          foreach($r['message']['Orders']??[] as $x)if(in_array((int)($x['OrderClientId']??0),$ids,true))$map[(int)$x['OrderClientId']]=$x;
+          foreach($r['message']['OrderDetails']??[] as $x)$details[(int)($x['OrderId']??0)][]=$x;
+          foreach($r['message']['Receipts']??[] as $x)$receipts[(int)($x['OrderId']??0)][]=$x;
+          foreach($r['message']['Cheques']??[] as $x)$checks[(int)($x['OrderId']??0)][]=$x;
+          $fail=0;$n=0;$receiptN=0;
+          foreach($ids as $id){
+            $order=wc_get_order($id);$remote=$map[$id]??null;
+            $oid=(int)($remote['OrderId']??0);
+            $ack=$order?(int)$order->get_meta('mahak_id'):0;
+            if(!$order || !$remote || $ack!==$oid||$oid<=0){
+              echo "FINAL_INVOICE_NOT_CONFIRMED=".$id." ACK=".$ack." REMOTE=".$oid."\n";$fail++;continue;
+            }
+            $gross=0;$discount=0;$detailCount=0;
+            foreach($details[$oid]??[] as $d){
+              $gross+=(float)($d['Price']??0)*(float)($d['Count1']??0);
+              $discount+=(float)($d['Discount']??0);$detailCount++;
+            }
+            $ship=(float)($remote['SendCost']??0);
+            $headerDiscount=(float)($remote['Discount']??0);
+            $actual=$gross-$discount-$headerDiscount+$ship;
+            $expected=(float)$order->get_total()*10;
+            $shipExpected=(float)$order->get_shipping_total()*10;
+            $tag=str_contains((string)($remote['Description']??''),'درگاه سایت:');
+            $receiptCount=count($receipts[$oid]??[]);
+            if($receiptCount>0)$receiptN++;
+            $ok=abs($actual-$expected)<0.51 && abs($ship-$shipExpected)<0.51 && $tag
+               && $detailCount>0 && $receiptCount>0 && abs($headerDiscount)<0.01;
+            echo "FINAL_ORDER=".$id." ERP=".$oid." TOTAL_RIAL=".$actual." SHIPPING_RIAL=".$ship.
+              " GATEWAY=".$order->get_payment_method()." RECEIPT_LINKS=".$receiptCount.
+              " CHEQUE_LINKS=".count($checks[$oid]??[])." PASS=".($ok?'yes':'no')."\n";
+            if(!$ok)$fail++;
+            $n++;
+          }
+          echo "FINAL_ORDER_CLOUD_CONFIRMED_COUNT=".$n."\n";
+          echo "FINAL_ORDER_RECEIPT_LINKED_COUNT=".$receiptN."\n";
+          echo "FINAL_ORDER_INVOICE_FINANCIAL_ERRORS=".$fail."\n";
+          foreach([105052,105203,105208] as $id){
+            $o=wc_get_order($id);$s=0;$d=0;$q=0;
+            foreach($o->get_items('line_item') as $it){
+              $s+=(float)$it->get_subtotal();
+              $d+=max(0,(float)$it->get_subtotal()-(float)$it->get_total());
+              $q++;
+            }
+            echo "HISTORICAL_COUPON_ORDER=".$id.
+               " EXPECTED_NEW_WOO_GROSS_RIAL=".$s*10.
+               " EXPECTED_SINGLE_LINE_DISCOUNT_RIAL=".$d*10.
+               " EXPECTED_NEW_HEADER_DISCOUNT_RIAL=0".
+               " EXPECTED_WOO_TOTAL_RIAL=".$o->get_total()*10.
+               " LINE_COUNT=".$q."\n";
+            if(abs(($s-$d+(float)$o->get_shipping_total())-(float)$o->get_total())>0.51)$fail++;
+          }
+          $new=$wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->posts} p LEFT JOIN {$wpdb->postmeta} m
+          ON m.post_id=p.ID AND m.meta_key='mahak_id' AND CAST(m.meta_value AS UNSIGNED)>0
+          WHERE p.post_type='shop_order' AND p.post_date_gmt>='2026-11-11 00:00:00'
+          AND p.post_status IN ('wc-processing','wc-completed') AND m.meta_id IS NULL");
+          echo "CURRENT_NEW_UNACKED_ELIGIBLE_ORDERS=".$new."\n";
+          echo "FINAL_CLOUD_READONLY_VERIFIED=yes\n";
+          if($fail||$n!==14)exit(22);
+          PHP
+          for host in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
+            status=$(curl --noproxy '*' -ksS --connect-timeout 8 --max-time 25 --resolve "$host:443:127.0.0.1" -o /dev/null -w '%{http_code}' "https://$host/")
+            echo "SITE=$host HTTP=$status";test "$status" = 200
+          done
+          echo "FINAL_BAZARA_ACCOUNTING_AUDIT_COMPLETE=yes"
+          REMOTE
