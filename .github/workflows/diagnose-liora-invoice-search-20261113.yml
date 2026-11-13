@@ -1,0 +1,72 @@
+name: Diagnose Liora invoice product search read-only
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/diagnose-liora-invoice-search-20261113.yml]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Check live API and local Bazara catalog for invoice terms
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=12 "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          docker exec -i vc-vesta php -d memory_limit=768M -d max_execution_time=210 -d display_errors=0 <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';
+          $_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          global $wpdb;
+          echo "BRIDGE_AVAILABLE=".(function_exists('vms_search')?'yes':'no')."\n";
+          $terms=['شیر اپ','شیرآپ','براش','رژگونه','فیکس','سایه'];
+          $tables=['bazara_products','bazara_product_details'];
+          foreach($tables as $table){
+            $name=$wpdb->prefix.$table;
+            $exists=$wpdb->get_var($wpdb->prepare("SHOW TABLES LIKE %s",$name));
+            echo "TABLE_".$table."_EXISTS=".($exists?'yes':'no')."\n";
+            if($exists){
+              echo "TABLE_".$table."_ROWS=".(int)$wpdb->get_var("SELECT COUNT(*) FROM `".$name."`")."\n";
+            }
+          }
+          $tbl=$wpdb->prefix.'bazara_products';
+          foreach($terms as $term){
+            $q=$wpdb->esc_like($term);
+            $rows=$wpdb->get_results($wpdb->prepare("SELECT ProductId,ProductCode,ProductName,Deleted FROM `".$tbl."` WHERE ProductName LIKE %s LIMIT 8",'%'.$q.'%'),ARRAY_A);
+            echo "LOCAL_TERM=".json_encode($term,JSON_UNESCAPED_UNICODE)." COUNT=".count($rows)." EXAMPLES=".json_encode($rows,JSON_UNESCAPED_UNICODE)."\n";
+          }
+          $api=vmb_api();
+          $catalog=vmb_catalog($api);
+          echo "CLOUD_PRODUCTS_COUNT=".count($catalog['Products']??[])."\n";
+          echo "CLOUD_DETAILS_COUNT=".count($catalog['ProductDetails']??[])."\n";
+          foreach($terms as $term){
+            $hits=[];
+            foreach(($catalog['Products']??[]) as $p){
+              $p=(array)$p;
+              if(empty($p['Deleted']) && mb_stripos((string)($p['Name']??''),$term,0,'UTF-8')!==false){
+                $hits[]=array_intersect_key($p,array_flip(['ProductId','ProductCode','Name']));
+                if(count($hits)>=5)break;
+              }
+            }
+            echo "CLOUD_TERM=".json_encode($term,JSON_UNESCAPED_UNICODE)." EXAMPLES=".json_encode($hits,JSON_UNESCAPED_UNICODE)."\n";
+          }
+          foreach(['شیر اپ','براش','رژگونه'] as $term){
+            try {
+              $found=vms_search(['query'=>$term]);
+              echo "BOT_BRIDGE_TERM=".json_encode($term,JSON_UNESCAPED_UNICODE)." COUNT=".($found['total']??0)." EXAMPLES=".json_encode($found['items']??[],JSON_UNESCAPED_UNICODE)."\n";
+            }catch(Throwable $e){
+              echo "BOT_BRIDGE_TERM=".json_encode($term,JSON_UNESCAPED_UNICODE)." ERROR=".get_class($e).":".mb_substr($e->getMessage(),0,150)."\n";
+            }
+          }
+          echo "READ_ONLY_DIAGNOSTIC_COMPLETE=yes\n";
+          PHP
+          REMOTE
