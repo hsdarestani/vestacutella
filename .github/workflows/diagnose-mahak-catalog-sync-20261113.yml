@@ -1,0 +1,80 @@
+name: Diagnose Vesta Mahak to Bazara product synchronization
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/diagnose-mahak-catalog-sync-20261113.yml]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Inspect product sync implementation and live state read only
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=12 "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          root=Path('/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara')
+          pat=re.compile(r'fromProductVersion|fromProductDetailVersion|ProductVersion|chkProducts|ProductSync|sync_products|product_sync|bazara_products|schedule_event|cron_schedules|get_all_data\(',re.I)
+          for p in root.rglob('*.php'):
+            if 'vendor/' in str(p):continue
+            try: ls=p.read_text(encoding='utf8',errors='replace').splitlines()
+            except:continue
+            matches=[i for i,l in enumerate(ls) if pat.search(l)]
+            if matches:
+              print('SOURCE',p.relative_to(root),'MATCHES',len(matches))
+              for i in matches[:45]:
+                s=ls[i].strip()
+                if re.search(r'password|secret|token|key|auth|https?://',s,re.I):continue
+                print('L',i+1,s[:185])
+          PY
+          docker exec -i vc-vesta php -d memory_limit=512M -d max_execution_time=90 -d display_errors=0 <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          global $wpdb;
+          echo 'WP_TIME='.gmdate('c')."\n";
+          $settings=get_option('bazara_visitor_settings',[]);
+          foreach((array)$settings as $k=>$v){
+            if(preg_match('/product|sync|version|time|schedule|download|fetch|auto/i',(string)$k) && is_scalar($v)){
+              if(preg_match('/password|secret|token|key|user|email|phone/i',(string)$k))continue;
+              echo 'OPTION '.$k.'='.substr(preg_replace('/[^a-z0-9_-]/i','',(string)$v),0,70)."\n";
+            }
+          }
+          $cron=_get_cron_array();
+          $events=[];
+          foreach((array)$cron as $ts=>$hooks)foreach($hooks as $hook=>$rows){
+            if(preg_match('/bazara|mahak|product|sync/i',$hook))$events[]=[$hook,gmdate('c',(int)$ts),count($rows)];
+          }
+          echo 'RELEVANT_CRON_EVENTS='.json_encode(array_slice($events,0,35),JSON_UNESCAPED_UNICODE)."\n";
+          $t=$wpdb->prefix.'bazara_products';
+          foreach(['Version','ProductVersion','Date','CreateDate','UpdateDate','ModifiedDate'] as $field){
+            $column=$wpdb->get_var($wpdb->prepare("SHOW COLUMNS FROM `".$t."` LIKE %s",$field));
+            if($column){echo 'COLUMN_'.$field.'_EXISTS=yes'."\n";}
+          }
+          $cols=$wpdb->get_col("SHOW COLUMNS FROM `".$t."`",0);
+          echo 'PRODUCT_COLUMNS='.json_encode($cols)."\n";
+          foreach($wpdb->get_results($wpdb->prepare("SELECT option_name FROM `".$wpdb->options."` WHERE option_name LIKE %s OR option_name LIKE %s OR option_name LIKE %s LIMIT 80",'%bazara%version%','%bazara%product%','%bazara%sync%'),ARRAY_A) as $row)echo 'PRODUCT_RELATED_OPTION='.$row['option_name']."\n";
+          $api=new BazaraApi(true);
+          $login=$api->login_token();
+          echo 'API_LOGIN_OK='.(is_array($login)&&!empty($login['success'])?'yes':'no')."\n";
+          $full=$api->get_all_data('',array('fromProductVersion'=>0,'fromProductDetailVersion'=>0));
+          echo 'CLOUD_FULL_OK='.(is_array($full)&&!empty($full['success'])?'yes':'no')."\n";
+          $body=$full['message']??[];
+          echo 'CLOUD_FULL_PRODUCTS='.count($body['Products']??[])."\n";
+          $products=$body['Products']??[];
+          $maxver=0;$minver=PHP_INT_MAX;
+          foreach($products as $p){$v=(int)($p['Version']??0);if($v){$maxver=max($maxver,$v);$minver=min($minver,$v);}}
+          echo 'CLOUD_VERSION_MIN='.($minver===PHP_INT_MAX?0:$minver)." MAX=".$maxver."\n";
+          echo 'READ_ONLY_SYNC_DIAGNOSTIC=COMPLETE'."\n";
+          PHP
+          REMOTE
