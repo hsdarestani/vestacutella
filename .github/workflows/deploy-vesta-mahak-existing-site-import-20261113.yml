@@ -1,0 +1,80 @@
+name: Deploy Vesta existing Mahak catalog search and Woo draft import
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/deploy-vesta-mahak-existing-site-import-20261113.yml]
+permissions:
+  contents: read
+concurrency:
+  group: vesta-mahak-site-import-install
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Fetch exact reviewed and CI-passing Mahak import source
+        run: |
+          set -Eeuo pipefail
+          curl -fsSL --retry 3 --connect-timeout 10 \
+            'https://raw.githubusercontent.com/hsdarestani/ordersvesta/0bea1e7b11331b82bc20196cb87d855de2400391/wordpress/mu-plugins/vesta-mahak-site-import.php' \
+            -o /tmp/vesta-mahak-site-import.php
+          test -s /tmp/vesta-mahak-site-import.php
+          php -l /tmp/vesta-mahak-site-import.php
+          sha256sum /tmp/vesta-mahak-site-import.php
+      - name: Install on production WordPress with backup and read-only smoke test
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+          test -n "$HOST" && test -n "$SSHPASS"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=12 "root@$HOST" \
+            'cat > /tmp/vesta-mahak-site-import.php' < /tmp/vesta-mahak-site-import.php
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=12 "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          BASE=/srv/vestacutella/runtime/vesta/wp-content/mu-plugins
+          TARGET="$BASE/vesta-mahak-site-import.php"
+          SRC=/tmp/vesta-mahak-site-import.php
+          BACKUPS=/srv/vestacutella/backups/mahak-site-import
+          test -d "$BASE"
+          test -s "$BASE/vesta-mahak-product-bridge.php"
+          test -s "$SRC"
+          docker inspect vc-vesta >/dev/null
+          mkdir -p "$BACKUPS"
+          OLD=''
+          if test -f "$TARGET"; then
+            OLD="$BACKUPS/site-import-$(date -u +%Y%m%dT%H%M%SZ).php"
+            cp -a "$TARGET" "$OLD"
+          fi
+          cp "$SRC" "$TARGET.tmp"
+          chmod 644 "$TARGET.tmp"
+          docker exec vc-vesta php -l /var/www/html/wp-content/mu-plugins/vesta-mahak-product-bridge.php
+          mv -f "$TARGET.tmp" "$TARGET"
+          rollback() {
+            echo 'LIVE_SMOKE_TEST_FAILED_RESTORING_PREVIOUS_VERSION'
+            if test -n "$OLD"; then cp -a "$OLD" "$TARGET"; else rm -f "$TARGET"; fi
+          }
+          trap rollback ERR
+          docker exec vc-vesta php -l /var/www/html/wp-content/mu-plugins/vesta-mahak-site-import.php
+          docker exec -i vc-vesta php -d memory_limit=512M -d max_execution_time=160 -d display_errors=0 <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';
+          $_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';
+          $_SERVER['SERVER_PORT']='443';
+          $_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          echo 'MAHAK_EXISTING_IMPORT_LOADED='.(function_exists('vms_search')?'yes':'no')."\n";
+          if (!function_exists('vms_search')) { exit(22); }
+          $result = vms_search(array('query'=>'8079'));
+          echo 'MAHAK_READONLY_LOOKUP_TOTAL='.(int)($result['total']??0)."\n";
+          if (!is_array($result) || !array_key_exists('items', $result)) { exit(23); }
+          echo 'MAHAK_READONLY_SMOKE_TEST=PASSED'."\n";
+          PHP
+          trap - ERR
+          rm -f "$SRC"
+          echo 'MAHAK_SITE_IMPORT_INSTALLED_AND_READ_ONLY_VERIFIED=yes'
+          REMOTE
