@@ -1,0 +1,70 @@
+name: Audit Bazara product sync version cursor and Action Scheduler
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/audit-bazara-product-sync-queue-20261113.yml]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Inspect exact implementation, action scheduler and versions read-only
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=12 "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          root=Path('/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara')
+          files=[('classes/functions.php',[(1060,1135),(3155,3215)]),('classes/class.bazara.api.php',[(1140,1220),(3930,3985)])]
+          for path,ranges in files:
+            lines=(root/path).read_text(errors='replace').splitlines()
+            for lo,hi in ranges:
+              print('FILE_REGION',path,lo,hi)
+              for n in range(lo,min(hi,len(lines))+1):
+                line=lines[n-1].strip()
+                if re.search(r'password|secret|token|authorization|api.?key|https?://',line,re.I):continue
+                print('CODE',n,line[:195])
+          PY
+          docker exec -i vc-vesta php -d memory_limit=512M -d max_execution_time=100 -d display_errors=0 <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          global $wpdb;
+          echo 'NOW='.gmdate('c')."\n";
+          $v=get_option('bazara_latest_versions',[]);
+          $clean=[];
+          foreach((array)$v as $k=>$x){if(is_scalar($x)&&preg_match('/^[a-zA-Z0-9_]+$/',(string)$k))$clean[$k]=(string)$x;}
+          echo 'LATEST_VERSIONS='.json_encode($clean,JSON_UNESCAPED_UNICODE)."\n";
+          $table=$wpdb->prefix.'bazara_products';
+          echo 'LOCAL_MAX_VERSION='.(string)$wpdb->get_var("SELECT MAX(RowVersion) FROM `".$table."`")."\n";
+          echo 'LOCAL_MIN_VERSION='.(string)$wpdb->get_var("SELECT MIN(RowVersion) FROM `".$table."`")."\n";
+          $actions=$wpdb->prefix.'actionscheduler_actions';
+          $exists=$wpdb->get_var($wpdb->prepare("SHOW TABLES LIKE %s",$actions));
+          echo 'ACTION_TABLE_EXISTS='.($exists?'yes':'no')."\n";
+          if($exists){
+             $rows=$wpdb->get_results("SELECT hook,status,scheduled_date_gmt,last_attempt_gmt,attempts,LEFT(extended_args,40) AS arguments FROM `".$actions."` WHERE hook LIKE '%bazara%' ORDER BY action_id DESC LIMIT 25",ARRAY_A);
+             echo 'BAZARA_ACTIONS='.json_encode($rows,JSON_UNESCAPED_UNICODE)."\n";
+             $sum=$wpdb->get_results("SELECT hook,status,COUNT(*) AS n FROM `".$actions."` WHERE hook LIKE '%bazara%' GROUP BY hook,status LIMIT 50",ARRAY_A);
+             echo 'BAZARA_ACTION_COUNTS='.json_encode($sum,JSON_UNESCAPED_UNICODE)."\n";
+          }
+          $keys=['chkProduct','chkProductSync','chkProductsSync','syncProductsMinutes','ProductSyncInterval','schedule_product_sync','product_sync_time'];
+          $opt=get_option('bazara_visitor_settings',[]);
+          foreach($keys as $k){if(isset($opt[$k])&&is_scalar($opt[$k]))echo 'SETTING_'.$k.'='.preg_replace('/[^a-zA-Z0-9_-]/','',(string)$opt[$k])."\n";}
+          $cloud=vmb_catalog(vmb_api());
+          $prods=$cloud['Products']??[];
+          $versions=[];
+          foreach(array_slice($prods,0,2) as $p){$p=(array)$p;echo 'PRODUCT_PUBLIC_FIELD_NAMES='.json_encode(array_keys($p))."\n";}
+          $cloud_max=0;foreach($prods as $p){$cloud_max=max($cloud_max,(int)($p['RowVersion']??0));}
+          echo 'CLOUD_MAX_ROWVERSION='.$cloud_max."\n";
+          echo 'READ_ONLY_AUDIT_COMPLETE=yes'."\n";
+          PHP
+          REMOTE
