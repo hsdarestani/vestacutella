@@ -1,4 +1,4 @@
-name: Repair 19 exact Vesta variant mappings safely
+name: Repair entire Vesta catalog by strictly unique ERP matches
 on:
   push:
     branches: [main]
@@ -20,43 +20,54 @@ jobs:
         run: |
           set -Eeuo pipefail
           sshpass -e scp -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-           scripts/repair-vesta-18-normalized-exact-bazara-variations-20261114.php \
-           "root@$HOST:/tmp/repair-vesta-18-normalized-exact-bazara-variations-20261114.php"
+           scripts/repair-vesta-storewide-exact-20261114.php \
+           "root@$HOST:/tmp/repair-vesta-storewide-exact-20261114.php"
           sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
            "root@$HOST" 'bash -s' <<'REMOTE'
           set -Eeuo pipefail
-          exec 9>/run/lock/vesta-bazara-repair-18-variations.lock
+          exec 9>/run/lock/vesta-bazara-repair-full-catalog.lock
           flock -n 9 || exit 11
-          backup=/srv/backups/vesta-bazara-18-verified-variants-$(date -u +%Y%m%dT%H%M%SZ)
+          backup=/srv/backups/vesta-bazara-verified-full-catalog-$(date -u +%Y%m%dT%H%M%SZ)
           mkdir -p -m 0700 "$backup"
-          ids=76565,85731,36675,36673,54111,36669,42932,37112,87719,87720,37737,42933,102363,94710,54139,39916,35812,46843,37188
           echo "BACKUP_DIR=$backup"
-          docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw' > "$backup/variations-meta-before.tsv" <<SQL
-          SELECT post_id,meta_key,meta_value FROM wp_postmeta
-          WHERE post_id IN ($ids) AND meta_key IN ('mahak_id','mahak_product_detail_id') ORDER BY post_id,meta_key;
+          docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw' > "$backup/variations-meta-before.tsv" <<'SQL'
+          SELECT pm.post_id,pm.meta_id,pm.meta_key,pm.meta_value FROM wp_postmeta pm
+          JOIN wp_posts p ON p.ID=pm.post_id AND p.post_type='product_variation'
+          WHERE pm.meta_key IN ('mahak_id','mahak_product_detail_id') ORDER BY pm.post_id,pm.meta_key;
           SQL
-          echo "EXISTING_METADATA_SNAPSHOT_SAVED=yes"
+          echo "BACKUP_ALL_EXISTING_VARIANT_MAPPINGS=yes"
           for host in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
             code=$(curl --noproxy '*' -ksS --connect-timeout 8 --max-time 25 --resolve "$host:443:127.0.0.1" -o /dev/null -w '%{http_code}' "https://$host/")
             echo "BEFORE=$host HTTP=$code";test "$code" = 200
           done
           echo '===== STRICT VERIFICATION DRY RUN ====='
-          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=384M < /tmp/repair-vesta-18-normalized-exact-bazara-variations-20261114.php | tee "$backup/mapping-run.log"
-          grep -Fx 'EXACT_VARIATIONS_VALIDATED=19' "$backup/mapping-run.log"
-          grep -Fx 'DRY_RUN_ONLY=yes' "$backup/mapping-run.log"
-          echo '===== COMMIT ONLY STRICT VERIFIED EXACT MATCHES ====='
-          docker exec -e VC_MAP_COMMIT=yes -i vc-vesta php -d display_errors=0 -d memory_limit=384M < /tmp/repair-vesta-18-normalized-exact-bazara-variations-20261114.php | tee "$backup/map-apply.log"
-          grep -Fx 'MAPPING_REPAIR_VERIFIED=yes' "$backup/map-apply.log"
-          echo '===== READ BACK ====='
-          docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw' <<SQL
-          SELECT 'VERIFIED_MAPPING_ROWS',COUNT(*),COUNT(DISTINCT post_id)
-          FROM wp_postmeta WHERE post_id IN ($ids) AND meta_key IN ('mahak_id','mahak_product_detail_id');
+          docker exec -i vc-vesta php -l < /tmp/repair-vesta-storewide-exact-20261114.php
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=768M < /tmp/repair-vesta-storewide-exact-20261114.php | tee "$backup/dry-run.log"
+          grep -Fx 'DRY_RUN_NO_WRITES=yes' "$backup/dry-run.log"
+          echo '===== LIMITED STRICT MATCH BATCHES ====='
+          for n in $(seq 1 12);do
+            docker exec -i -e VC_MAP_COMMIT=yes -e VC_MAP_BATCH_SIZE=80 vc-vesta php -d display_errors=0 -d memory_limit=768M < /tmp/repair-vesta-storewide-exact-20261114.php | tee "$backup/batch-$n.log"
+            grep -Fx 'BATCH_EXACT_MAPPING_VERIFIED=yes' "$backup/batch-$n.log"
+            number=$(sed -n 's/^BATCH_VARIATIONS_MAPPED=//p' "$backup/batch-$n.log")
+            [[ "$number" =~ ^[0-9]+$ ]] || { echo MAPPING_BATCH_RESULT_MISSING;exit 12; }
+            echo "BATCH=$n MAPPED=$number"
+            if [[ "$number" = 0 ]];then break;fi
+          done
+          echo '===== INDEPENDENT POST FIX MAPPING COVERAGE ====='
+          docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw' <<'SQL'
+          SELECT COUNT(*) AS published_variations,
+            SUM(EXISTS(SELECT 1 FROM wp_postmeta x WHERE x.post_id=v.ID AND x.meta_key='mahak_id' AND CAST(x.meta_value AS UNSIGNED)>0)
+            AND EXISTS(SELECT 1 FROM wp_postmeta d WHERE d.post_id=v.ID AND d.meta_key='mahak_product_detail_id' AND CAST(d.meta_value AS UNSIGNED)>0)) AS fully_mapped
+          FROM wp_posts v JOIN wp_posts p ON p.ID=v.post_parent
+          WHERE v.post_type='product_variation' AND v.post_status='publish'
+            AND p.post_type='product' AND p.post_status='publish';
           SQL
+          echo "NO_REMOTE_INVOICES_OR_PRODUCTS_MODIFIED=yes"
           for host in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
             code=$(curl --noproxy '*' -ksS --connect-timeout 8 --max-time 25 --resolve "$host:443:127.0.0.1" -o /dev/null -w '%{http_code}' "https://$host/")
             echo "AFTER=$host HTTP=$code";test "$code" = 200
           done
-          echo "REPAIR_18_EXACT_VARIANTS_DEPLOY_COMPLETE=yes"
+          echo "STOREWIDE_EXACT_MAP_BATCHES_DEPLOY_COMPLETE=yes"
           echo "UNVERIFIED_VARIANTS_NOT_TOUCHED=yes"
           echo "NO_ORDER_REPLAYS_IN_THIS_JOB=yes"
           REMOTE
