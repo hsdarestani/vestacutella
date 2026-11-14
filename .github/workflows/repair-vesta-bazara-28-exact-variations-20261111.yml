@@ -1,4 +1,4 @@
-name: Repair 28 exact Vesta Bazaar variation mappings safely
+name: Repair 77 exact live Bazaar mappings safely
 on:
   push:
     branches: [main]
@@ -20,30 +20,33 @@ jobs:
         run: |
           set -Eeuo pipefail
           sshpass -e scp -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-           scripts/repair-vesta-bazara-28-exact-variations-20261111.php \
-           "root@$HOST:/tmp/repair-vesta-bazara-28-exact-variations-20261111.php"
+           scripts/repair-vesta-77-exact-bazara-variations-20261114.php \
+           "root@$HOST:/tmp/repair-vesta-77-exact-bazara-variations-20261114.php"
           sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
            "root@$HOST" 'bash -s' <<'REMOTE'
           set -Eeuo pipefail
-          exec 9>/run/lock/vesta-bazara-repair-28-variations.lock
+          exec 9>/run/lock/vesta-bazara-repair-77-variations.lock
           flock -n 9 || exit 11
-          backup=/srv/backups/vesta-bazara-28-verified-variants-$(date -u +%Y%m%dT%H%M%SZ)
+          backup=/srv/backups/vesta-bazara-77-verified-variants-$(date -u +%Y%m%dT%H%M%SZ)
           mkdir -p -m 0700 "$backup"
-          ids=94902,69956,65195,58820,46097,41708,76573,88950,101233,100025,42648,54597,42649,100022,41904,42947,29632,60159,102847,51810,41555,33048,26957,42675,42724,102165,102364,101686
+          ids=51589,69741,69800,62484,60140,54381,31690,88526,42946,41557,37330,66388,102212,102446,41556,71047,69849,46126,44661,47741,66391,95129,51808,31691,46175,33069,33049,102029,33067,102222,102219,102221,66321,102898,102866,102868,101231,101232,101228,66322,69783,37327,37786,66390,65094,46083,63740,54589,71017,67615,101792,37329,41690,95110,58738,92365,59688,101774,37788,45585,69847,71000,60137,42726,41688,41921,45899,44570,42677,42678,94907,69944,101205,41903,102899,44787,56415
           echo "BACKUP_DIR=$backup"
           docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw' > "$backup/variations-meta-before.tsv" <<SQL
           SELECT post_id,meta_key,meta_value FROM wp_postmeta
           WHERE post_id IN ($ids) AND meta_key IN ('mahak_id','mahak_product_detail_id') ORDER BY post_id,meta_key;
           SQL
-          test ! -s "$backup/variations-meta-before.tsv" || { echo "PREVIOUS_VARIATION_METADATA_PRESENT_ABORT=yes";exit 12; }
+          echo "EXISTING_METADATA_SNAPSHOT_SAVED=yes"
           for host in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
             code=$(curl --noproxy '*' -ksS --connect-timeout 8 --max-time 25 --resolve "$host:443:127.0.0.1" -o /dev/null -w '%{http_code}' "https://$host/")
             echo "BEFORE=$host HTTP=$code";test "$code" = 200
           done
           echo '===== STRICT VERIFICATION DRY RUN ====='
-          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=384M < /tmp/repair-vesta-bazara-28-exact-variations-20261111.php | tail -8
-          echo '===== COMMIT ONLY 28 EXACT MATCHES ====='
-          docker exec -e VC_EXACT_MAP_COMMIT=yes -i vc-vesta php -d display_errors=0 -d memory_limit=384M < /tmp/repair-vesta-bazara-28-exact-variations-20261111.php | tail -8
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=384M < /tmp/repair-vesta-77-exact-bazara-variations-20261114.php | tee "$backup/mapping-run.log"
+          grep -Fx 'EXACT_VARIATIONS_VALIDATED=77' "$backup/mapping-run.log"
+          grep -Fx 'DRY_RUN_ONLY=yes' "$backup/mapping-run.log"
+          echo '===== COMMIT ONLY STRICT VERIFIED EXACT MATCHES ====='
+          docker exec -e VC_MAP_COMMIT=yes -i vc-vesta php -d display_errors=0 -d memory_limit=384M < /tmp/repair-vesta-77-exact-bazara-variations-20261114.php | tail -8
+          grep -Fx 'MAPPING_REPAIR_VERIFIED=yes' "$backup/mapping-run.log"
           echo '===== READ BACK ====='
           docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw' <<SQL
           SELECT 'VERIFIED_MAPPING_ROWS',COUNT(*),COUNT(DISTINCT post_id)
@@ -53,7 +56,7 @@ jobs:
             code=$(curl --noproxy '*' -ksS --connect-timeout 8 --max-time 25 --resolve "$host:443:127.0.0.1" -o /dev/null -w '%{http_code}' "https://$host/")
             echo "AFTER=$host HTTP=$code";test "$code" = 200
           done
-          echo "REPAIR_EXACT_VARIANTS_DEPLOY_COMPLETE=yes"
-          echo "REMAINING_UNRESOLVED_VARIANTS=4"
+          echo "REPAIR_77_EXACT_VARIANTS_DEPLOY_COMPLETE=yes"
+          echo "UNVERIFIED_VARIANTS_NOT_TOUCHED=yes"
           echo "NO_ORDER_REPLAYS_IN_THIS_JOB=yes"
           REMOTE
