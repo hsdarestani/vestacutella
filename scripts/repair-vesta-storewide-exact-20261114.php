@@ -77,7 +77,7 @@ $existingRows=$wpdb->get_results("SELECT p.post_id,CAST(p.meta_value AS UNSIGNED
  v.post_status vstatus,COALESCE(parent.post_status,'none') pstatus
  FROM {$wpdb->postmeta} p JOIN {$wpdb->posts} v ON v.ID=p.post_id
  LEFT JOIN {$wpdb->posts} parent ON parent.ID=v.post_parent
- WHERE v.post_type='product_variation' AND p.meta_key='mahak_product_detail_id'
+ WHERE v.post_type='product_variation' AND v.post_status='publish' AND parent.post_status='publish' AND p.meta_key='mahak_product_detail_id'
  AND CAST(p.meta_value AS UNSIGNED)>0",ARRAY_A);
 $existingStats=array();
 foreach($existingRows as $row){
