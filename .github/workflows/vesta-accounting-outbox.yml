@@ -1,0 +1,42 @@
+name: Deploy and verify Vesta accounting outbox
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-accounting-outbox.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-accounting-outbox-production
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass php-cli
+      - name: Independent policy regression tests and syntax checks
+        run: |
+          php tests/accounting-policy-test.php infra/plugins/vesta-accounting-reliability/vesta-accounting-policy.php
+          php -l infra/plugins/vesta-accounting-reliability/vesta-accounting-reliability.php
+          bash -n scripts/deploy-vesta-accounting-reliability.sh
+      - name: Back up and install persistent outbox with sender initially disabled
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          stage="/tmp/vcar-${GITHUB_SHA}"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" "mkdir -p -m 0700 '$stage'"
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null infra/plugins/vesta-accounting-reliability/*.php tests/accounting-policy-test.php scripts/vesta-accounting-worker.php scripts/vesta-accounting-catalog-audit.php scripts/deploy-vesta-accounting-reliability.sh "root@$HOST:$stage/"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" "bash '$stage/deploy-vesta-accounting-reliability.sh' '$stage'"
+      - name: Reconcile all available cloud history without creating invoices
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          for batch in $(seq 1 12);do
+            sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i -e VCAR_RECONCILE_ONLY=yes vc-vesta php -d display_errors=0 -d memory_limit=768M' < scripts/vesta-accounting-worker.php
+          done
