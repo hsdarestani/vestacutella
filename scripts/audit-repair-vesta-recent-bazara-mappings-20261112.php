@@ -7,9 +7,11 @@ require '/var/www/html/wp-load.php';
 global $wpdb;
 $ids=$wpdb->get_col("SELECT p.ID FROM {$wpdb->posts} p LEFT JOIN {$wpdb->postmeta} m
  ON m.post_id=p.ID AND m.meta_key='mahak_id' AND CAST(m.meta_value AS UNSIGNED)>0
- WHERE p.post_type='shop_order' AND p.post_date_gmt>='2026-11-11 00:00:00'
+ WHERE p.post_type='shop_order' AND p.post_date_gmt>='2026-11-08 00:00:00'
  AND p.post_status IN ('wc-processing','wc-completed','wc-processing5')
- AND m.meta_id IS NULL ORDER BY p.ID ASC LIMIT 50");
+ AND m.meta_id IS NULL
+ AND NOT EXISTS(SELECT 1 FROM {$wpdb->prefix}bazara_orders b WHERE b.OrderClientId=p.ID)
+ ORDER BY p.ID ASC LIMIT 200");
 function vc_norm($s){
  $s=trim((string)$s);
  $s=strtr($s,[
