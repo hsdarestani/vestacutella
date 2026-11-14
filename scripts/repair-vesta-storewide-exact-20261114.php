@@ -50,8 +50,11 @@ foreach($rows as $row){
  $id=(int)$row['ID'];$parent=(int)$row['post_parent'];$m=$meta[$id]??array();
  $mp=(int)($m['mahak_id']??0);$md=(int)($m['mahak_product_detail_id']??0);
  if($mp>0&&$md>0){$counts['already_fully_mapped']++;continue;}
- $p=$byCode[(string)$parent]??array();
- if(count($p)!==1)$p=$byName[vc_norm($row['post_title'])]??array();
+ // Stable parent ID or explicit SKU is mandatory; an identical name alone cannot establish identity.
+ $stable=array();
+ foreach(array_unique(array_filter(array((string)$parent,(string)get_post_meta($parent,'_sku',true)))) as $code)
+  foreach($byCode[$code]??array() as $candidate)$stable[(int)$candidate['ProductId']]=$candidate;
+ $p=array_values($stable);
  if(count($p)!==1){$counts[count($p)?'ambiguous_parent':'missing_parent']++;continue;}
  if(vc_norm($p[0]['ProductName'])!==vc_norm($row['post_title'])){$counts['code_title_mismatch']++;continue;}
  $erpId=(int)$p[0]['ProductId'];

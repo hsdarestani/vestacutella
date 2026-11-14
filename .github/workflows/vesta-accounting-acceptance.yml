@@ -23,10 +23,12 @@ jobs:
           SSHPASS: ${{ secrets.PASS }}
         run: |
           set -Eeuo pipefail
+          php -l scripts/repair-vesta-storewide-exact-20261114.php
           php -l scripts/vesta-accounting-catalog-audit.php
           php -l scripts/vesta-accounting-simple-catalog.php
           sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=768M' < scripts/vesta-accounting-catalog-audit.php
           sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=768M' < scripts/vesta-accounting-simple-catalog.php
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=768M' < scripts/repair-vesta-storewide-exact-20261114.php
           sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/vesta-accounting-catalog-audit.php scripts/vesta-accounting-simple-catalog.php "root@$HOST:/srv/vestacutella/repo/scripts/"
       - name: Fresh production reconciliation without remote mutations
         env:
