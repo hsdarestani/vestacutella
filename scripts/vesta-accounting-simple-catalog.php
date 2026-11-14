@@ -12,12 +12,18 @@ foreach($r['message']['ProductDetails']??[] as $d)if(empty($d['Deleted']))$detai
 $used=[];
 foreach($wpdb->get_results("SELECT m.post_id,m.meta_value FROM {$wpdb->postmeta} m JOIN {$wpdb->posts} p ON p.ID=m.post_id WHERE p.post_status='publish' AND m.meta_key='mahak_product_detail_id' AND CAST(m.meta_value AS UNSIGNED)>0",ARRAY_A) as $m)$used[(int)$m['meta_value']][]=(int)$m['post_id'];
 $ids=$wpdb->get_col("SELECT p.ID FROM {$wpdb->posts} p WHERE p.post_type='product' AND p.post_status='publish' AND NOT EXISTS(SELECT 1 FROM {$wpdb->posts} v WHERE v.post_parent=p.ID AND v.post_type='product_variation')");
-$c=['active_sellable_simple'=>0,'complete_mapping'=>0,'existing_pointer_valid'=>0,'invalid_existing_pointer'=>0,'missing_mapping'=>0,'no_stable_parent_code'=>0,'stable_code_title_conflict'=>0,'no_single_plain_detail'=>0,'detail_collision'=>0,'existing_partial_mapping'=>0,'safe_candidates'=>0,'repaired'=>0];$plan=[];
+$c=['active_sellable_simple'=>0,'complete_mapping'=>0,'existing_pointer_valid'=>0,'invalid_existing_pointer'=>0,'stable_identity_verified'=>0,'existing_identity_needs_review'=>0,'missing_mapping'=>0,'no_stable_parent_code'=>0,'stable_code_title_conflict'=>0,'no_single_plain_detail'=>0,'detail_collision'=>0,'existing_partial_mapping'=>0,'safe_candidates'=>0,'repaired'=>0];$plan=[];
 foreach($ids as $id){
  $id=(int)$id;$o=wc_get_product($id);if(!$o||$o->get_type()!=='simple'||!$o->is_purchasable())continue;
  $c['active_sellable_simple']++;
  $p=(int)get_post_meta($id,'mahak_id',true);$d=(int)get_post_meta($id,'mahak_product_detail_id',true);
- if($p&&$d){$c['complete_mapping']++;$valid=false;foreach($details[$p]??[] as $remote)if((int)$remote['ProductDetailId']===$d)$valid=true;$c[$valid?'existing_pointer_valid':'invalid_existing_pointer']++;continue;}
+ if($p&&$d){
+  $c['complete_mapping']++;$valid=false;foreach($details[$p]??[] as $remote)if((int)$remote['ProductDetailId']===$d)$valid=true;$c[$valid?'existing_pointer_valid':'invalid_existing_pointer']++;
+  $code=(string)($products[$p]['ProductCode']??'');
+  if($valid&&count($details[$p]??[])===1&&($code===(string)$id||($o->get_sku()!==''&&$code===(string)$o->get_sku())))$c['stable_identity_verified']++;
+  else{$c['existing_identity_needs_review']++;echo 'SIMPLE_EXISTING_IDENTITY_REVIEW='.$id."\n";}
+  continue;
+ }
  $c['missing_mapping']++;
  if(metadata_exists('post',$id,'mahak_id')||metadata_exists('post',$id,'mahak_product_detail_id')){$c['existing_partial_mapping']++;continue;}
  $candidates=[];foreach(array_unique(array_filter([(string)$id,(string)$o->get_sku()])) as $code)foreach($bycode[$code]??[] as $rp)$candidates[(int)$rp['ProductId']]=$rp;

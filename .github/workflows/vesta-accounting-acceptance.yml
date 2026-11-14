@@ -17,6 +17,17 @@ jobs:
         run: |
           php tests/accounting-policy-test.php infra/plugins/vesta-accounting-reliability/vesta-accounting-policy.php
           php tests/accounting-outbox-test.php infra/plugins/vesta-accounting-reliability/vesta-accounting-reliability.php
+      - name: Validate full catalog identities and refresh monitoring
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          php -l scripts/vesta-accounting-catalog-audit.php
+          php -l scripts/vesta-accounting-simple-catalog.php
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=768M' < scripts/vesta-accounting-catalog-audit.php
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=768M' < scripts/vesta-accounting-simple-catalog.php
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/vesta-accounting-catalog-audit.php scripts/vesta-accounting-simple-catalog.php "root@$HOST:/srv/vestacutella/repo/scripts/"
       - name: Fresh production reconciliation without remote mutations
         env:
           HOST: ${{ secrets.HOST }}
@@ -54,6 +65,7 @@ jobs:
           echo 'REMOTE_CLIENT_ID_DUPLICATES='.$duplicate."\n";
           echo 'OUTBOX_FINAL='.json_encode($wpdb->get_results("SELECT state,reason,COUNT(*) n FROM $t GROUP BY state,reason",ARRAY_A))."\n";
           echo 'CATALOG_FINAL='.json_encode(get_option('vcar_catalog_status'))."\n";
+          echo 'SIMPLE_CATALOG_FINAL='.json_encode(get_option('vcar_simple_catalog_status'))."\n";
           echo 'HEARTBEAT='.json_encode(get_option('vcar_heartbeat'))."\n";
           echo 'SENDER_ENABLED='.json_encode(get_option('vcar_sender_enabled'))."\n";
           echo 'CATALOG_MATCH_JOB_HOURLY=repository_workflow_37_minutes'."\n";
