@@ -1,4 +1,4 @@
-name: Repair 18 exact Vesta variant mappings safely
+name: Repair 19 exact Vesta variant mappings safely
 on:
   push:
     branches: [main]
@@ -29,7 +29,7 @@ jobs:
           flock -n 9 || exit 11
           backup=/srv/backups/vesta-bazara-18-verified-variants-$(date -u +%Y%m%dT%H%M%SZ)
           mkdir -p -m 0700 "$backup"
-          ids=76565,85731,36675,36673,54111,36669,42932,37112,87719,87720,37737,42933,102363,94710,54139,39916,35812,46843
+          ids=76565,85731,36675,36673,54111,36669,42932,37112,87719,87720,37737,42933,102363,94710,54139,39916,35812,46843,37188
           echo "BACKUP_DIR=$backup"
           docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw' > "$backup/variations-meta-before.tsv" <<SQL
           SELECT post_id,meta_key,meta_value FROM wp_postmeta
@@ -42,7 +42,7 @@ jobs:
           done
           echo '===== STRICT VERIFICATION DRY RUN ====='
           docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=384M < /tmp/repair-vesta-18-normalized-exact-bazara-variations-20261114.php | tee "$backup/mapping-run.log"
-          grep -Fx 'EXACT_VARIATIONS_VALIDATED=18' "$backup/mapping-run.log"
+          grep -Fx 'EXACT_VARIATIONS_VALIDATED=19' "$backup/mapping-run.log"
           grep -Fx 'DRY_RUN_ONLY=yes' "$backup/mapping-run.log"
           echo '===== COMMIT ONLY STRICT VERIFIED EXACT MATCHES ====='
           docker exec -e VC_MAP_COMMIT=yes -i vc-vesta php -d display_errors=0 -d memory_limit=384M < /tmp/repair-vesta-18-normalized-exact-bazara-variations-20261114.php | tee "$backup/map-apply.log"
