@@ -50,6 +50,9 @@ jobs:
             $err=get_post_meta($q['order_id'],'mahak_error',true);
             echo 'LOCAL_ERROR_ORDER='.(int)$q['order_id'].' TYPE='.gettype($err).' LENGTH='.strlen((string)$err)."\n";
             $v=$err;for($i=0;$i<3&&is_string($v);$i++){$p=json_decode($v,true);if(json_last_error()!==JSON_ERROR_NONE)break;$v=$p;}
+            $raw=(string)$err;
+            echo 'ERROR_RAW_CLASS_FLAGS='.json_encode(['result_false'=>(bool)preg_match('/Result[^a-zA-Z0-9]*(false|0)/i',$raw),'timeout'=>(bool)preg_match('/timeout|timed out|مهلت/i',$raw),'http_5xx'=>(bool)preg_match('/50[234]/',$raw),'json_valid'=>json_last_error()===JSON_ERROR_NONE])."\n";
+            if(!is_array($v)&&preg_match('/"message":"(.*)"\\s*}$/s',$raw,$m)){$candidate=json_decode($m[1],true);if(is_array($candidate))$v=$candidate;}
             $walk=function($v,$path='')use(&$walk){
               if(!is_array($v))return;
               foreach($v as $k=>$x){
