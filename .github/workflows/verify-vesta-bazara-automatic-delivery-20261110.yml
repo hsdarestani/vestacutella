@@ -26,6 +26,7 @@ jobs:
           echo "CRON_DAEMON=$(systemctl is-active cron)"
           echo "WP_CRON_HOST_LINES=$(grep -c 'vesta-wp-cron.lock' /etc/cron.d/vestacutella-wp-cron || true)"
           echo "PATCH_PRESENT=$(grep -c 'VC_RECENT_BAZARA_CATCHUP_20261110' /srv/vestacutella/runtime/vesta/wp-content/plugins/bazara/classes/class.bazara.api.php || true)"
+          echo "NEW_DEDUP_ROTATOR_INSTALLED=$(grep -c VC_CATCHUP_SKIP_UNMAPPED_AND_DEDUP_20261114 /srv/vestacutella/runtime/vesta/wp-content/plugins/bazara/classes/class.bazara.api.php || true)"
           echo "BOUNDED_ONE_ORDER=$(grep -c 'array_slice($orders, 0, 1)' /srv/vestacutella/runtime/vesta/wp-content/plugins/bazara/classes/class.bazara.api.php || true)"
           echo '===== CORE SYNC CONFIG ====='
           docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=256M <<'PHP'
@@ -36,6 +37,7 @@ jobs:
           foreach(['order_id_greater_than','left_behind_sync_limit'] as $key){
            echo "BAZARA_".$key."=".((int)($options[$key]??0))."\n";
           }
+          echo "CATCHUP_CURSOR=".((int)get_option('vc_bazara_catchup_cursor_20261114',0))."\n";
           echo "HISTORICAL_DEFERRED=".(get_option('vc_bazara_defer_historical_backfill',true)?'yes':'no')."\n";
           echo "BAZARA_HOOK_REGISTERED=".(has_action('bazara_run_sending_orders')?'yes':'no')."\n";
           echo "WP_NEXT_SCHEDULED=".((int)wp_next_scheduled('bazara_run_sending_orders'))."\n";
