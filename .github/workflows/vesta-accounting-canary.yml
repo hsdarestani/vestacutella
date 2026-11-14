@@ -1,0 +1,48 @@
+name: Verify accounting outbox canary and production state
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-accounting-canary.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Independent real recent invoices, bank transfers and queue checks
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d memory_limit=768M -d display_errors=0' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          if(!class_exists('Vesta_Accounting_Reliability'))exit(20);
+          $api=new BazaraApi(true);$cloud=Vesta_Accounting_Reliability::cloud($api);
+          $s=get_option('bazara_visitor_settings',[]);
+          echo 'SEND_BANK_SETTING='.json_encode($s['chkBankOrder']??null)."\n";
+          $c=['eligible'=>0,'remote_verified'=>0,'remote_mismatch'=>0,'remote_missing'=>0,'missing_mapping'=>0];
+          $ids=$wpdb->get_col("SELECT ID FROM {$wpdb->posts} WHERE post_type='shop_order' AND post_date_gmt>='2026-11-12 00:00:00'");
+          foreach($ids as $id){
+           $id=(int)$id;$o=wc_get_order($id);if(!vcar_eligible($o))continue;$c['eligible']++;
+           $bank=vcar_bank($s,$o->get_payment_method());$rows=$cloud['orders'][$id]??[];
+           if(count($rows)!==1){$c['remote_missing']++;$reason=Vesta_Accounting_Reliability::preflight($o,$bank);if($reason==='missing_product_mapping')$c['missing_mapping']++;echo 'RECENT_PENDING='.$id.' REASON='.$reason."\n";continue;}
+           $r=$rows[0];$erp=(int)$r['OrderId'];
+           $reason=vcar_verify($o,$r,$cloud['details'][$erp]??[],$cloud['receipts'][$erp]??[],$bank,$cloud['transfers']);
+           if($reason){$c['remote_mismatch']++;echo 'CANARY_MISMATCH='.$id.' REASON='.$reason."\n";}
+           else{$c['remote_verified']++;echo 'CANARY_VERIFIED_ORDER='.$id.' CLOUD_INVOICE='.$erp."\n";}
+          }
+          echo 'RECENT_EXACT_VERIFICATION='.json_encode($c)."\n";
+          echo 'OUTBOX_COUNTS='.json_encode($wpdb->get_results('SELECT state,reason,COUNT(*) n FROM '.Vesta_Accounting_Reliability::table().' GROUP BY state,reason',ARRAY_A))."\n";
+          echo 'CATALOG='.json_encode(get_option('vcar_catalog_status'))."\n";
+          echo 'HEARTBEAT='.json_encode(get_option('vcar_heartbeat'))."\n";
+          echo 'SENDER_ENABLED='.json_encode(get_option('vcar_sender_enabled',false))."\n";
+          echo 'NO_REMOTE_WRITES=yes'."\n";
+          PHP
