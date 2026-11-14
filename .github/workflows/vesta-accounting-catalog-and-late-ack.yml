@@ -59,6 +59,12 @@ jobs:
           CRON
           chmod 0644 /etc/cron.d/vesta-simple-accounting-catalog
           REMOTE
+      - name: Recheck real invoice identities and repair missing local references
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=768M' < scripts/vesta-accounting-enable.php
       - name: Reconcile delayed acknowledgments without resending uncertain documents
         env:
           HOST: ${{ secrets.HOST }}

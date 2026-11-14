@@ -26,7 +26,8 @@ foreach($ids as $id){
  if(vcas_name($o->get_name())!==vcas_name($rp['Name']??'')){$c['stable_code_title_conflict']++;continue;}
  $ds=$details[(int)$rp['ProductId']]??[];
  if(count($ds)!==1){$c['no_single_plain_detail']++;continue;}
- $rd=$ds[0];$props=json_decode($rd['Properties']??'',true);$attrs=[];
+ $rd=$ds[0];$raw=trim((string)($rd['Properties']??''));$props=json_decode($raw,true);$attrs=[];
+ if(($raw!==''&&$raw!=='null'&&!is_array($props))||!in_array(trim((string)($rd['Properties2']??'')),['','[]','null'],true)){$c['no_single_plain_detail']++;continue;}
  foreach(is_array($props)?$props:[] as $prop)if(is_array($prop)&&trim((string)($prop['V']??''))!=='')$attrs[]=$prop;
  if($attrs){$c['no_single_plain_detail']++;continue;}
  $did=(int)$rd['ProductDetailId'];if(!empty($used[$did])){$c['detail_collision']++;continue;}

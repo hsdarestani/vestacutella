@@ -93,9 +93,12 @@ class Vesta_Accounting_Reliability {
         if(!$rows) return false;
         if(count($rows)!==1){self::set($id,'conflict','multiple_remote_invoices');return true;}
         $r=$rows[0];$erp=(int)$r['OrderId'];
+        $local=(int)$o->get_meta('mahak_id');
+        if($local>0&&$local!==$erp){self::set($id,'conflict','local_remote_invoice_id_disagree',array('remote_id'=>$erp,'next_attempt'=>time()+3600));return true;}
         $error=vcar_verify($o,$r,$cloud['details'][$erp]??array(),$cloud['receipts'][$erp]??array(),$bank,$cloud['transfers']);
         self::set($id,$error?'cloud_mismatch':'verified',$error,array('remote_id'=>$erp,'next_attempt'=>time()+3600));
         if(!$error) {
+            if(!$local)$o->update_meta_data('mahak_id',$erp);
             $o->update_meta_data('_vcar_cloud_verified_at',gmdate('c'));
             $o->update_meta_data('_vcar_cloud_invoice_id',$erp);$o->save_meta_data();
         }
@@ -184,14 +187,16 @@ class Vesta_Accounting_Reliability {
     static function dashboard() {
         if(!current_user_can('manage_woocommerce'))return;
         global $wpdb;$t=self::table();
-        $rows=$wpdb->get_results("SELECT state,reason,COUNT(*) n FROM $t GROUP BY state,reason",ARRAY_A);
+        $rows=$wpdb->get_results("SELECT state,reason,COUNT(*) n,MIN(created_at) oldest FROM $t GROUP BY state,reason",ARRAY_A);
         $hb=get_option('vcar_heartbeat',array());
         echo '<div class="wrap"><h1>وضعیت واقعی اتصال حسابداری</h1><p>تأیید ابر و تأیید محک ویندوزی مستقل‌اند. وضعیت نسخه ویندوز: تأیید نشده.</p>';
         echo '<p>آخرین اجرای کارگر: '.esc_html(!empty($hb['at'])?gmdate('c',$hb['at']):'هنوز اجرا نشده').'</p>';
         $catalog=get_option('vcar_catalog_status',array());
         if($catalog)echo '<p>کاتالوگ: '.(int)($catalog['complete_mapping']??0).' نگاشت از '.(int)($catalog['active_variations']??0).' تنوع فعال. موارد بدون نگاشت: '.(int)($catalog['missing_mapping']??0).'. خطای آخرین اجرا: '.esc_html($hb['error']??'').'</p>';
-        echo '<table class="widefat"><tr><th>وضعیت</th><th>علت</th><th>تعداد</th></tr>';
-        foreach($rows as $r)echo '<tr><td>'.esc_html($r['state']).'</td><td>'.esc_html($r['reason']).'</td><td>'.(int)$r['n'].'</td></tr>';
+        $simple=get_option('vcar_simple_catalog_status',array());
+        if($simple)echo '<p>کالاهای ساده: '.(int)($simple['complete_mapping']??0).' نگاشت از '.(int)($simple['active_sellable_simple']??0).' کالای قابل فروش.</p>';
+        echo '<table class="widefat"><tr><th>وضعیت</th><th>علت</th><th>تعداد</th><th>قدیمی‌ترین ورود به صف</th></tr>';
+        foreach($rows as $r)echo '<tr><td>'.esc_html($r['state']).'</td><td>'.esc_html($r['reason']).'</td><td>'.(int)$r['n'].'</td><td>'.esc_html(gmdate('c',(int)$r['oldest'])).'</td></tr>';
         echo '</table><h2>سفارش‌های نیازمند بررسی</h2><table class="widefat"><tr><th>سفارش</th><th>وضعیت</th><th>علت</th><th>فاکتور ابر</th></tr>';
         foreach($wpdb->get_results("SELECT order_id,state,reason,remote_id FROM $t WHERE state<>'verified' ORDER BY order_id DESC LIMIT 100",ARRAY_A) as $r)
             echo '<tr><td>'.(int)$r['order_id'].'</td><td>'.esc_html($r['state']).'</td><td>'.esc_html($r['reason']).'</td><td>'.(int)$r['remote_id'].'</td></tr>';

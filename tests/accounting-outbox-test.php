@@ -18,11 +18,11 @@ class FakeOrder {
  function get_id(){return $this->id;}function get_date_paid(){return true;}
  function has_status($s){return in_array('processing',$s,true);}
  function get_currency(){return 'IRT';}function get_total_tax(){return 0;}
- function get_payment_method(){return 'wc_zibal';}function get_meta($key){return 0;}
+ function get_payment_method(){return 'wc_zibal';}function get_meta($key){return $this->id===2?($GLOBALS['local_ack']??0):0;}
  function get_date_created(){return new DateTime('2026-11-13T00:00:00Z');}
  function get_items($type){return $type==='fee'?[]:[new FakeItem($this->id)];}
  function get_shipping_total(){return 20;}function get_total(){return 200;}
- function update_meta_data($k,$v){}function save_meta_data(){}
+ function update_meta_data($k,$v){if($k==='mahak_id')$GLOBALS['ack_written']=$v;}function save_meta_data(){}
 }
 class FakeDB {
  public $prefix='wp_',$posts='wp_posts',$rows=[];
@@ -66,7 +66,7 @@ function reset_case($remote,$ambiguous){
  foreach([1,2] as $id)$GLOBALS['wpdb']->rows[$id]=['order_id'=>$id,'state'=>'pending','submitted_at'=>0,'attempts'=>0,'next_attempt'=>0];
  $GLOBALS['options']=['vcar_schema'=>'1','vcar_history_scan_complete'=>time(),'vcar_sender_enabled'=>true,
  'bazara_visitor_settings'=>['banksMethods'=>'[{"method":"wc_zibal","name":"55"}]']];
- $GLOBALS['remote_exists']=$remote;$GLOBALS['ambiguous']=$ambiguous;$GLOBALS['sends']=0;
+ $GLOBALS['remote_exists']=$remote;$GLOBALS['ambiguous']=$ambiguous;$GLOBALS['sends']=0;$GLOBALS['local_ack']=0;$GLOBALS['ack_written']=0;
 }
 function ensure($ok,$name){if(!$ok){fwrite(STDERR,'FAIL '.$name."\n");exit(1);}echo 'PASS '.$name."\n";}
 reset_case(false,false);Vesta_Accounting_Reliability::tick(true,2);
@@ -80,3 +80,6 @@ ensure($GLOBALS['sends']===1,'ambiguous_write_never_automatically_resent');
 $GLOBALS['remote_exists']=true;$GLOBALS['wpdb']->rows[2]['next_attempt']=time()+3600;
 Vesta_Accounting_Reliability::tick(true,2);
 ensure($GLOBALS['sends']===1&&$GLOBALS['wpdb']->rows[2]['state']==='verified','delayed_remote_ack_recovers_without_waiting_for_retry_or_resubmitting');
+ensure($GLOBALS['ack_written']===88,'verified_delayed_ack_repairs_canonical_local_reference');
+reset_case(true,false);$GLOBALS['local_ack']=99;Vesta_Accounting_Reliability::tick(true,2);
+ensure($GLOBALS['sends']===0&&$GLOBALS['wpdb']->rows[2]['state']==='conflict','conflicting_existing_financial_reference_is_not_overwritten');
