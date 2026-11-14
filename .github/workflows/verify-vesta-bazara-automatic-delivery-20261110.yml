@@ -90,3 +90,5 @@ jobs:
           SQL
           echo VERIFY_AUTO_DELIVERY_READ_ONLY_COMPLETE=yes
           REMOTE
+
+# Read-only rerun on 2026-11-14 to diagnose live automatic order-delivery gaps.
