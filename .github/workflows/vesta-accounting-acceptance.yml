@@ -1,5 +1,7 @@
 name: Vesta independent accounting acceptance checks
 on:
+  schedule:
+    - cron: '11 * * * *'
   push:
     branches: [main]
     paths: [.github/workflows/vesta-accounting-acceptance.yml, tests/accounting-outbox-test.php]
