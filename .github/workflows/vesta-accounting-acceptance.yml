@@ -86,3 +86,5 @@ jobs:
             echo "ORIGIN_SITE=$host HTTP=$code";test "$code" = 200
           done
           REMOTE
+
+# Final read-back after the three strictly identified variation mappings were committed.
