@@ -41,6 +41,88 @@ jobs:
           AND p.post_status IN ('wc-completed','wc-processing','wc-processing5','wc-pws-packaged','wc-pws-shipping','wc-arrival-shipment')
           AND m.meta_id IS NULL;
           SQL
+
+          echo '===== STRICT READ ONLY MAPPING COVERAGE ====='
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=512M <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          global $wpdb;
+          $ids=$wpdb->get_col("SELECT p.ID FROM {$wpdb->posts} p WHERE p.post_type='shop_order' AND p.post_date_gmt>='2026-11-08 00:00:00'
+           AND p.post_status IN('wc-completed','wc-processing','wc-processing5','wc-pws-packaged','wc-pws-shipping','wc-arrival-shipment')
+           AND NOT EXISTS (SELECT 1 FROM {$wpdb->postmeta} m WHERE m.post_id=p.ID AND m.meta_key='mahak_id' AND CAST(m.meta_value AS UNSIGNED)>0)
+           AND NOT EXISTS (SELECT 1 FROM {$wpdb->prefix}bazara_orders b WHERE b.OrderClientId=p.ID)");
+          echo 'UNSENT_ELIGIBLE='.count($ids)."\n";
+          if(!$ids)exit;
+          $in=implode(',',array_map('intval',$ids));
+          $items=$wpdb->get_results("SELECT i.order_id,i.order_item_id,
+           MAX(IF(m.meta_key='_variation_id',CAST(m.meta_value AS UNSIGNED),0)) AS vid,
+           MAX(IF(m.meta_key='_product_id',CAST(m.meta_value AS UNSIGNED),0)) AS pid
+           FROM {$wpdb->prefix}woocommerce_order_items i JOIN {$wpdb->prefix}woocommerce_order_itemmeta m
+           ON m.order_item_id=i.order_item_id
+           WHERE i.order_item_type='line_item' AND i.order_id IN($in)
+           GROUP BY i.order_id,i.order_item_id",ARRAY_A);
+          $all=array();
+          foreach($items as $i){$id=(int)($i['vid']?:$i['pid']);if($id)$all[$id]=true;}
+          $remote=$wpdb->get_results("SELECT ProductId,ProductName,Deleted FROM {$wpdb->prefix}bazara_products",ARRAY_A);
+          $detail=$wpdb->get_results("SELECT ProductId,ProductDetailId,Properties,Deleted FROM {$wpdb->prefix}bazara_product_details",ARRAY_A);
+          function vc_norm($s){
+            $s=str_replace(array('ي','ك','آ','‌','ـ','أ','إ'),array('ی','ک','ا',' ','','ا','ا'),trim((string)$s));
+            $s=function_exists('mb_strtolower')?mb_strtolower($s,'UTF-8'):strtolower($s);
+            $s=preg_replace('/[\x{064B}-\x{065F}]/u','',$s);
+            $s=preg_replace('/[^\p{L}\p{N}\s]/u',' ',$s);
+            return trim(preg_replace('/\s+/u',' ',$s));
+          }
+          $byName=array();$byId=array();$byDetail=array();
+          foreach($remote as $x){if((int)$x['Deleted']!==0)continue;$byName[vc_norm($x['ProductName'])][]=$x;$byId[(int)$x['ProductId']]=$x;}
+          foreach($detail as $x){if((int)$x['Deleted']===0)$byDetail[(int)$x['ProductId']][]=$x;}
+          $counts=array('already_mapped'=>0,'unique_safe_candidate'=>0,'missing_parent_match'=>0,'ambiguous_parent'=>0,'attribute_not_single'=>0,'detail_not_unique'=>0,'conflicting_meta'=>0,'simple_product_unmapped'=>0,'missing_woo_product'=>0);
+          $classification=array();$safe=array();
+          foreach(array_keys($all) as $id){
+            $mp=(int)get_post_meta($id,'mahak_id',true);$md=(int)get_post_meta($id,'mahak_product_detail_id',true);
+            if($mp>0&&$md>0){$counts['already_mapped']++;$classification[$id]='mapped';continue;}
+            $post=get_post($id);
+            if(!$post){$counts['missing_woo_product']++;$classification[$id]='missing';continue;}
+            if($post->post_type!=='product_variation'){$counts['simple_product_unmapped']++;$classification[$id]='simple';continue;}
+            $parent=get_post($post->post_parent);
+            if(!$parent){$counts['missing_woo_product']++;$classification[$id]='missing';continue;}
+            $matches=$byName[vc_norm($parent->post_title)]??array();
+            if(count($matches)!==1){$k=count($matches)===0?'missing_parent_match':'ambiguous_parent';$counts[$k]++;$classification[$id]=$k;continue;}
+            $productId=(int)$matches[0]['ProductId'];
+            $attr=$wpdb->get_col($wpdb->prepare("SELECT meta_value FROM {$wpdb->postmeta} WHERE post_id=%d AND meta_key LIKE 'attribute%%'",$id));
+            if(count($attr)!==1){$counts['attribute_not_single']++;$classification[$id]='attribute';continue;}
+            $expected=vc_norm($attr[0]);$candidate=array();
+            foreach($byDetail[$productId]??array() as $d){
+              $props=json_decode((string)$d['Properties'],true);
+              $values=is_array($props)?array_values(array_filter(array_map(function($x){return is_array($x)?vc_norm($x['V']??''):'';},$props))):array();
+              if(count($values)===1&&$values[0]===$expected)$candidate[]=(int)$d['ProductDetailId'];
+            }
+            if(count($candidate)!==1){$counts['detail_not_unique']++;$classification[$id]='detail';continue;}
+            if(($mp>0&&$mp!==$productId)||($md>0&&$md!==$candidate[0])){
+              $counts['conflicting_meta']++;$classification[$id]='conflict';continue;
+            }
+            $safe[$id]=array($productId,$candidate[0]);$classification[$id]='safe';$counts['unique_safe_candidate']++;
+          }
+          foreach($counts as $k=>$v)echo strtoupper($k).'='.$v."\n";
+          echo 'TOTAL_UNIQUE_ITEM_PRODUCTS='.count($all)."\n";
+          $ready=0;$wouldBeReady=0;$blocked=0;
+          foreach($ids as $orderId){
+            $lines=array_filter($items,function($i)use($orderId){return (int)$i['order_id']===(int)$orderId;});
+            $ok=true;$can=true;
+            foreach($lines as $i){
+              $productId=(int)($i['vid']?:$i['pid']);
+              if(($classification[$productId]??'missing')!=='mapped')$ok=false;
+              if(!in_array($classification[$productId]??'missing',array('mapped','safe'),true))$can=false;
+            }
+            if($ok)$ready++;if($can)$wouldBeReady++;else $blocked++;
+          }
+          echo 'ORDERS_ALL_MAPPED_NOW='.$ready."\n";
+          echo 'ORDERS_ALL_MAPPED_AFTER_STRICT_MATCH='.$wouldBeReady."\n";
+          echo 'ORDERS_STILL_BLOCKED='.$blocked."\n";
+          echo 'SAFE_VARIATION_IDS='.implode(',',array_keys($safe))."\n";
+          echo 'READ_ONLY_NO_WRITES=yes'."\n";
+          PHP
           echo CURRENT_ORDERS_READONLY_AUDIT_DONE=yes
           REMOTE
 
