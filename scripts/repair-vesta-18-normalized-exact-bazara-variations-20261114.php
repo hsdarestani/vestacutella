@@ -24,6 +24,7 @@ $rows=array(
  39916=>array(39910,10685244,12182758),
  35812=>array(33108,10685377,12182430),
  46843=>array(46834,10685491,12182683),
+ 37188=>array(37185,10685271,12182415),
 );
 function vc_norm($s){
  $s=trim((string)$s);
@@ -37,7 +38,7 @@ function vc_norm($s){
 }
 function vc_attr($s){
  $s=preg_replace('/\s+/u','',vc_norm($s));
- $s=preg_replace('/^کد/u','',$s);
+ $s=preg_replace('/^(کد|پک)/u','',$s);
  return preg_replace_callback('/\d+/',function($m){return (string)(int)$m[0];},$s);
 }
 $ps=$wpdb->get_results("SELECT ProductId,ProductCode,ProductName,Deleted FROM {$wpdb->prefix}bazara_products",ARRAY_A);
