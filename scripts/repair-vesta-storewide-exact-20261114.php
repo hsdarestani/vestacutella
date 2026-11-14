@@ -73,11 +73,18 @@ foreach($counts as $k=>$v)echo strtoupper($k)."=".$v."\n";
 foreach($samples as $v)echo "SAMPLE_EXACT_WOO=".$v[0]." ERP_PRODUCT=".$v[1]." ERP_DETAIL=".$v[2]."\n";
 
 $existing=array();
-$existingRows=$wpdb->get_results("SELECT p.post_id,CAST(p.meta_value AS UNSIGNED) erpDetail
+$existingRows=$wpdb->get_results("SELECT p.post_id,CAST(p.meta_value AS UNSIGNED) erpDetail,
+ v.post_status vstatus,COALESCE(parent.post_status,'none') pstatus
  FROM {$wpdb->postmeta} p JOIN {$wpdb->posts} v ON v.ID=p.post_id
+ LEFT JOIN {$wpdb->posts} parent ON parent.ID=v.post_parent
  WHERE v.post_type='product_variation' AND p.meta_key='mahak_product_detail_id'
  AND CAST(p.meta_value AS UNSIGNED)>0",ARRAY_A);
-foreach($existingRows as $row)$existing[(int)$row['erpDetail']][]=(int)$row['post_id'];
+$existingStats=array();
+foreach($existingRows as $row){
+ $existing[(int)$row['erpDetail']][]=array((int)$row['post_id'],$row['vstatus'],$row['pstatus']);
+ $kind=$row['vstatus'].'/'.$row['pstatus'];$existingStats[$kind]=($existingStats[$kind]??0)+1;
+}
+foreach($existingStats as $kind=>$count)echo 'PREVIOUS_DETAIL_MAPPING_STATUS='.$kind.' COUNT='.$count."\n";
 $duplicate=array();
 foreach($plan as $id=>$v)$duplicate[$v[1]][]=$id;
 $strict=array();$collisions=0;$duplicateCollisions=0;$priorCollisions=0;$bothCollisions=0;$examples=array();
@@ -97,7 +104,10 @@ echo 'UNIQUE_ERP_DETAIL_IDS_IN_CANDIDATES='.count($duplicate)."\n";
 echo 'CANDIDATES_WITH_SAME_DETAIL_IN_MULTIPLE_WOO_VARIANTS='.$duplicateCollisions."\n";
 echo 'CANDIDATES_USING_ALREADY_MAPPED_DETAIL='.$priorCollisions."\n";
 echo 'COLLISIONS_IN_BOTH_CATEGORIES='.$bothCollisions."\n";
-foreach($examples as $e)echo 'COLLISION_EXAMPLE_WOO='.$e[0].' ERP_PRODUCT='.$e[1].' DETAIL='.$e[2].' NEW_CANDIDATE_COUNT='.$e[3].' EXISTING_WOO_COUNT='.$e[4]."\n";
+foreach($examples as $e){
+ echo 'COLLISION_EXAMPLE_WOO='.$e[0].' ERP_PRODUCT='.$e[1].' DETAIL='.$e[2].' NEW_CANDIDATE_COUNT='.$e[3].' EXISTING_WOO_COUNT='.$e[4]."\n";
+ foreach(array_slice($existing[$e[2]]??array(),0,3) as $old)echo 'PREVIOUS_MAPPING_WOO='.$old[0].' VAR_STATUS='.$old[1].' PARENT_STATUS='.$old[2]."\n";
+}
 echo 'STRICT_ONE_TO_ONE_CANDIDATES='.count($strict)."\n";
 echo 'ERP_DETAIL_COLLISIONS_SKIPPED='.$collisions."\n";
 if(getenv('VC_MAP_COMMIT')!=='yes'){echo "DRY_RUN_NO_WRITES=yes\n";exit(0);}
