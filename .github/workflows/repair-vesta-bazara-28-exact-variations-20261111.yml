@@ -75,3 +75,5 @@ jobs:
           REMOTE
 
 # Run guarded active-only one-to-one exact match after confirming previous duplicates belong to draft parents.
+
+# Apply only stable-parent-code and exact-attribute identities verified on 2026-11-14.
