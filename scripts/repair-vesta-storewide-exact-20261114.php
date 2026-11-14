@@ -80,11 +80,24 @@ $existingRows=$wpdb->get_results("SELECT p.post_id,CAST(p.meta_value AS UNSIGNED
 foreach($existingRows as $row)$existing[(int)$row['erpDetail']][]=(int)$row['post_id'];
 $duplicate=array();
 foreach($plan as $id=>$v)$duplicate[$v[1]][]=$id;
-$strict=array();$collisions=0;
+$strict=array();$collisions=0;$duplicateCollisions=0;$priorCollisions=0;$bothCollisions=0;$examples=array();
 foreach($plan as $id=>$v) {
- if(count($duplicate[$v[1]])!==1 || !empty($existing[$v[1]])){$collisions++;continue;}
+ $multi=(count($duplicate[$v[1]])!==1);$hasOld=!empty($existing[$v[1]]);
+ if($multi || $hasOld){
+  $collisions++;
+  if($multi)$duplicateCollisions++;
+  if($hasOld)$priorCollisions++;
+  if($multi&&$hasOld)$bothCollisions++;
+  if(count($examples)<12)$examples[]=array($id,$v[0],$v[1],count($duplicate[$v[1]]),count($existing[$v[1]]??array()));
+  continue;
+ }
  $strict[$id]=$v;
 }
+echo 'UNIQUE_ERP_DETAIL_IDS_IN_CANDIDATES='.count($duplicate)."\n";
+echo 'CANDIDATES_WITH_SAME_DETAIL_IN_MULTIPLE_WOO_VARIANTS='.$duplicateCollisions."\n";
+echo 'CANDIDATES_USING_ALREADY_MAPPED_DETAIL='.$priorCollisions."\n";
+echo 'COLLISIONS_IN_BOTH_CATEGORIES='.$bothCollisions."\n";
+foreach($examples as $e)echo 'COLLISION_EXAMPLE_WOO='.$e[0].' ERP_PRODUCT='.$e[1].' DETAIL='.$e[2].' NEW_CANDIDATE_COUNT='.$e[3].' EXISTING_WOO_COUNT='.$e[4]."\n";
 echo 'STRICT_ONE_TO_ONE_CANDIDATES='.count($strict)."\n";
 echo 'ERP_DETAIL_COLLISIONS_SKIPPED='.$collisions."\n";
 if(getenv('VC_MAP_COMMIT')!=='yes'){echo "DRY_RUN_NO_WRITES=yes\n";exit(0);}
