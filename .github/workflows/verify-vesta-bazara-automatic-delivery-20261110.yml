@@ -128,6 +128,28 @@ jobs:
             echo "UNACKED_ORDERS_ALREADY_REMOTE_COUNT=$cnt\n";
             echo "DUPLICATED_REMOTE_CLIENT_KEYS=$dupe\n";
           }
+
+          if(is_array($r) && !empty($r['success'])) {
+           foreach(array(105350,105351,105431) as $checkId) {
+            $o=wc_get_order($checkId);if(!$o)continue;
+            $ack=(int)get_post_meta($checkId,'mahak_id',true);
+            $found=array_values(array_filter($r['message']['Orders']??array(),function($row)use($checkId){return (int)($row['OrderClientId']??0)===$checkId;}));
+            $num=count($found);$remoteId=$num?(int)($found[0]['OrderId']??0):0;
+            $gross=0;$lineDiscount=0;$lineCount=0;$receiptCount=0;$freight=0;$orderDiscount=0;
+            if($remoteId){
+             $freight=(float)($found[0]['SendCost']??0);
+             $orderDiscount=(float)($found[0]['Discount']??0);
+             foreach($r['message']['OrderDetails']??array() as $d)if((int)($d['OrderId']??0)===$remoteId){
+              $gross+=(float)($d['Price']??0)*(float)($d['Count1']??0);
+              $lineDiscount+=(float)($d['Discount']??0);$lineCount++;
+             }
+             foreach($r['message']['Receipts']??array() as $d)if((int)($d['OrderId']??0)===$remoteId)$receiptCount++;
+            }
+            $calc=$gross-$lineDiscount-$orderDiscount+$freight;
+            $expected=(float)$o->get_total()*10;
+            echo "FINANCIAL_CANARY=$checkId CLOUD_ORDER_COUNT=$num LOCAL_ACK=$ack REMOTE_ID=$remoteId DETAIL_COUNT=$lineCount RECEIPT_COUNT=$receiptCount SHIP_RIAL=$freight WOO_SHIP_EXPECTED_RIAL=".(10*(float)$o->get_shipping_total())." ERP_TOTAL_RIAL=$calc WOO_EXPECTED_RIAL=$expected VERIFIED_PARITY=".(($remoteId&&$lineCount&&abs($calc-$expected)<0.51&&abs($freight-(float)$o->get_shipping_total()*10)<0.51)?'yes':'no')."\n";
+           }
+          }
           PHP
 
           echo VERIFY_AUTO_DELIVERY_READ_ONLY_COMPLETE=yes
