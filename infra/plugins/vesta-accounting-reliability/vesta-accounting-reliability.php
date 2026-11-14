@@ -118,6 +118,13 @@ class Vesta_Accounting_Reliability {
             $api=new BazaraApi(true);$cloud=self::cloud($api);
             $settings=get_option('bazara_visitor_settings',array());
             $t=self::table();$now=time();$sent=0;
+            // A delayed cloud acknowledgement is reconciled on every pass, independently of retry delay.
+            foreach($wpdb->get_results("SELECT * FROM $t WHERE state IN ('sending','uncertain') LIMIT 60",ARRAY_A) as $q){
+                $id=(int)$q['order_id'];
+                if(empty($cloud['orders'][$id]))continue;
+                $o=wc_get_order($id);
+                if(vcar_eligible($o))self::verify($id,$o,$cloud,vcar_bank($settings,$o->get_payment_method()));
+            }
             $rows=$wpdb->get_results($wpdb->prepare("SELECT * FROM $t WHERE state<>'verified' AND next_attempt<=%d ORDER BY submitted_at DESC,order_id DESC LIMIT 60",$now),ARRAY_A);
             foreach($rows as $q) {
                 $id=(int)$q['order_id'];$o=wc_get_order($id);

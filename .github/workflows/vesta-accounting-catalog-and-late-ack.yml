@@ -1,0 +1,67 @@
+name: Complete simple catalog mapping and delayed accounting acknowledgment recovery
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-accounting-catalog-and-late-ack.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass php-cli
+      - name: Verify finance and timeout recovery regressions
+        run: |
+          php tests/accounting-policy-test.php infra/plugins/vesta-accounting-reliability/vesta-accounting-policy.php
+          php tests/accounting-outbox-test.php infra/plugins/vesta-accounting-reliability/vesta-accounting-reliability.php
+          php -l scripts/vesta-accounting-simple-catalog.php
+      - name: Deploy delayed acknowledgment recovery and strict simple-product mapper
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null infra/plugins/vesta-accounting-reliability/vesta-accounting-reliability.php scripts/vesta-accounting-simple-catalog.php "root@$HOST:/tmp/"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          base=/srv/vestacutella/runtime/vesta/wp-content/mu-plugins
+          backup=/srv/backups/vcar-simple-and-ack-$(date -u +%Y%m%dT%H%M%SZ)
+          mkdir -p -m 0700 "$backup"
+          cp -p "$base/vesta-accounting-reliability.php" "$backup/"
+          docker exec -i vc-vesta php -l < /tmp/vesta-accounting-reliability.php
+          docker exec -i vc-vesta php -l < /tmp/vesta-accounting-simple-catalog.php
+          install -m 0644 /tmp/vesta-accounting-reliability.php "$base/vesta-accounting-reliability.php.new"
+          mv "$base/vesta-accounting-reliability.php.new" "$base/vesta-accounting-reliability.php"
+          install -m 0644 /tmp/vesta-accounting-simple-catalog.php /srv/vestacutella/repo/scripts/vesta-accounting-simple-catalog.php
+          cat > /usr/local/sbin/vesta-map-simple-products <<'SCRIPT'
+          #!/bin/bash
+          set -Eeuo pipefail
+          umask 077
+          exec 9>/run/lock/vesta-bazara-repair-full-catalog.lock
+          flock -n 9 || exit 0
+          backup=/srv/backups/vcar-simple-meta-$(date -u +%Y%m%dT%H%M%SZ)
+          mkdir -p -m 0700 "$backup"
+          docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw' > "$backup/mapping-meta.tsv" <<'SQL'
+          SELECT meta_id,post_id,meta_key,meta_value FROM wp_postmeta WHERE meta_key IN ('mahak_id','mahak_product_detail_id') ORDER BY meta_id;
+          SQL
+          docker exec -u www-data -i -e VCAR_SIMPLE_COMMIT=yes vc-vesta php -d display_errors=0 -d memory_limit=768M < /srv/vestacutella/repo/scripts/vesta-accounting-simple-catalog.php
+          SCRIPT
+          chmod 0700 /usr/local/sbin/vesta-map-simple-products
+          /usr/local/sbin/vesta-map-simple-products
+          docker exec -u www-data -i vc-vesta php -d display_errors=0 -d memory_limit=768M < /srv/vestacutella/repo/scripts/vesta-accounting-simple-catalog.php
+          cat >/etc/cron.d/vesta-simple-accounting-catalog <<'CRON'
+          SHELL=/bin/bash
+          PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+          42 * * * * root timeout 180 /usr/local/sbin/vesta-map-simple-products >>/var/log/vesta-accounting-simple-catalog.log 2>&1
+          CRON
+          chmod 0644 /etc/cron.d/vesta-simple-accounting-catalog
+          REMOTE
+      - name: Reconcile delayed acknowledgments without resending uncertain documents
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -u www-data -i -e VCAR_FORCE=yes vc-vesta php -d display_errors=0 -d memory_limit=768M' < scripts/vesta-accounting-worker.php

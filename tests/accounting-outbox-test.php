@@ -35,7 +35,10 @@ class FakeDB {
   if(strpos($sql,'COUNT(*)')!==false)return count(array_filter($this->rows,fn($r)=>$r['state']!=='verified'));
   return 0;
  }
- function get_results($sql,$mode){return array_values(array_filter($this->rows,fn($r)=>$r['state']!=='verified'&&$r['next_attempt']<=time()));}
+ function get_results($sql,$mode){
+  if(strpos($sql,"state IN ('sending','uncertain')")!==false)return array_values(array_filter($this->rows,fn($r)=>in_array($r['state'],['sending','uncertain'],true)));
+  return array_values(array_filter($this->rows,fn($r)=>$r['state']!=='verified'&&$r['next_attempt']<=time()));
+ }
  function update($table,$data,$where){$id=$where['order_id'];$this->rows[$id]=array_merge($this->rows[$id],$data);return 1;}
 }
 define('ARRAY_A','ARRAY_A');
@@ -74,3 +77,6 @@ reset_case(false,true);Vesta_Accounting_Reliability::tick(true,2);
 ensure($GLOBALS['sends']===1&&$GLOBALS['wpdb']->rows[2]['state']==='uncertain','ambiguous_write_persists_uncertain_state');
 $GLOBALS['wpdb']->rows[2]['next_attempt']=0;Vesta_Accounting_Reliability::tick(true,2);
 ensure($GLOBALS['sends']===1,'ambiguous_write_never_automatically_resent');
+$GLOBALS['remote_exists']=true;$GLOBALS['wpdb']->rows[2]['next_attempt']=time()+3600;
+Vesta_Accounting_Reliability::tick(true,2);
+ensure($GLOBALS['sends']===1&&$GLOBALS['wpdb']->rows[2]['state']==='verified','delayed_remote_ack_recovers_without_waiting_for_retry_or_resubmitting');
