@@ -32,3 +32,5 @@ jobs:
             < scripts/audit-vesta-erp-verified-orders-20261114.php
 
 # Recheck all currently missing Vesta products without write or API side effects (Nov 14).
+
+# Scheduled live audit checkpoint 2026-11-14 07:48 UTC; read-only.
