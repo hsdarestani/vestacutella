@@ -1,5 +1,7 @@
 name: Repair entire Vesta catalog by strictly unique ERP matches
 on:
+  schedule:
+    - cron: '37 * * * *'
   push:
     branches: [main]
     paths: [".github/workflows/repair-vesta-bazara-28-exact-variations-20261111.yml"]
