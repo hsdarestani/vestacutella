@@ -74,3 +74,5 @@ jobs:
             echo "$host HTTP=$code"
             test "$code" = 200
           done
+
+# Retry with query-scoped selector anchor; first preflight made no production modifications.
