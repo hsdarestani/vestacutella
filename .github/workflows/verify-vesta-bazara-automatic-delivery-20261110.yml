@@ -134,3 +134,5 @@ jobs:
           REMOTE
 
 # Read-only rerun on 2026-11-14 to diagnose live automatic order-delivery gaps.
+
+# Second live verification after the next normal Bazaar cron tick (2026-11-14).
