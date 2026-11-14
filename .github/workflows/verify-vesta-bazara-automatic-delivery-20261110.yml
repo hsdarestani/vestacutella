@@ -88,6 +88,46 @@ jobs:
             AND NOT EXISTS(SELECT 1 FROM wp_postmeta pm WHERE pm.post_id=op.ID AND pm.meta_key='mahak_id' AND CAST(pm.meta_value AS SIGNED)>0))
           GROUP BY oi.order_id ORDER BY oi.order_id DESC LIMIT 20;
           SQL
+
+          echo '===== ACTUAL FAILED SEND ATTEMPTS ====='
+          docker logs --since 25m vc-vesta 2>&1 | grep -E 'VC_BAZARA_CATCHUP order=[0-9]+ ok=(yes|no)' | tail -25 || true
+          echo '===== CURRENT BLOCKING ORDER AND PAYMENT PREFLIGHT ====='
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=512M <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          global $wpdb;
+          $ids=$wpdb->get_col("SELECT p.ID FROM {$wpdb->posts} p WHERE p.post_type='shop_order' AND p.post_date_gmt>='2026-11-08 00:00:00'
+           AND p.post_status IN('wc-processing','wc-completed','wc-processing5','wc-pws-packaged','wc-pws-shipping','wc-arrival-shipment')
+           AND NOT EXISTS(SELECT 1 FROM {$wpdb->postmeta} m WHERE m.post_id=p.ID AND m.meta_key='mahak_id' AND CAST(m.meta_value AS UNSIGNED)>0)
+           AND NOT EXISTS(SELECT 1 FROM {$wpdb->prefix}bazara_orders b WHERE b.OrderClientId=p.ID)
+           ORDER BY p.ID ASC");
+          echo "ELIGIBLE_UNACKNOWLEDGED=".count($ids)."\n";
+          foreach(array_slice($ids,0,25) as $id) {
+           $o=wc_get_order($id);if(!$o)continue;
+           $bad=array();
+           foreach($o->get_items('line_item') as $it){
+            $pid=(int)($it->get_variation_id()?:$it->get_product_id());
+            if((int)get_post_meta($pid,'mahak_id',true)<=0||(int)get_post_meta($pid,'mahak_product_detail_id',true)<=0)$bad[]=$pid;
+           }
+           $method=preg_replace('/[^a-zA-Z0-9_]/','',(string)$o->get_payment_method());
+           echo "ORDER={$id} BAD_ITEM_COUNT=".count($bad)." GATEWAY=".$method." PAID=".($o->get_date_paid()?'yes':'no')." CURRENCY=".$o->get_currency()."\n";
+          }
+          $api=new BazaraApi(true);
+          $r=$api->get_all_data('',array('fromOrderVersion'=>5144000000,'fromOrderDetailVersion'=>5144000000,'fromReceiptVersion'=>5144000000));
+          if(!is_array($r)||empty($r['success'])||!is_array($r['message']['Orders']??null)) {
+            echo "BAZARA_REMOTE_CLOUD_READ=failed\n";
+          }else{
+            echo "BAZARA_REMOTE_CLOUD_READ=success\n";
+            $remote=array();foreach($r['message']['Orders'] as $x)$remote[(int)($x['OrderClientId']??0)][]=(int)($x['OrderId']??0);
+            $cnt=0;$dupe=0;
+            foreach($ids as $id)if(!empty($remote[(int)$id])){echo "ORDER_ALREADY_EXISTS_IN_CLOUD=$id COUNT=".count($remote[(int)$id])."\n";$cnt++;if(count($remote[(int)$id])>1)$dupe++;}
+            echo "UNACKED_ORDERS_ALREADY_REMOTE_COUNT=$cnt\n";
+            echo "DUPLICATED_REMOTE_CLIENT_KEYS=$dupe\n";
+          }
+          PHP
+
           echo VERIFY_AUTO_DELIVERY_READ_ONLY_COMPLETE=yes
           REMOTE
 
