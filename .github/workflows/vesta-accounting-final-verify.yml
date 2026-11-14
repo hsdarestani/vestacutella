@@ -1,0 +1,55 @@
+name: Vesta final accounting reconciliation and catalog identity audit
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-accounting-final-verify.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 16
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass php-cli
+      - name: Regression tests
+        run: php tests/accounting-policy-test.php infra/plugins/vesta-accounting-reliability/vesta-accounting-policy.php
+      - name: Deploy worker lock compatibility with backup and syntax validation
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'cat > /tmp/vcar-worker-lock.php' < infra/plugins/vesta-accounting-reliability/vesta-accounting-reliability.php
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          target=/srv/vestacutella/runtime/vesta/wp-content/mu-plugins/vesta-accounting-reliability.php
+          cp -p "$target" "/srv/backups/vcar-pre-lock-$(date -u +%Y%m%dT%H%M%SZ).php"
+          docker exec -i vc-vesta php -l < /tmp/vcar-worker-lock.php
+          install -m 0644 /tmp/vcar-worker-lock.php "$target.new"
+          mv "$target.new" "$target"
+          systemctl is-active cron
+          docker top vc-vesta -eo pid,etimes,comm | head -20
+          REMOTE
+      - name: Stable SKU and barcode catalog audit
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=768M' < scripts/audit-vesta-stable-catalog-identities.php
+      - name: Drain currently verified sendable backlog in bounded batches
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          for batch in $(seq 1 10);do
+            sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -u www-data -i -e VCAR_FORCE=yes -e VCAR_MAX_SEND=2 vc-vesta php -d display_errors=0 -d memory_limit=768M' < scripts/vesta-accounting-worker.php
+          done
+      - name: Verify all three public sites
+        run: |
+          for host in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
+            code=$(curl -L -sS --retry 1 --connect-timeout 10 --max-time 35 -o /dev/null -w '%{http_code}' "https://$host/")
+            echo "EXTERNAL_SITE=$host HTTP=$code";test "$code" = 200
+          done

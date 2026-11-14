@@ -104,8 +104,12 @@ class Vesta_Accounting_Reliability {
     static function tick($force=false,$maxSend=1) {
         global $wpdb;
         if(get_option('vcar_schema')!=='1'||!class_exists('BazaraApi')) return array('success'=>false,'message'=>'Outbox not initialized');
-        $lock=fopen('/tmp/vesta-bazara-order-sync.lock','c');
-        if(!$lock||!flock($lock,LOCK_EX|LOCK_NB))return array('success'=>false,'message'=>'Accounting worker busy');
+        // Linux protected_regular can reject O_CREAT on a www-data-owned /tmp lock for root CLI.
+        // Opening an existing inode read-only still supports flock(LOCK_EX), without changing ownership.
+        $path='/tmp/vesta-bazara-order-sync.lock';
+        $lock=is_file($path)?fopen($path,'r'):fopen($path,'x+');
+        if(!$lock)return array('success'=>false,'message'=>'Accounting lock inaccessible');
+        if(!flock($lock,LOCK_EX|LOCK_NB)){fclose($lock);return array('success'=>false,'message'=>'Accounting worker busy');}
         try {
             if(!$force && time()-(int)get_option('vcar_last_start',0)<100)return array('success'=>false,'message'=>'Accounting worker throttled');
             update_option('vcar_last_start',time(),false);
