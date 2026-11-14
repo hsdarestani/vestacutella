@@ -1,4 +1,4 @@
-name: Deploy safe Bazara recent-order catch-up and trigger one HTTP cron
+name: Deploy Vesta unblocked deduplicated automatic order recovery
 on:
   push:
     branches: [main]
@@ -19,9 +19,9 @@ jobs:
       - name: Verify safe code and rollback hooks
         run: |
           set -euo pipefail
-          bash -n scripts/deploy-vesta-bazara-recent-backfill-20261110.sh
-          grep -Fq 'BAZARA_PATCH_ROLLED_BACK' scripts/deploy-vesta-bazara-recent-backfill-20261110.sh
-          grep -Fq 'LIMIT 1' scripts/deploy-vesta-bazara-recent-backfill-20261110.sh
+          bash -n scripts/deploy-vesta-bazara-skip-blocked-catchup-20261114.sh
+          grep -Fq 'BAZARA_CATCHUP_PATCH_ROLLED_BACK' scripts/deploy-vesta-bazara-skip-blocked-catchup-20261114.sh
+          grep -Fq 'LIMIT 250' scripts/deploy-vesta-bazara-skip-blocked-catchup-20261114.sh
       - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
       - name: Install guarded patch, preflight and site smoke
         env:
@@ -29,8 +29,8 @@ jobs:
           SSHPASS: ${{ secrets.PASS }}
         run: |
           set -euo pipefail
-          sshpass -e scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/deploy-vesta-bazara-recent-backfill-20261110.sh "root@$HOST:/tmp/deploy-vesta-bazara-recent-backfill-20261110.sh"
-          sshpass -e ssh -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/deploy-vesta-bazara-recent-backfill-20261110.sh'
+          sshpass -e scp -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/deploy-vesta-bazara-skip-blocked-catchup-20261114.sh "root@$HOST:/tmp/deploy-vesta-bazara-skip-blocked-catchup-20261114.sh"
+          sshpass -e ssh -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash /tmp/deploy-vesta-bazara-skip-blocked-catchup-20261114.sh'
       - name: Schedule one WordPress native cron event for Bazaar (standard HTTPS runtime)
         env:
           HOST: ${{ secrets.HOST }}
