@@ -32,7 +32,7 @@ jobs:
           p=root/'classes/class.bazara.api.php'
           s=p.read_text(errors='replace')
           print('ENTITY_MAP',s[s.find('private $entities'):s.find('private $entities')+4000] if 'private $entities' in s else '\n'.join(s.splitlines()[35:100]))
-          for method in ['bazara_save_order']:
+          for method in []:
             m=re.search(r'(?:public|private) function '+method+r'\(',s)
             if not m: continue
             e=re.search(r'\n    (?:public|private|protected) function ',s[m.end():])
@@ -65,7 +65,7 @@ jobs:
             if(isset($opt[$k])) echo 'SETTING='.$k.' '.json_encode($opt[$k],JSON_UNESCAPED_UNICODE)."\n";
           echo 'ALL_ORDER_STATUS_COUNTS='.json_encode($wpdb->get_results("SELECT post_status,COUNT(*) n,MIN(post_date_gmt) earliest,MAX(ID) last_id FROM {$wpdb->posts} WHERE post_type='shop_order' GROUP BY post_status",ARRAY_A))."\n";
           $api=new BazaraApi(true);
-          $r=$api->get_all_data('',array('fromOrderVersion'=>0,'fromOrderDetailVersion'=>0,'fromReceiptVersion'=>0,'fromProductVersion'=>0,'fromProductDetailVersion'=>0,'fromBankVersion'=>0));
+          $r=$api->get_all_data('',array('fromOrderVersion'=>0,'fromOrderDetailVersion'=>0,'fromReceiptVersion'=>0,'fromProductVersion'=>0,'fromProductDetailVersion'=>0,'fromBankVersion'=>0,'fromChequeVersion'=>0));
           if(!is_array($r)||empty($r['success'])){echo "FULL_CLOUD_READ_FAILED=yes\n";exit(30);}
           $msg=$r['message'];
           foreach($msg as $k=>$v)if(is_array($v))echo 'CLOUD_ENTITY='.$k.' COUNT='.count($v).' FIELDS='.implode(',',array_keys($v[0]??[]))."\n";
@@ -75,6 +75,7 @@ jobs:
           $ids=$wpdb->get_col("SELECT ID FROM {$wpdb->posts} p WHERE post_type='shop_order' AND post_status IN ($st) AND EXISTS(SELECT 1 FROM {$wpdb->postmeta} m WHERE m.post_id=p.ID AND ((meta_key='_date_paid' AND CAST(meta_value AS UNSIGNED)>0) OR (meta_key='_paid_date' AND meta_value<>'')))");
           $c=['eligible'=>count($ids),'cloud_one'=>0,'cloud_multiple'=>0,'missing'=>0,'missing_ack'=>0];$ranges=[];
           foreach($ids as $id){$n=count($by[(int)$id]??[]);if($n===1)$c['cloud_one']++;elseif($n>1)$c['cloud_multiple']++;else{$c['missing']++;$date=$wpdb->get_var($wpdb->prepare("SELECT post_date_gmt FROM {$wpdb->posts} WHERE ID=%d",$id));$yr=substr($date,0,4);$ranges[$yr]=($ranges[$yr]??0)+1;}}
+          echo 'CLOUD_ORDER_DATE_RANGE='.min(array_column($msg['Orders'],'OrderDate')).'..'.max(array_column($msg['Orders'],'OrderDate'))."\n";
           echo 'FULL_HISTORY_COUNTS='.json_encode($c)."\n";
           echo 'MISSING_BY_YEAR='.json_encode($ranges)."\n";
           $all=$wpdb->get_results("SELECT post_status,COUNT(*) n FROM {$wpdb->posts} p WHERE post_type='shop_order' AND post_status IN ($st) AND NOT EXISTS(SELECT 1 FROM {$wpdb->postmeta} m WHERE m.post_id=p.ID AND ((meta_key='_date_paid' AND CAST(meta_value AS UNSIGNED)>0) OR (meta_key='_paid_date' AND meta_value<>''))) GROUP BY post_status",ARRAY_A);
