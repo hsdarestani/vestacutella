@@ -45,3 +45,5 @@ jobs:
           REMOTE
 
 # Readback after validated 28-variant mapping repair (Nov 11)
+
+# Re-run live, read-only Vesta order backlog audit on 2026-11-14 after customer reports missing auto-sync.
