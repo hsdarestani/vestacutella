@@ -45,8 +45,8 @@ jobs:
           grep -Fx 'EXACT_VARIATIONS_VALIDATED=77' "$backup/mapping-run.log"
           grep -Fx 'DRY_RUN_ONLY=yes' "$backup/mapping-run.log"
           echo '===== COMMIT ONLY STRICT VERIFIED EXACT MATCHES ====='
-          docker exec -e VC_MAP_COMMIT=yes -i vc-vesta php -d display_errors=0 -d memory_limit=384M < /tmp/repair-vesta-77-exact-bazara-variations-20261114.php | tail -8
-          grep -Fx 'MAPPING_REPAIR_VERIFIED=yes' "$backup/mapping-run.log"
+          docker exec -e VC_MAP_COMMIT=yes -i vc-vesta php -d display_errors=0 -d memory_limit=384M < /tmp/repair-vesta-77-exact-bazara-variations-20261114.php | tee "$backup/map-apply.log"
+          grep -Fx 'MAPPING_REPAIR_VERIFIED=yes' "$backup/map-apply.log"
           echo '===== READ BACK ====='
           docker exec -i vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw' <<SQL
           SELECT 'VERIFIED_MAPPING_ROWS',COUNT(*),COUNT(DISTINCT post_id)
