@@ -57,3 +57,5 @@ jobs:
           echo "NO_CREATE_API_CALLED=yes"
           echo "READ_ONLY_MAHAK_CAPABILITY_AUDIT_FINISHED=yes"
           REMOTE
+
+# Reinspect vendor-side ERP product detail creation capability for 7 unmatched Woo items (Nov 14).
