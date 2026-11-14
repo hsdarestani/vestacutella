@@ -1,0 +1,74 @@
+name: Vesta independent accounting acceptance checks
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-accounting-acceptance.yml, tests/accounting-outbox-test.php]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass php-cli
+      - name: Financial policy and fault-injection regression tests
+        run: |
+          php tests/accounting-policy-test.php infra/plugins/vesta-accounting-reliability/vesta-accounting-policy.php
+          php tests/accounting-outbox-test.php infra/plugins/vesta-accounting-reliability/vesta-accounting-reliability.php
+      - name: Fresh production reconciliation without remote mutations
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d memory_limit=768M -d display_errors=0' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $api=new BazaraApi(true);$cloud=Vesta_Accounting_Reliability::cloud($api);
+          $s=get_option('bazara_visitor_settings',[]);$t=Vesta_Accounting_Reliability::table();
+          foreach($wpdb->get_col("SELECT order_id FROM $t WHERE state='cloud_mismatch' AND reason='receipt_link'") as $id){
+            $o=wc_get_order($id);if($o)Vesta_Accounting_Reliability::verify((int)$id,$o,$cloud,vcar_bank($s,$o->get_payment_method()));
+          }
+          $c=['eligible'=>0,'cloud_verified'=>0,'cloud_mismatch'=>0,'missing'=>0,'ready_missing'=>0,'blocked_mapping'=>0];
+          $ids=$wpdb->get_col("SELECT ID FROM {$wpdb->posts} WHERE post_type='shop_order' AND post_date_gmt>='2026-11-12 00:00:00'");
+          foreach($ids as $id){
+            $id=(int)$id;$o=wc_get_order($id);if(!vcar_eligible($o))continue;$c['eligible']++;
+            $bank=vcar_bank($s,$o->get_payment_method());$rows=$cloud['orders'][$id]??[];
+            if(count($rows)!==1){
+              $c['missing']++;$reason=Vesta_Accounting_Reliability::preflight($o,$bank);
+              if(!$reason)$c['ready_missing']++;if($reason==='missing_product_mapping')$c['blocked_mapping']++;
+              $bad=[];foreach($o->get_items('line_item') as $it){$pid=$it->get_variation_id()?:$it->get_product_id();if(!(int)get_post_meta($pid,'mahak_id',true)||!(int)get_post_meta($pid,'mahak_product_detail_id',true))$bad[]=$pid;}
+              echo 'UNRESOLVED_ORDER='.$id.' REASON='.$reason.' VARIATIONS='.implode(',',$bad)."\n";continue;
+            }
+            $row=$rows[0];$erp=(int)$row['OrderId'];
+            $reason=vcar_verify($o,$row,$cloud['details'][$erp]??[],$cloud['receipts'][$erp]??[],$bank,$cloud['transfers']);
+            if($reason){$c['cloud_mismatch']++;echo 'INVOICE_MISMATCH='.$id.' REASON='.$reason."\n";}
+            else{$c['cloud_verified']++;echo 'VERIFIED_ORDER='.$id.' CLOUD_ID='.$erp.' ORDER_CODE='.(int)($row['OrderCode']??0)."\n";}
+          }
+          $duplicate=0;foreach($cloud['orders'] as $list)if(count($list)>1)$duplicate++;
+          echo 'RECENT_ACCEPTANCE='.json_encode($c)."\n";
+          echo 'REMOTE_CLIENT_ID_DUPLICATES='.$duplicate."\n";
+          echo 'OUTBOX_FINAL='.json_encode($wpdb->get_results("SELECT state,reason,COUNT(*) n FROM $t GROUP BY state,reason",ARRAY_A))."\n";
+          echo 'CATALOG_FINAL='.json_encode(get_option('vcar_catalog_status'))."\n";
+          echo 'HEARTBEAT='.json_encode(get_option('vcar_heartbeat'))."\n";
+          echo 'SENDER_ENABLED='.json_encode(get_option('vcar_sender_enabled'))."\n";
+          echo 'CATALOG_MATCH_JOB_HOURLY=repository_workflow_37_minutes'."\n";
+          echo 'DESKTOP_RECEIPT_VERIFIED=no'."\n";
+          echo 'FULL_ACCEPTANCE_PASSED=no_catalog_and_desktop_dependencies'."\n";
+          PHP
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          echo CRON_SERVICE=$(systemctl is-active cron)
+          echo MONITOR_LOG_EXISTS=$(test -s /var/log/vesta-accounting-worker.log && echo yes || echo no)
+          grep -c VCAR_DURABLE_ /srv/vestacutella/runtime/vesta/wp-content/plugins/bazara/classes/class.bazara.api.php
+          echo LAST_SCHEDULED_PASSES
+          tail -n 8 /var/log/vesta-accounting-worker.log
+          for host in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
+            code=$(curl --noproxy '*' -ksS --connect-timeout 8 --max-time 25 --resolve "$host:443:127.0.0.1" -o /dev/null -w '%{http_code}' "https://$host/")
+            echo "ORIGIN_SITE=$host HTTP=$code";test "$code" = 200
+          done
+          REMOTE
