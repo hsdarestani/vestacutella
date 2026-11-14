@@ -1,4 +1,4 @@
-name: Complete simple catalog mapping and delayed accounting acknowledgment recovery
+name: Recover verified SQL deadlock rollback and accounting acknowledgments
 on:
   push:
     branches: [main]
@@ -24,15 +24,18 @@ jobs:
           SSHPASS: ${{ secrets.PASS }}
         run: |
           set -Eeuo pipefail
-          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null infra/plugins/vesta-accounting-reliability/vesta-accounting-reliability.php scripts/vesta-accounting-simple-catalog.php "root@$HOST:/tmp/"
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null infra/plugins/vesta-accounting-reliability/vesta-accounting-reliability.php infra/plugins/vesta-accounting-reliability/vesta-accounting-policy.php scripts/vesta-accounting-simple-catalog.php "root@$HOST:/tmp/"
           sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
           set -Eeuo pipefail
           base=/srv/vestacutella/runtime/vesta/wp-content/mu-plugins
           backup=/srv/backups/vcar-simple-and-ack-$(date -u +%Y%m%dT%H%M%SZ)
           mkdir -p -m 0700 "$backup"
-          cp -p "$base/vesta-accounting-reliability.php" "$backup/"
+          cp -p "$base/vesta-accounting-reliability.php" "$base/vesta-accounting-policy.php" "$backup/"
+          docker exec -i vc-vesta php -l < /tmp/vesta-accounting-policy.php
           docker exec -i vc-vesta php -l < /tmp/vesta-accounting-reliability.php
           docker exec -i vc-vesta php -l < /tmp/vesta-accounting-simple-catalog.php
+          install -m 0644 /tmp/vesta-accounting-policy.php "$base/vesta-accounting-policy.php.new"
+          mv "$base/vesta-accounting-policy.php.new" "$base/vesta-accounting-policy.php"
           install -m 0644 /tmp/vesta-accounting-reliability.php "$base/vesta-accounting-reliability.php.new"
           mv "$base/vesta-accounting-reliability.php.new" "$base/vesta-accounting-reliability.php"
           install -m 0644 /tmp/vesta-accounting-simple-catalog.php /srv/vestacutella/repo/scripts/vesta-accounting-simple-catalog.php
@@ -70,4 +73,8 @@ jobs:
           HOST: ${{ secrets.HOST }}
           SSHPASS: ${{ secrets.PASS }}
         run: |
-          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -u www-data -i -e VCAR_FORCE=yes vc-vesta php -d display_errors=0 -d memory_limit=768M' < scripts/vesta-accounting-worker.php
+          set -Eeuo pipefail
+          for pass in 1 2 3;do
+            sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -u www-data -i -e VCAR_FORCE=yes vc-vesta php -d display_errors=0 -d memory_limit=768M' < scripts/vesta-accounting-worker.php
+            if [ "$pass" != 3 ];then sleep 35;fi
+          done

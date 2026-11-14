@@ -1,5 +1,21 @@
 <?php
 // Pure verification policy. No writes and no customer data in diagnostic reasons.
+function vcar_definite_rollback($raw) {
+    if(!is_string($raw))return false;
+    $outer=json_decode($raw,true);$candidates=array();
+    if(is_array($outer)){
+        $candidates[]=$outer;
+        if(isset($outer['message'])&&is_string($outer['message']))$candidates[]=json_decode($outer['message'],true);
+    }
+    // Vendor writes nested JSON via update_post_meta without wp_slash; recover only the JSON envelope.
+    if(preg_match('/"message":"(.*)"\s*}$/s',$raw,$m))$candidates[]=json_decode($m[1],true);
+    foreach($candidates as $r){
+        if(!is_array($r)||!array_key_exists('Result',$r)||$r['Result']!==false||!is_string($r['Message']??null))continue;
+        // SQL Server 1205 explicitly rolls back its victim; generic timeouts/rejections remain ambiguous.
+        if(preg_match('/^Transaction \(Process ID [0-9]+\) was deadlocked on .+ resources with another process and has been chosen as the deadlock victim\.\s*Rerun the transaction\.?$/i',trim($r['Message'])))return true;
+    }
+    return false;
+}
 function vcar_eligible($o) {
     return $o && $o->get_date_paid() && $o->has_status(array_unique(array_merge(
         wc_get_is_paid_statuses(), array('processing5','pws-packaged','pws-shipping','arrival-shipment','pws-courier','pws-post')

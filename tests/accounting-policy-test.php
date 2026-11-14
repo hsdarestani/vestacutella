@@ -14,6 +14,11 @@ class TestOrder {
  function get_shipping_total(){return 20;} function get_total(){return 200;}
 }
 function check($condition,$name){if(!$condition){fwrite(STDERR,'FAIL '.$name."\n");exit(1);}echo 'PASS '.$name."\n";}
+$deadlock=['Result'=>false,'Code'=>1,'Message'=>'Transaction (Process ID 123) was deadlocked on lock resources with another process and has been chosen as the deadlock victim. Rerun the transaction.'];
+check(vcar_definite_rollback(json_encode($deadlock)),'explicit_sql_1205_rollback_recognized');
+check(vcar_definite_rollback('{"success":false,"message":"'.json_encode($deadlock).'"}'),'vendor_nested_json_slash_loss_recovered');
+check(!vcar_definite_rollback('{"Result":false,"Message":"Timeout while saving transaction"}'),'generic_timeout_is_never_proof_of_rollback');
+check(!vcar_definite_rollback('{"Result":false,"Message":"deadlock"}'),'generic_deadlock_word_is_not_sufficient');
 $o=new TestOrder;
 $row=array('OrderId'=>88,'OrderClientId'=>33,'SendCost'=>200,'ReceiptId'=>44);
 $lines=array(array('ProductDetailId'=>9,'Count1'=>2,'Price'=>1000,'Discount'=>200));

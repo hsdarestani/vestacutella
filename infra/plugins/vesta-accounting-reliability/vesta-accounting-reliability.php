@@ -124,9 +124,15 @@ class Vesta_Accounting_Reliability {
             // A delayed cloud acknowledgement is reconciled on every pass, independently of retry delay.
             foreach($wpdb->get_results("SELECT * FROM $t WHERE state IN ('sending','uncertain') LIMIT 60",ARRAY_A) as $q){
                 $id=(int)$q['order_id'];
-                if(empty($cloud['orders'][$id]))continue;
                 $o=wc_get_order($id);
-                if(vcar_eligible($o))self::verify($id,$o,$cloud,vcar_bank($settings,$o->get_payment_method()));
+                if(!vcar_eligible($o))continue;
+                $bank=vcar_bank($settings,$o->get_payment_method());
+                if(!empty($cloud['orders'][$id]))self::verify($id,$o,$cloud,$bank);
+                elseif($q['state']==='uncertain'&&(int)$q['attempts']<5&&!(int)$o->get_meta('mahak_id')&&
+                    vcar_definite_rollback(get_post_meta($id,'mahak_error',true))&&!self::preflight($o,$bank)){
+                    $failures=(int)($q['failures']??0)+1;
+                    self::set($id,'retry','remote_deadlock_transaction_rolled_back',array('submitted_at'=>0,'failures'=>$failures,'next_attempt'=>time()+min(600,30*pow(2,min($failures,4)))));
+                }
             }
             $rows=$wpdb->get_results($wpdb->prepare("SELECT * FROM $t WHERE state<>'verified' AND next_attempt<=%d ORDER BY submitted_at DESC,order_id DESC LIMIT 60",$now),ARRAY_A);
             foreach($rows as $q) {
@@ -149,11 +155,19 @@ class Vesta_Accounting_Reliability {
                 if($sent >= $maxSend || !get_option('vcar_sender_enabled',false))continue;
                 // Persist BEFORE making a potentially ambiguous external mutation.
                 self::set($id,'sending','',array('attempts'=>(int)$q['attempts']+1,'submitted_at'=>time()));
+                $prior=get_post_meta($id,'mahak_error',true);
+                if($prior!=='')add_post_meta($id,'_vcar_vendor_error_before_'.((int)$q['attempts']+1),$prior,true);
+                delete_post_meta($id,'mahak_error');
                 self::$dispatching=true;
-                try {$api->bazara_save_order($id,'');}finally{self::$dispatching=false;}
+                try {$result=$api->bazara_save_order($id,'');}finally{self::$dispatching=false;}
                 $sent++;
                 $cloud=self::cloud($api);
-                if(!self::verify($id,$o,$cloud,$bank))self::set($id,'uncertain','submitted_without_remote_ack',array('next_attempt'=>time()+600));
+                if(!self::verify($id,$o,$cloud,$bank)){
+                    if(is_array($result)&&empty($result['success'])&&(int)$q['attempts']<4&&vcar_definite_rollback(get_post_meta($id,'mahak_error',true))){
+                        $failures=(int)($q['failures']??0)+1;
+                        self::set($id,'retry','remote_deadlock_transaction_rolled_back',array('submitted_at'=>0,'failures'=>$failures,'next_attempt'=>time()+min(600,30*pow(2,min($failures,4)))));
+                    }else self::set($id,'uncertain','submitted_without_remote_ack',array('next_attempt'=>time()+600));
+                }
             }
             update_option('vcar_read_failures',0,false);
             update_option('vcar_heartbeat',array('at'=>time(),'sent'=>$sent,'error'=>''),false);

@@ -5,7 +5,9 @@ function add_action(...$args){}
 function wc_get_is_paid_statuses(){return ['processing','completed'];}
 function get_option($k,$d=false){return $GLOBALS['options'][$k]??$d;}
 function update_option($k,$v,$autoload=false){$GLOBALS['options'][$k]=$v;return true;}
-function get_post_meta($id,$key,$single){return $id===101?0:($key==='mahak_id'?7:9);}
+function get_post_meta($id,$key,$single){if($key==='mahak_error')return $GLOBALS['vendor_error']??'';return $id===101?0:($key==='mahak_id'?7:9);}
+function add_post_meta(...$args){return true;}
+function delete_post_meta($id,$key){if($key==='mahak_error')$GLOBALS['vendor_error']='';return true;}
 function wc_get_order($id){return new FakeOrder($id);}
 class FakeItem {
  public $id;function __construct($id){$this->id=$id;}
@@ -56,6 +58,7 @@ class BazaraApi {
  function bazara_save_order($id,$token){
   if($GLOBALS['wpdb']->rows[$id]['state']!=='sending'||!$GLOBALS['wpdb']->rows[$id]['submitted_at'])throw new RuntimeException('mutation_before_durable_reservation');
   $GLOBALS['sends']++;
+  if($GLOBALS['deadlock_mode']??false){$GLOBALS['vendor_error']=json_encode(['Result'=>false,'Code'=>1,'Message'=>'Transaction (Process ID 123) was deadlocked on lock resources with another process and has been chosen as the deadlock victim. Rerun the transaction.']);return ['success'=>false];}
   if(!$GLOBALS['ambiguous'])$GLOBALS['remote_exists']=true;
   return ['success'=>!$GLOBALS['ambiguous']];
  }
@@ -67,6 +70,7 @@ function reset_case($remote,$ambiguous){
  $GLOBALS['options']=['vcar_schema'=>'1','vcar_history_scan_complete'=>time(),'vcar_sender_enabled'=>true,
  'bazara_visitor_settings'=>['banksMethods'=>'[{"method":"wc_zibal","name":"55"}]']];
  $GLOBALS['remote_exists']=$remote;$GLOBALS['ambiguous']=$ambiguous;$GLOBALS['sends']=0;$GLOBALS['local_ack']=0;$GLOBALS['ack_written']=0;
+ $GLOBALS['vendor_error']='';$GLOBALS['deadlock_mode']=false;
 }
 function ensure($ok,$name){if(!$ok){fwrite(STDERR,'FAIL '.$name."\n");exit(1);}echo 'PASS '.$name."\n";}
 reset_case(false,false);Vesta_Accounting_Reliability::tick(true,2);
@@ -83,3 +87,9 @@ ensure($GLOBALS['sends']===1&&$GLOBALS['wpdb']->rows[2]['state']==='verified','d
 ensure($GLOBALS['ack_written']===88,'verified_delayed_ack_repairs_canonical_local_reference');
 reset_case(true,false);$GLOBALS['local_ack']=99;Vesta_Accounting_Reliability::tick(true,2);
 ensure($GLOBALS['sends']===0&&$GLOBALS['wpdb']->rows[2]['state']==='conflict','conflicting_existing_financial_reference_is_not_overwritten');
+reset_case(false,true);$GLOBALS['deadlock_mode']=true;
+Vesta_Accounting_Reliability::tick(true,2);
+ensure($GLOBALS['sends']===1&&$GLOBALS['wpdb']->rows[2]['state']==='retry'&&$GLOBALS['wpdb']->rows[2]['submitted_at']===0,'proven_rolled_back_deadlock_enters_durable_backoff');
+$GLOBALS['deadlock_mode']=false;$GLOBALS['ambiguous']=false;$GLOBALS['wpdb']->rows[2]['next_attempt']=0;
+Vesta_Accounting_Reliability::tick(true,2);
+ensure($GLOBALS['sends']===2&&$GLOBALS['wpdb']->rows[2]['state']==='verified','definite_rollback_retries_safely_and_verifies_actual_remote_invoice');
