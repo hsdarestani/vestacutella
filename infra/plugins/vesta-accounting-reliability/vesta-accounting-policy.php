@@ -47,10 +47,13 @@ function vcar_verify($order, $row, $lines, $receipts, $bank, $transfers=array())
     $active = array_values(array_filter($receipts, function($r){return empty($r['Deleted']);}));
     if (count($active) !== 1) return count($active) ? 'multiple_receipts' : 'missing_receipt';
     $r = $active[0];
-    if ((int)($row['ReceiptId']??0)!==(int)($r['ReceiptId']??0)) return 'receipt_link';
+    // SaveAllData links the receipt through Receipts.OrderId; Orders.ReceiptId may remain null.
+    if ((int)($r['OrderId']??0)!==(int)($row['OrderId']??0) || (int)($row['OrderId']??0)<=0 ||
+        (!empty($row['ReceiptId']) && (int)$row['ReceiptId']!==(int)($r['ReceiptId']??0))) return 'receipt_link';
     $transfers=array_values(array_filter($transfers,function($t)use($r){return empty($t['Deleted'])&&(int)($t['ReceiptId']??0)===(int)$r['ReceiptId'];}));
     if(count($transfers)!==1)return count($transfers)?'multiple_bank_transfers':'bank_transfer_unverified';
     $t=$transfers[0];
+    if((int)($t['Type']??0)!==2)return 'receipt_transfer_type';
     if (!$bank || (int)($t['BankId']??0) !== $bank) return 'receipt_bank';
     if (!isset($t['Amount']) || abs((float)$t['Amount']+(float)($r['CashAmount']??0) - (float)$order->get_total()*10) > 0.51) return 'receipt_amount';
     return '';

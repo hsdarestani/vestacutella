@@ -109,7 +109,8 @@ class Vesta_Accounting_Reliability {
         try {
             if(!$force && time()-(int)get_option('vcar_last_start',0)<100)return array('success'=>false,'message'=>'Accounting worker throttled');
             update_option('vcar_last_start',time(),false);
-            self::seed(150);
+            if(time()-(int)get_option('vcar_history_scan_complete',0)>3600)self::seed_all();
+            else self::seed(150);
             $api=new BazaraApi(true);$cloud=self::cloud($api);
             $settings=get_option('bazara_visitor_settings',array());
             $t=self::table();$now=time();$sent=0;
@@ -146,7 +147,8 @@ class Vesta_Accounting_Reliability {
             return array('success'=>$pending===0,'message'=>'Accounting outbox: '.$pending.' orders still require cloud verification. Desktop receipt is not verified.','sent'=>$sent);
         } catch(Throwable $e) {
             $n=(int)get_option('vcar_read_failures',0)+1;update_option('vcar_read_failures',$n,false);
-            update_option('vcar_heartbeat',array('at'=>time(),'sent'=>0,'error'=>'worker_or_cloud_failure'),false);
+            $code=in_array($e->getMessage(),array('cloud_read_unavailable','cloud_contract_missing','hpos_requires_adapter','outbox_write_failed'),true)?$e->getMessage():'worker_exception';
+            update_option('vcar_heartbeat',array('at'=>time(),'sent'=>0,'error'=>$code),false);
             update_option('vcar_last_start',time()+min(3600,60*pow(2,min($n,6))),false);
             error_log('VCAR_WORKER_FAILED_NO_AUTOMATIC_RESUBMISSION');
             return array('success'=>false,'message'=>'Accounting worker requires retry or inspection');
@@ -175,6 +177,8 @@ class Vesta_Accounting_Reliability {
         $hb=get_option('vcar_heartbeat',array());
         echo '<div class="wrap"><h1>وضعیت واقعی اتصال حسابداری</h1><p>تأیید ابر و تأیید محک ویندوزی مستقل‌اند. وضعیت نسخه ویندوز: تأیید نشده.</p>';
         echo '<p>آخرین اجرای کارگر: '.esc_html(!empty($hb['at'])?gmdate('c',$hb['at']):'هنوز اجرا نشده').'</p>';
+        $catalog=get_option('vcar_catalog_status',array());
+        if($catalog)echo '<p>کاتالوگ: '.(int)($catalog['complete_mapping']??0).' نگاشت از '.(int)($catalog['active_variations']??0).' تنوع فعال. موارد بدون نگاشت: '.(int)($catalog['missing_mapping']??0).'. خطای آخرین اجرا: '.esc_html($hb['error']??'').'</p>';
         echo '<table class="widefat"><tr><th>وضعیت</th><th>علت</th><th>تعداد</th></tr>';
         foreach($rows as $r)echo '<tr><td>'.esc_html($r['state']).'</td><td>'.esc_html($r['reason']).'</td><td>'.(int)$r['n'].'</td></tr>';
         echo '</table><h2>سفارش‌های نیازمند بررسی</h2><table class="widefat"><tr><th>سفارش</th><th>وضعیت</th><th>علت</th><th>فاکتور ابر</th></tr>';

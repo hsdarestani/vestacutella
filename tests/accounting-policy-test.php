@@ -15,14 +15,18 @@ class TestOrder {
 }
 function check($condition,$name){if(!$condition){fwrite(STDERR,'FAIL '.$name."\n");exit(1);}echo 'PASS '.$name."\n";}
 $o=new TestOrder;
-$row=array('OrderClientId'=>33,'SendCost'=>200,'ReceiptId'=>44);
+$row=array('OrderId'=>88,'OrderClientId'=>33,'SendCost'=>200,'ReceiptId'=>44);
 $lines=array(array('ProductDetailId'=>9,'Count1'=>2,'Price'=>1000,'Discount'=>200));
-$receipts=array(array('ReceiptId'=>44,'CashAmount'=>0));
-$transfers=array(array('ReceiptId'=>44,'BankId'=>55,'Amount'=>2000));
+$receipts=array(array('OrderId'=>88,'ReceiptId'=>44,'CashAmount'=>0));
+$transfers=array(array('ReceiptId'=>44,'BankId'=>55,'Amount'=>2000,'Type'=>2));
 check(vcar_eligible($o),'paid_custom_shipping_status');
 check(vcar_bank(array('banksMethods'=>'[{"method":"x","name":"55"}]'),'x')===55,'exact_bank');
 check(vcar_bank(array('banksMethods'=>'[{"method":"x","name":"55"},{"method":"x","name":"55"}]'),'x')===0,'duplicate_bank_setting_rejected');
 check(vcar_verify($o,$row,$lines,$receipts,55,$transfers)==='','correct_invoice_discount_shipping_receipt_bank');
+$nullable=$row;$nullable['ReceiptId']=null;
+check(vcar_verify($o,$nullable,$lines,$receipts,55,$transfers)==='','receipt_order_link_with_nullable_header');
+$wrong=$receipts;$wrong[0]['OrderId']=777;
+check(vcar_verify($o,$row,$lines,$wrong,55,$transfers)==='receipt_link','receipt_for_wrong_invoice_rejected');
 $bad=$lines;$bad[0]['ProductDetailId']=99;
 check(vcar_verify($o,$row,$bad,$receipts,55,$transfers)==='line_quantity_or_amount','equal_total_wrong_product_rejected');
 $bad=$lines;$bad[0]['Count1']=1;

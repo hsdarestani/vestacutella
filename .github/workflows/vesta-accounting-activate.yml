@@ -1,0 +1,61 @@
+name: Validate and activate Vesta durable accounting sender
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-accounting-activate.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-accounting-outbox-production
+  cancel-in-progress: false
+jobs:
+  activate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 16
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass php-cli
+      - name: Test verified receipt linkage and policy regressions
+        run: |
+          php tests/accounting-policy-test.php infra/plugins/vesta-accounting-reliability/vesta-accounting-policy.php
+          php -l infra/plugins/vesta-accounting-reliability/vesta-accounting-reliability.php
+      - name: Back up and deploy validated policy and monitored worker
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          stage="/tmp/vcar-activate-${GITHUB_SHA}"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" "mkdir -p -m 0700 '$stage'; cp -p /srv/vestacutella/runtime/vesta/wp-content/mu-plugins/vesta-accounting-*.php '$stage/'"
+          for f in infra/plugins/vesta-accounting-reliability/*.php;do
+            name=$(basename "$f")
+            sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" "cat > '$stage/new-$name'" < "$f"
+          done
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" "STAGE='$stage' bash -s" <<'REMOTE'
+          set -Eeuo pipefail
+          base=/srv/vestacutella/runtime/vesta/wp-content/mu-plugins
+          for f in vesta-accounting-policy.php vesta-accounting-reliability.php;do
+            docker exec -i vc-vesta php -l < "$STAGE/new-$f"
+          done
+          for f in vesta-accounting-policy.php vesta-accounting-reliability.php;do
+            install -m 0644 "$STAGE/new-$f" "$base/$f.new"
+            mv -f "$base/$f.new" "$base/$f"
+          done
+          REMOTE
+      - name: Verify real invoices and activate only after complete positive canary
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=768M' < scripts/vesta-accounting-enable.php
+      - name: Bounded missing-order repair with remote verification after each invoice
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          for batch in $(seq 1 8);do
+            sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i -e VCAR_FORCE=yes -e VCAR_MAX_SEND=2 vc-vesta php -d display_errors=0 -d memory_limit=768M' < scripts/vesta-accounting-worker.php
+          done
