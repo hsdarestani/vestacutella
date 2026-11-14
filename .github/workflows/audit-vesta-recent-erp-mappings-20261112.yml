@@ -26,5 +26,9 @@ jobs:
           sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=12 \
             "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=512M -d max_execution_time=0' \
             < scripts/audit-vesta-8-variant-discrepancies-20261114.php
+          echo '===== ACCOUNTING PARITY RECONCILIATION ====='
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=12 \
+            "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=512M -d max_execution_time=0' \
+            < scripts/audit-vesta-erp-verified-orders-20261114.php
 
 # Recheck all currently missing Vesta products without write or API side effects (Nov 14).
