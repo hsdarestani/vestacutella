@@ -1,0 +1,22 @@
+name: Export Vesta accountant catalog checklist read-only
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/export-vesta-accountant-checklist.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read public product identities and fresh cloud catalog without modifying accounting
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=768M' < scripts/export-vesta-accountant-checklist.php
