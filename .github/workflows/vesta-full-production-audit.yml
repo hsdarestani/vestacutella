@@ -1,0 +1,95 @@
+name: Vesta complete production integration audit
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-full-production-audit.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-full-production-audit
+  cancel-in-progress: false
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read live code, history, gateway and desktop evidence
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=12 "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          date -u +AUDIT_UTC=%FT%TZ
+          python3 - <<'PY'
+          from pathlib import Path
+          import re, subprocess
+          root=Path('/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara')
+          p=root/'classes/class.bazara.api.php'
+          s=p.read_text(errors='replace')
+          for method in ['start_sync_orders','bazara_save_order','get_all_data','set_all_data']:
+            m=re.search(r'(?:public|private) function '+method+r'\(',s)
+            if not m: continue
+            e=re.search(r'\n    (?:public|private|protected) function ',s[m.end():])
+            block=s[m.start():m.end()+e.start()] if e else s[m.start():]
+            if method=='bazara_save_order':
+              block='\n'.join(l for l in block.splitlines() if re.search(r'Bank|bank|Receipt|receipt|OrderClientId|success|mahak_id|set_all|return|function|Description|Count1|ProductDetailId|ProductId|FiscalYear|Currency',l))
+            for l in block.splitlines():
+              if re.search(r'https?://|password\s*=|secret\s*=|base_url\s*=',l,re.I): l='[NETWORK LITERAL REDACTED]'
+              print('SOURCE',method,l)
+          print('SERVER_GIT_HEAD',subprocess.run(['git','-C','/srv/vestacutella/repo','rev-parse','HEAD'],capture_output=True,text=True).stdout.strip())
+          for f in Path('/etc/cron.d').glob('*'):
+            if any(k in f.name.lower() for k in ['vesta','bazara','mahak']):
+              print('CRON_FILE',f.name)
+              for l in f.read_text().splitlines():
+                if l.strip() and not l.startswith('#') and not re.search(r'pass|secret|token|https?://',l,re.I): print('CRON',l)
+          print('WINDOWS_RELATED_SERVICES',subprocess.run(['systemctl','list-units','--all','--no-legend'],capture_output=True,text=True).stdout.count('mahak'))
+          PY
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1024M -d max_execution_time=240 <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          foreach(['bazara_products','bazara_product_details','bazara_orders','bazara_receipts','bazara_banks'] as $t){
+            echo 'SCHEMA='.$t.' '.json_encode($wpdb->get_col("SHOW COLUMNS FROM {$wpdb->prefix}$t"))."\n";
+          }
+          $gateways=WC()->payment_gateways()->payment_gateways();
+          foreach($gateways as $id=>$g)echo 'GATEWAY='.$id.' ENABLED='.$g->enabled."\n";
+          $opt=get_option('bazara_visitor_settings',[]);
+          foreach(['banksMethods','FiscalYear','fiscalYear','chkOrder','chkProduct','selectCurrencySoftware','selectCurrencyPlugin'] as $k)
+            if(isset($opt[$k])) echo 'SETTING='.$k.' '.json_encode($opt[$k],JSON_UNESCAPED_UNICODE)."\n";
+          echo 'ALL_ORDER_STATUS_COUNTS='.json_encode($wpdb->get_results("SELECT post_status,COUNT(*) n,MIN(post_date_gmt) earliest,MAX(ID) last_id FROM {$wpdb->posts} WHERE post_type='shop_order' GROUP BY post_status",ARRAY_A))."\n";
+          $api=new BazaraApi(true);
+          $r=$api->get_all_data('',array('fromOrderVersion'=>0,'fromOrderDetailVersion'=>0,'fromReceiptVersion'=>0,'fromProductVersion'=>0,'fromProductDetailVersion'=>0,'fromBankVersion'=>0));
+          if(!is_array($r)||empty($r['success'])){echo "FULL_CLOUD_READ_FAILED=yes\n";exit(30);}
+          $msg=$r['message'];
+          foreach($msg as $k=>$v)if(is_array($v))echo 'CLOUD_ENTITY='.$k.' COUNT='.count($v).' FIELDS='.implode(',',array_keys($v[0]??[]))."\n";
+          $by=[];foreach($msg['Orders']??[] as $v)if(empty($v['Deleted']))$by[(int)$v['OrderClientId']][]=$v;
+          $counts=['eligible'=>0,'cloud_one'=>0,'cloud_multiple'=>0,'missing'=>0,'local_ack_missing_remote'=>0,'unmapped'=>0];
+          $ids=$wpdb->get_col("SELECT ID FROM {$wpdb->posts} WHERE post_type='shop_order' ORDER BY ID");
+          foreach($ids as $id){
+            $o=wc_get_order($id);if(!$o||!$o->is_paid()||!$o->get_date_paid())continue;
+            $counts['eligible']++;$rows=$by[(int)$id]??[];
+            if(count($rows)==1)$counts['cloud_one']++;
+            elseif(count($rows)>1)$counts['cloud_multiple']++;
+            else{
+              $counts['missing']++;$ack=(int)$o->get_meta('mahak_id');if($ack)$counts['local_ack_missing_remote']++;
+              $bad=[];foreach($o->get_items() as $it){$p=$it->get_variation_id()?:$it->get_product_id();if(!(int)get_post_meta($p,'mahak_id',true)||!(int)get_post_meta($p,'mahak_product_detail_id',true))$bad[]=$p;}
+              if($bad)$counts['unmapped']++;
+              echo 'MISSING_ORDER='.$id.' DATE='.substr((string)$o->get_date_created(),0,10).' METHOD='.$o->get_payment_method().' ACK='.$ack.' UNMAPPED='.implode(',',$bad)."\n";
+            }
+          }
+          echo 'FULL_HISTORY_COUNTS='.json_encode($counts)."\n";
+          foreach(['Orders','Products'] as $entity){
+            $sync=[];foreach($msg[$entity]??[] as $v){foreach(['FiscalYear','CreateSyncId','UpdateSyncId','UserCode'] as $k)if(isset($v[$k]))$sync[$k][(string)$v[$k]]=1;}
+            foreach($sync as $k=>$v)echo 'SYNC_FIELD='.$entity.'.'.$k.' DISTINCT='.count($v)."\n";
+          }
+          echo "FULL_AUDIT_DONE=yes\n";
+          PHP
+          REMOTE
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=12 "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=512M' < scripts/repair-vesta-storewide-exact-20261114.php
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=12 "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=512M' < scripts/audit-vesta-all-active-variant-coverage-20261114.php
