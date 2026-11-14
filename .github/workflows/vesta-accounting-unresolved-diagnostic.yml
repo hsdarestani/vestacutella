@@ -62,6 +62,10 @@ jobs:
                 elseif(preg_match('/message|error/i',(string)$k)&&is_string($x)){
                  $c=[];foreach(['موجودی'=>'stock','شخص'=>'person','کالا'=>'product','تکرار'=>'duplicate','زمان'=>'timeout','stock'=>'stock','person'=>'person','product'=>'product','duplicate'=>'duplicate','timeout'=>'timeout','shipping'=>'shipping','tax'=>'tax','fee'=>'fee','total'=>'total'] as $needle=>$tag)if(stripos($x,$needle)!==false)$c[$tag]=1;
                  echo 'ERROR_MESSAGE_CLASS='.$p.' TAGS='.implode(',',array_keys($c)).' LENGTH='.strlen($x)."\n";
+                 $words=['object','reference','not','set','instance','invalid','token','bank','receipt','cheque','database','connection','login','access','permission','exception','client','required','date','year','fiscal','detail','account','amount','format','save','null','entity','already','exists','device','serial','license','limit','transaction','deadlock','unique','key','network','internal','request','try','again','software','sync','server','data','input','خطا','اطلاعات','شناسه','دسترسی','نرم','افزار','ارتباط','سرور','مجوز','تعداد','مقدار','پایگاه','داده','کاربر','حساب','محدود','چک','رسید','بانک','مبلغ','واحد','ثبت','تاریخ','سال','مالی','تسویه','مجدد','سند','فاکتور','موجودی','درخواست','تکراری','نامعتبر','نوع','اجباری','پذیرش','زمان','ذخیره','شماره','ارجاع','پشتیبانی','مجاز'];
+                 $safe=[];foreach($words as $word)if(stripos($x,$word)!==false)$safe[]=$word;
+                 echo 'ERROR_DICTIONARY_TERMS='.implode(',',$safe)."\n";
+
                 }
               }
             };$walk($v);
