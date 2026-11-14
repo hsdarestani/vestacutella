@@ -45,7 +45,7 @@ if end<0:raise SystemExit('METHOD_BOUNDARY_MISSING')
 block=src[start:end]
 if 'VC_RECENT_BAZARA_CATCHUP_20261110' not in block: raise SystemExit('MISSING_EXISTING_PATCH_BLOCK')
 if block.count('ORDER BY p.ID ASC LIMIT 1",')!=1: raise SystemExit('OLD_QUERY_NOT_UNIQUE')
-if block.count('if (!empty($left_behind_orders)) {')!=1: raise SystemExit('SELECTION_HOOK_NOT_UNIQUE')
+if block.count('if (!empty($left_behind_orders)) {')<1: raise SystemExit('SELECTION_HOOK_MISSING')
 if block.count('$all_orders = array_merge($left_behind_orders, $orders);')!=1: raise SystemExit('MERGE_ANCHOR_NOT_UNIQUE')
 # Bounded scan only: previous query picked a single permanently unmappable old order forever.
 block=block.replace('ORDER BY p.ID ASC LIMIT 1",','ORDER BY p.ID ASC LIMIT 250",',1)
@@ -99,7 +99,11 @@ replacement=r'''
                 update_option('vc_bazara_catchup_cursor_20261114', (int)$left_behind_orders[0], false);
             }
 '''
-block=block.replace(needle,replacement+needle,1)
+qpos=block.index('ORDER BY p.ID ASC LIMIT 250",')
+mergepos=block.index('$all_orders = array_merge($left_behind_orders, $orders);')
+needlepos=block.find(needle,qpos,mergepos)
+if needlepos<0: raise SystemExit('CATCHUP_SELECTION_HOOK_MISSING_AFTER_QUERY')
+block=block[:needlepos]+replacement+block[needlepos:]
 if block.count(marker)!=1:raise SystemExit('PATCH_VALIDATION_FAILED')
 result=src[:start]+block+src[end:]
 p.write_text(result,encoding='utf8',errors='surrogateescape')
