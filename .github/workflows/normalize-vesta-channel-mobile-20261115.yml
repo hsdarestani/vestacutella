@@ -1,0 +1,67 @@
+name: Normalize observed channel mobile prefix and finish panel coverage
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/normalize-vesta-channel-mobile-20261115.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  normalize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass php-cli
+      - name: Check normalization, account reuse and duplicate protections
+        run: php tests/channel-customers-test.php infra/plugins/vesta-sms-login/vesta-sms-login.php infra/plugins/vesta-channel-customers/vesta-channel-customers.php
+      - name: Back up exact deployed adapter and normalize remaining real order contact
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          stage="/tmp/vesta-channel-prefix-${GITHUB_SHA}"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" "mkdir -m 0700 -p '$stage'"
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null infra/plugins/vesta-sms-login/vesta-sms-login.php "root@$HOST:$stage/vesta-sms-login.php"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" "STAGE='$stage' bash -s" <<'REMOTE'
+          set -Eeuo pipefail
+          exec 9>/run/lock/vesta-channel-accounts-deploy.lock
+          flock -n 9
+          target=/srv/vestacutella/runtime/vesta/wp-content/plugins/vesta-sms-login/vesta-sms-login.php
+          expected=24b208df8139c820e33ce27af9d468608922cb3966affd212ae5be6a4543e974
+          test "$(sha256sum "$target" | cut -d' ' -f1)" = "$expected"
+          backup="/srv/backups/vesta-channel-prefix-$(date -u +%Y%m%dT%H%M%SZ)"
+          mkdir -m 0700 "$backup"
+          cp -p "$target" "$backup/vesta-sms-login.php"
+          docker cp "$STAGE/vesta-sms-login.php" vc-vesta:/tmp/vesta-channel-prefix-check.php
+          docker exec vc-vesta php -l /tmp/vesta-channel-prefix-check.php
+          ok=no
+          rollback(){ rc=$?;trap - EXIT;if [[ "$ok" != yes ]];then cp -p "$backup/vesta-sms-login.php" "$target";echo PREFIX_CODE_ROLLED_BACK=yes;fi;exit "$rc"; }
+          trap rollback EXIT
+          install -m 0644 "$STAGE/vesta-sms-login.php" "$target.prefix.tmp"
+          mv "$target.prefix.tmp" "$target"
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=768M <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';set_time_limit(0);
+          $o=wc_get_order(103272);
+          $before=[$o->get_total(),$o->get_shipping_total(),$o->get_discount_total(),$o->get_total_tax(),$o->get_status(),$o->get_billing_phone(),$o->get_meta('mahak_id')];
+          $phone=vesta_otp_phone($o->get_billing_phone());
+          if(!$phone)throw new Exception('observed_prefix_not_normalized');
+          echo 'ORDER_103272_PREFIX_RESULT='.Vesta_Channel_Customers::attach(103272)."\n";
+          $o=wc_get_order(103272);
+          $after=[$o->get_total(),$o->get_shipping_total(),$o->get_discount_total(),$o->get_total_tax(),$o->get_status(),$o->get_billing_phone(),$o->get_meta('mahak_id')];
+          if($before!==$after||!$o->get_customer_id()||vesta_otp_existing_user($phone)!==(int)$o->get_customer_id())throw new Exception('prefix_panel_or_financial_verification_failed');
+          if(!wc_get_orders(['customer_id'=>$o->get_customer_id(),'include'=>[103272],'limit'=>1,'return'=>'ids']))throw new Exception('order_not_visible_in_panel');
+          echo 'ORDER_103272_PANEL_IDENTITY_AND_FINANCIAL_SNAPSHOT=verified' ."\n";
+          echo 'PREFIX_ONLY_NORMALIZED; ORIGINAL_ORDER_PHONE_UNCHANGED=yes' ."\n";
+          PHP
+          code=$(curl --noproxy '*' -ksS --connect-timeout 8 --max-time 30 --resolve 'vesta-cosmetics.ir:443:127.0.0.1' -o /dev/null -w '%{http_code}' 'https://vesta-cosmetics.ir/my-account/')
+          test "$code" = 200
+          ok=yes
+          trap - EXIT
+          echo CHANNEL_PREFIX_ACCOUNT_ROLLOUT=passed
+          REMOTE

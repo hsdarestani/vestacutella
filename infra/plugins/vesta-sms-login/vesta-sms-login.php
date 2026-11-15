@@ -26,7 +26,9 @@ function vesta_otp_phone($raw) {
         '٠'=>'0','١'=>'1','٢'=>'2','٣'=>'3','٤'=>'4','٥'=>'5','٦'=>'6','٧'=>'7','٨'=>'8','٩'=>'9'
     ));
     $p = preg_replace('/[\s\-\(\)]/u', '', $p);
-    if (strpos($p, '+98') === 0) { $p = '0' . substr($p, 3); }
+    // A channel export also uses 098 + the complete 10-digit Iranian mobile. Preserve all national digits.
+    if (strpos($p, '0989') === 0 && strlen($p) === 13) { $p = '0' . substr($p, 3); }
+    elseif (strpos($p, '+98') === 0) { $p = '0' . substr($p, 3); }
     elseif (strpos($p, '0098') === 0) { $p = '0' . substr($p, 4); }
     elseif (strpos($p, '98') === 0 && strlen($p) === 12) { $p = '0' . substr($p, 2); }
     elseif (strpos($p, '9') === 0 && strlen($p) === 10) { $p = '0' . $p; }
@@ -102,7 +104,7 @@ function vesta_otp_existing_user($phone) {
     global $wpdb;
     $alternates = array_values(array_unique(array(
         $phone, '+98'.substr($phone,1), '98'.substr($phone,1),
-        substr($phone,1), '0098'.substr($phone,1)
+        substr($phone,1), '0098'.substr($phone,1), '098'.substr($phone,1)
     )));
     $holders = implode(',', array_fill(0, count($alternates), '%s'));
     // Cap unexpectedly large matches rather than making an unsafe decision on
@@ -161,7 +163,7 @@ function vesta_otp_recovery_has_login_owner($phone) {
     global $wpdb;
     $variants = array_values(array_unique(array(
         $phone, '+98'.substr($phone, 1), '98'.substr($phone, 1),
-        substr($phone, 1), '0098'.substr($phone, 1)
+        substr($phone, 1), '0098'.substr($phone, 1), '098'.substr($phone, 1)
     )));
     $holders = implode(',', array_fill(0, count($variants), '%s'));
     $query = "SELECT COUNT(DISTINCT user_id) FROM {$wpdb->usermeta} WHERE meta_key IN ('smsir_phone','phone') AND meta_value IN ($holders)";

@@ -75,3 +75,8 @@ $o->status='processing';check(Vesta_Channel_Customers::attach(10)==='linked','pa
 $o=reset_case();$o->items=[];check(Vesta_Channel_Customers::attach(10)==='not_confirmed','partial_rest_order_waits_for_line_items');
 $o->items=[1];Vesta_Channel_Customers::saved($o);check($o->customer===1,'final_rest_order_save_links_customer');
 $o=reset_case();$o->customer=777;check(Vesta_Channel_Customers::attach(10)==='already_assigned'&&$o->customer===777,'existing_customer_assignment_preserved');
+
+$o=reset_case();$o->phone='0989121234567';check(Vesta_Channel_Customers::attach(10)==='linked'&&vesta_otp_existing_user('09121234567')===1,'observed_channel_country_prefix_normalized_without_guessing_digits');
+check(vesta_otp_phone('098912123456')==='', 'short_country_prefix_does_not_guess_missing_digit');
+check(vesta_otp_phone('09891212345678')==='', 'long_country_prefix_does_not_drop_subscriber_digits');
+$o=reset_case();$id=wp_insert_user(['user_login'=>'legacy098','role'=>'customer']);update_user_meta($id,'smsir_phone','0989121234567');check(vesta_otp_existing_user('09121234567')===$id,'legacy_098_binding_reuses_existing_customer');
