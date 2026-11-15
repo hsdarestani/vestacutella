@@ -1,0 +1,39 @@
+name: Audit Vesta channel accounts before automatic provisioning
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/audit-vesta-channel-accounts-20261115.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Inspect checkout, login and imported order account coverage without customer data
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=768M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          echo 'WOO_VERSION='.WC_VERSION.' PHP='.PHP_VERSION."\n";
+          foreach(['woocommerce_enable_guest_checkout','woocommerce_enable_signup_and_login_from_checkout','woocommerce_custom_orders_table_enabled'] as $k)echo $k.'='.get_option($k)."\n";
+          echo 'OTP_HELPERS='.(int)function_exists('vesta_otp_existing_user').','.(int)function_exists('vesta_otp_phone')."\n";
+          echo 'OTP_READY='.(int)(function_exists('vesta_otp_ready')&&vesta_otp_ready())."\n";
+          foreach((array)get_option('active_plugins',[]) as $p)if(preg_match('/shopino|torob|sms|digit|login|snapp|woocommerce/i',$p))echo 'ACTIVE_PLUGIN='.$p."\n";
+          foreach(glob(WPMU_PLUGIN_DIR.'/*.php') as $p)if(preg_match('/sms|login|customer|account/i',basename($p)))echo 'MU_PLUGIN='.basename($p).' HASH='.hash_file('sha256',$p)."\n";
+          $rows=$wpdb->get_results("SELECT p.ID,p.post_status,MAX(CASE WHEN m.meta_key='_payment_method' THEN m.meta_value END) gateway,MAX(CASE WHEN m.meta_key='_customer_user' THEN CAST(m.meta_value AS UNSIGNED) END) customer,MAX(CASE WHEN m.meta_key='_billing_phone' THEN m.meta_value END) phone,MAX(CASE WHEN m.meta_key='_billing_email' THEN m.meta_value END) email FROM {$wpdb->posts} p LEFT JOIN {$wpdb->postmeta} m ON m.post_id=p.ID AND m.meta_key IN ('_payment_method','_customer_user','_billing_phone','_billing_email') WHERE p.post_type='shop_order' AND p.post_date_gmt>='2026-11-01' GROUP BY p.ID,p.post_status ORDER BY p.ID DESC",ARRAY_A);
+          $stats=[];$n=0;
+          foreach($rows as $r){$g=$r['gateway']?:'unknown';if(!isset($stats[$g]))$stats[$g]=['total'=>0,'guest'=>0,'guest_with_phone'=>0,'guest_with_email'=>0];$stats[$g]['total']++;if(empty($r['customer'])){$stats[$g]['guest']++;if(!empty($r['phone']))$stats[$g]['guest_with_phone']++;if(!empty($r['email']))$stats[$g]['guest_with_email']++;if($n++<20)echo 'GUEST_ORDER_ID='.(int)$r['ID'].' STATUS='.$r['post_status'].' GATEWAY='.$g.' PHONE_PRESENT='.(int)!empty($r['phone']).' EMAIL_PRESENT='.(int)!empty($r['email'])."\n";}}
+          echo 'CHANNEL_ACCOUNT_COVERAGE='.json_encode($stats)."\n";
+          echo 'MY_ACCOUNT_PAGE='.wc_get_page_id('myaccount').' STATUS='.get_post_status(wc_get_page_id('myaccount'))."\n";
+          echo 'AUDIT_READ_ONLY=yes'."\n";
+          PHP
