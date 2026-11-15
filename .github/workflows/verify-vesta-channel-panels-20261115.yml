@@ -39,7 +39,7 @@ jobs:
           echo 'REMAINING_ACCOUNT_ISSUES='.json_encode($issues)."\n";
           if($bad)throw new Exception('panel_identity_verification_failed');
           $o=wc_get_order(103272);
-          echo 'ORDER_103272_CONTACT_SHAPE='.json_encode(['phone_digits'=>strlen(preg_replace('/[^0-9]/','',strtr($o->get_billing_phone(),['۰'=>'0','۱'=>'1','۲'=>'2','۳'=>'3','۴'=>'4','۵'=>'5','۶'=>'6','۷'=>'7','۸'=>'8','۹'=>'9']))),'valid_mobile'=>(bool)vesta_otp_phone($o->get_billing_phone()),'real_email'=>(bool)is_email($o->get_billing_email())])."\n";
+          echo 'ORDER_103272_CONTACT_SHAPE='.json_encode(['phone_digits'=>strlen(preg_replace('/[^0-9]/','',strtr($o->get_billing_phone(),['۰'=>'0','۱'=>'1','۲'=>'2','۳'=>'3','۴'=>'4','۵'=>'5','۶'=>'6','۷'=>'7','۸'=>'8','۹'=>'9']))),'prefix4'=>substr(preg_replace('/[^0-9]/','',$o->get_billing_phone()),0,4),'valid_mobile'=>(bool)vesta_otp_phone($o->get_billing_phone()),'real_email'=>(bool)is_email($o->get_billing_email())])."\n";
           echo 'RETRY_WORKER='.json_encode(Vesta_Channel_Customers::sweep())."\n";
           echo 'RETRY_HEARTBEAT='.json_encode(get_option('vesta_channel_accounts_heartbeat'))."\n";
           $s=get_option('bazara_visitor_settings',[]);
