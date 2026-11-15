@@ -60,7 +60,7 @@ if(get_woocommerce_currency()!=='IRT'||$s['selectCurrencySoftware']!=='toman'||$
 $code=file_get_contents('/var/www/html/wp-content/plugins/bazara/classes/class.bazara.api.php');
 $a=strpos($code,'public function bazara_save_order(');$b=strpos($code,'    private function get_selected_bank_id(',$a);$part=substr($code,$a,$b-$a);
 if(strpos($part,'VC_BAZARA_OUTBOUND_RIAL_ONLY_20261110')!==false)throw new Exception('rial_override_remains');
-if(substr_count($part,"$"."SoftwareCurrency =")!==1)throw new Exception('unexpected_currency_override');
+if(preg_match_all('/\\$SoftwareCurrency\\s*=(?!=)/',$part)!==1)throw new Exception('unexpected_currency_override');
 if(strpos(file_get_contents('/var/www/html/wp-content/mu-plugins/vesta-accounting-reliability.php'),"update_meta_data('_vcar_money_multiplier',1)")===false)throw new Exception('unit_not_stamped');
 echo "OUTBOUND_UNIT=TOMAN; LEGACY_VERIFICATION=RIAL; NO_FINANCIAL_WRITES_IN_DEPLOY=yes\\n";
 """)

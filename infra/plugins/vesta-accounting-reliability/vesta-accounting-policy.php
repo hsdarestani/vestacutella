@@ -29,10 +29,11 @@ function vcar_bank($settings, $method) {
     }
     return count($ids) === 1 && $ids[0] > 0 ? $ids[0] : 0;
 }
-function vcar_verify($order, $row, $lines, $receipts, $bank, $transfers=array(), $multiplier=10) {
+function vcar_verify($order, $row, $lines, $receipts, $bank, $transfers=array(), $multiplier=null) {
     if (!empty($row['Deleted']) || (int)($row['OrderClientId'] ?? 0) !== (int)$order->get_id()) return 'remote_identity';
     if ($order->get_currency() !== 'IRT') return 'unsupported_currency';
     if ((float)$order->get_total_tax() != 0 || count($order->get_items('fee'))) return 'unsupported_tax_or_fee';
+    if ($multiplier === null) $multiplier = method_exists($order,'get_meta') ? (int)($order->get_meta('_vcar_money_multiplier') ?: 10) : 10;
     if (!in_array($multiplier, array(1,10), true)) return 'unsupported_accounting_unit';
     $expected = array();
     foreach ($order->get_items('line_item') as $item) {

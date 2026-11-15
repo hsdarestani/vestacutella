@@ -53,3 +53,6 @@ check(vcar_verify($o,$row,$lines,$receipts,55,$transfers,1)==='line_quantity_or_
 check(vcar_verify($o,$tomanRow,$tomanLines,$receipts,55,$tomanTransfers)==='line_quantity_or_amount','legacy_rial_invoice_cannot_accept_toman_amounts');
 $wrongUnitReceipt=$tomanTransfers;$wrongUnitReceipt[0]['Amount']=2000;
 check(vcar_verify($o,$tomanRow,$tomanLines,$receipts,55,$wrongUnitReceipt,1)==='receipt_amount','mixed_toman_invoice_rial_receipt_rejected');
+
+class TestTomanOrder extends TestOrder { function get_meta($key){return $key==='_vcar_money_multiplier'?1:0;} }
+check(vcar_verify(new TestTomanOrder,$tomanRow,$tomanLines,$receipts,55,$tomanTransfers)==='','standalone_monitor_uses_persisted_toman_unit');

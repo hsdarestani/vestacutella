@@ -1,4 +1,5 @@
 name: Restore Vesta outgoing Bazara invoices to Toman
+# Verify currency assignments independently of equality comparisons.
 on:
   push:
     branches: [main]
