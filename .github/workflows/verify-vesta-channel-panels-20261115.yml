@@ -48,3 +48,5 @@ jobs:
           echo 'CHANNEL_PANEL_FINAL_READBACK=passed'."\n";
           PHP
           sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'test -s /etc/cron.d/vesta-channel-customers && systemctl is-active cron && echo CHANNEL_RETRY_CRON_INSTALLED=yes'
+
+# Final read-back after the observed 098 prefix was normalized and order 103272 linked.
