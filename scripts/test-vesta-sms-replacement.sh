@@ -60,7 +60,7 @@ cp --remove-destination /tmp/vesta-sms-login.php "$STAGE/plugins/vesta-sms-login
 # A database clone must never share Redis user/option cache entries with production.
 cat > "$STAGE/object-cache.php" <<'PHP'
 <?php
-require_once ABSPATH . WPINC . '/cache.php';
+// Define no cache functions: WordPress loads its native cache with persistent DB transients.
 PHP
 cp -al "$RUNTIME/wp-content/mu-plugins" "$STAGE/mu-plugins"
 cat > "$STAGE/mu-plugins/000-vesta-isolated-test.php" <<'PHP'

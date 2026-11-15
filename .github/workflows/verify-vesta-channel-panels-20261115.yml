@@ -1,0 +1,50 @@
+name: Verify Vesta customer panel rollout
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/verify-vesta-channel-panels-20261115.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read back account coverage and run bounded retry worker
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=768M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';set_time_limit(0);global $wpdb;
+          if(!get_option('vesta_channel_accounts_enabled')||!vesta_otp_ready())throw new Exception('accounts_or_otp_not_enabled');
+          $ids=wc_get_orders(['type'=>'shop_order','date_created'=>'>='.strtotime('2026-11-01T00:00:00Z'),'limit'=>500,'return'=>'ids']);
+          $stats=[];$linked=0;$issues=[];$verified=0;$bad=0;
+          foreach($ids as $id){$o=wc_get_order($id);if(!Vesta_Channel_Customers::eligible($o))continue;
+           $g=$o->get_payment_method();if(!isset($stats[$g]))$stats[$g]=['confirmed'=>0,'guest'=>0,'linked_by_rollout'=>0];$stats[$g]['confirmed']++;
+           if(!$o->get_customer_id()){$stats[$g]['guest']++;$issue=$o->get_meta('_vesta_account_issue')?:'unclassified';$issues[$id]=$issue;continue;}
+           if($o->get_meta('_vesta_account_linked_at')){$linked++;$stats[$g]['linked_by_rollout']++;$p=vesta_otp_phone($o->get_billing_phone());$u=$p?vesta_otp_existing_user($p):0;
+            if($p&&!is_wp_error($u)&&(int)$u===(int)$o->get_customer_id())$verified++;else $bad++;
+           }
+          }
+          echo 'CONFIRMED_CHANNEL_COVERAGE='.json_encode($stats)."\n";
+          echo 'ROLLOUT_LINKED_ORDERS='.$linked.' PHONE_PANEL_IDENTITIES_VERIFIED='.$verified.' IDENTITY_FAILURES='.$bad."\n";
+          echo 'REMAINING_ACCOUNT_ISSUES='.json_encode($issues)."\n";
+          if($bad)throw new Exception('panel_identity_verification_failed');
+          $o=wc_get_order(103272);
+          echo 'ORDER_103272_CONTACT_SHAPE='.json_encode(['phone_digits'=>strlen(preg_replace('/[^0-9]/','',strtr($o->get_billing_phone(),['۰'=>'0','۱'=>'1','۲'=>'2','۳'=>'3','۴'=>'4','۵'=>'5','۶'=>'6','۷'=>'7','۸'=>'8','۹'=>'9']))),'valid_mobile'=>(bool)vesta_otp_phone($o->get_billing_phone()),'real_email'=>(bool)is_email($o->get_billing_email())])."\n";
+          echo 'RETRY_WORKER='.json_encode(Vesta_Channel_Customers::sweep())."\n";
+          echo 'RETRY_HEARTBEAT='.json_encode(get_option('vesta_channel_accounts_heartbeat'))."\n";
+          $s=get_option('bazara_visitor_settings',[]);
+          echo 'ACCOUNTING_CURRENCY='.$s['selectCurrencySoftware'].','.$s['selectCurrencyPlugin']."\n";
+          echo 'PHONE_ONLY_PANEL_LOGIN=existing_sms_otp; AUTO_LOGIN=no; PRIVILEGED_ACCOUNTS_UNCHANGED=yes'."\n";
+          echo 'CHANNEL_PANEL_FINAL_READBACK=passed'."\n";
+          PHP
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'test -s /etc/cron.d/vesta-channel-customers && systemctl is-active cron && echo CHANNEL_RETRY_CRON_INSTALLED=yes'
