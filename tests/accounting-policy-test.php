@@ -44,3 +44,12 @@ check(vcar_verify($o,$row,$lines,$receipts,99,$transfers)==='receipt_bank','wron
 $bad=$transfers;$bad[0]['Amount']=200;
 check(vcar_verify($o,$row,$lines,$receipts,55,$bad)==='receipt_amount','rial_toman_error_rejected');
 check(vcar_verify($o,$row,$lines,$receipts,55,array())==='bank_transfer_unverified','receipt_presence_alone_not_success');
+
+$tomanRow=$row;$tomanRow['SendCost']=20;
+$tomanLines=$lines;$tomanLines[0]['Price']=100;$tomanLines[0]['Discount']=20;
+$tomanTransfers=$transfers;$tomanTransfers[0]['Amount']=200;
+check(vcar_verify($o,$tomanRow,$tomanLines,$receipts,55,$tomanTransfers,1)==='', 'toman_invoice_discount_shipping_and_receipt_match');
+check(vcar_verify($o,$row,$lines,$receipts,55,$transfers,1)==='line_quantity_or_amount','new_toman_invoice_cannot_accept_rial_amounts');
+check(vcar_verify($o,$tomanRow,$tomanLines,$receipts,55,$tomanTransfers)==='line_quantity_or_amount','legacy_rial_invoice_cannot_accept_toman_amounts');
+$wrongUnitReceipt=$tomanTransfers;$wrongUnitReceipt[0]['Amount']=2000;
+check(vcar_verify($o,$tomanRow,$tomanLines,$receipts,55,$wrongUnitReceipt,1)==='receipt_amount','mixed_toman_invoice_rial_receipt_rejected');

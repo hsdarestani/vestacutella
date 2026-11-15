@@ -20,11 +20,11 @@ class FakeOrder {
  function get_id(){return $this->id;}function get_date_paid(){return true;}
  function has_status($s){return in_array('processing',$s,true);}
  function get_currency(){return 'IRT';}function get_total_tax(){return 0;}
- function get_payment_method(){return 'wc_zibal';}function get_meta($key){return $this->id===2?($GLOBALS['local_ack']??0):0;}
+ function get_payment_method(){return 'wc_zibal';}function get_meta($key){if($key==='_vcar_money_multiplier')return $GLOBALS['money_unit'][$this->id]??0;return $this->id===2?($GLOBALS['local_ack']??0):0;}
  function get_date_created(){return new DateTime('2026-11-13T00:00:00Z');}
  function get_items($type){return $type==='fee'?[]:[new FakeItem($this->id)];}
  function get_shipping_total(){return 20;}function get_total(){return 200;}
- function update_meta_data($k,$v){if($k==='mahak_id')$GLOBALS['ack_written']=$v;}function save_meta_data(){}
+ function update_meta_data($k,$v){if($k==='_vcar_money_multiplier')$GLOBALS['money_unit'][$this->id]=$v;if($k==='mahak_id')$GLOBALS['ack_written']=$v;}function save_meta_data(){}
 }
 class FakeDB {
  public $prefix='wp_',$posts='wp_posts',$rows=[];
@@ -47,12 +47,12 @@ define('ARRAY_A','ARRAY_A');
 class BazaraApi {
  function __construct($arg){}
  function get_all_data($token,$params){
-  $exists=$GLOBALS['remote_exists'];
+  $exists=$GLOBALS['remote_exists'];$scale=($GLOBALS['money_unit'][2]??10)/10;
   return ['success'=>true,'message'=>[
-   'Orders'=>$exists?[['OrderId'=>88,'OrderClientId'=>2,'ReceiptId'=>null,'SendCost'=>200]]:[],
-   'OrderDetails'=>$exists?[['OrderId'=>88,'ProductDetailId'=>9,'Count1'=>2,'Price'=>1000,'Discount'=>200]]:[],
+   'Orders'=>$exists?[['OrderId'=>88,'OrderClientId'=>2,'ReceiptId'=>null,'SendCost'=>200*$scale]]:[],
+   'OrderDetails'=>$exists?[['OrderId'=>88,'ProductDetailId'=>9,'Count1'=>2,'Price'=>1000*$scale,'Discount'=>200*$scale]]:[],
    'Receipts'=>$exists?[['OrderId'=>88,'ReceiptId'=>44,'CashAmount'=>0]]:[],
-   'Cheques'=>$exists?[['ReceiptId'=>44,'BankId'=>55,'Amount'=>2000,'Type'=>2]]:[]
+   'Cheques'=>$exists?[['ReceiptId'=>44,'BankId'=>55,'Amount'=>2000*$scale,'Type'=>2]]:[]
   ]];
  }
  function bazara_save_order($id,$token){
@@ -70,7 +70,7 @@ function reset_case($remote,$ambiguous){
  $GLOBALS['options']=['vcar_schema'=>'1','vcar_history_scan_complete'=>time(),'vcar_sender_enabled'=>true,
  'bazara_visitor_settings'=>['banksMethods'=>'[{"method":"wc_zibal","name":"55"}]']];
  $GLOBALS['remote_exists']=$remote;$GLOBALS['ambiguous']=$ambiguous;$GLOBALS['sends']=0;$GLOBALS['local_ack']=0;$GLOBALS['ack_written']=0;
- $GLOBALS['vendor_error']='';$GLOBALS['deadlock_mode']=false;
+ $GLOBALS['vendor_error']='';$GLOBALS['deadlock_mode']=false;$GLOBALS['money_unit']=[];
 }
 function ensure($ok,$name){if(!$ok){fwrite(STDERR,'FAIL '.$name."\n");exit(1);}echo 'PASS '.$name."\n";}
 reset_case(false,false);Vesta_Accounting_Reliability::tick(true,2);
@@ -93,3 +93,5 @@ ensure($GLOBALS['sends']===1&&$GLOBALS['wpdb']->rows[2]['state']==='retry'&&$GLO
 $GLOBALS['deadlock_mode']=false;$GLOBALS['ambiguous']=false;$GLOBALS['wpdb']->rows[2]['next_attempt']=0;
 Vesta_Accounting_Reliability::tick(true,2);
 ensure($GLOBALS['sends']===2&&$GLOBALS['wpdb']->rows[2]['state']==='verified','definite_rollback_retries_safely_and_verifies_actual_remote_invoice');
+
+ensure(($GLOBALS['money_unit'][2]??0)===1,'new_submission_persists_toman_unit_before_write');

@@ -95,7 +95,7 @@ class Vesta_Accounting_Reliability {
         $r=$rows[0];$erp=(int)$r['OrderId'];
         $local=(int)$o->get_meta('mahak_id');
         if($local>0&&$local!==$erp){self::set($id,'conflict','local_remote_invoice_id_disagree',array('remote_id'=>$erp,'next_attempt'=>time()+3600));return true;}
-        $error=vcar_verify($o,$r,$cloud['details'][$erp]??array(),$cloud['receipts'][$erp]??array(),$bank,$cloud['transfers']);
+        $error=vcar_verify($o,$r,$cloud['details'][$erp]??array(),$cloud['receipts'][$erp]??array(),$bank,$cloud['transfers'],(int)($o->get_meta('_vcar_money_multiplier') ?: 10));
         self::set($id,$error?'cloud_mismatch':'verified',$error,array('remote_id'=>$erp,'next_attempt'=>time()+3600));
         if(!$error) {
             if(!$local)$o->update_meta_data('mahak_id',$erp);
@@ -154,6 +154,9 @@ class Vesta_Accounting_Reliability {
                 }
                 if($sent >= $maxSend || !get_option('vcar_sender_enabled',false))continue;
                 // Persist BEFORE making a potentially ambiguous external mutation.
+                // Persist the outgoing unit before reservation; legacy/uncertain invoices retain their original unit.
+                $o->update_meta_data('_vcar_money_multiplier',1);
+                $o->save_meta_data();
                 self::set($id,'sending','',array('attempts'=>(int)$q['attempts']+1,'submitted_at'=>time()));
                 $prior=get_post_meta($id,'mahak_error',true);
                 if($prior!=='')add_post_meta($id,'_vcar_vendor_error_before_'.((int)$q['attempts']+1),$prior,true);

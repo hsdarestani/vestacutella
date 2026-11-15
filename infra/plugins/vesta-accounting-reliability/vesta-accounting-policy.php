@@ -29,10 +29,11 @@ function vcar_bank($settings, $method) {
     }
     return count($ids) === 1 && $ids[0] > 0 ? $ids[0] : 0;
 }
-function vcar_verify($order, $row, $lines, $receipts, $bank, $transfers=array()) {
+function vcar_verify($order, $row, $lines, $receipts, $bank, $transfers=array(), $multiplier=10) {
     if (!empty($row['Deleted']) || (int)($row['OrderClientId'] ?? 0) !== (int)$order->get_id()) return 'remote_identity';
     if ($order->get_currency() !== 'IRT') return 'unsupported_currency';
     if ((float)$order->get_total_tax() != 0 || count($order->get_items('fee'))) return 'unsupported_tax_or_fee';
+    if (!in_array($multiplier, array(1,10), true)) return 'unsupported_accounting_unit';
     $expected = array();
     foreach ($order->get_items('line_item') as $item) {
         $pid = $item->get_variation_id() ?: $item->get_product_id();
@@ -42,7 +43,7 @@ function vcar_verify($order, $row, $lines, $receipts, $bank, $transfers=array())
         $k = (string)$detail;
         if (!isset($expected[$k])) $expected[$k] = array(0,0);
         $expected[$k][0] += (float)$item->get_quantity();
-        $expected[$k][1] += (float)$item->get_total() * 10;
+        $expected[$k][1] += (float)$item->get_total() * $multiplier;
     }
     $actual = array(); $sum = 0;
     foreach ($lines as $line) {
@@ -58,8 +59,8 @@ function vcar_verify($order, $row, $lines, $receipts, $bank, $transfers=array())
         if (!isset($actual[$key]) || abs($v[0]-$actual[$key][0]) > 0.00001 || abs($v[1]-$actual[$key][1]) > 0.51) return 'line_quantity_or_amount';
     }
     $shipping = (float)($row['SendCost'] ?? 0);
-    if (abs($shipping - (float)$order->get_shipping_total()*10) > 0.51 ||
-        abs($sum - (float)($row['Discount'] ?? 0) + $shipping - (float)$order->get_total()*10) > 0.51) return 'invoice_total_or_shipping';
+    if (abs($shipping - (float)$order->get_shipping_total()*$multiplier) > 0.51 ||
+        abs($sum - (float)($row['Discount'] ?? 0) + $shipping - (float)$order->get_total()*$multiplier) > 0.51) return 'invoice_total_or_shipping';
     $active = array_values(array_filter($receipts, function($r){return empty($r['Deleted']);}));
     if (count($active) !== 1) return count($active) ? 'multiple_receipts' : 'missing_receipt';
     $r = $active[0];
@@ -71,6 +72,6 @@ function vcar_verify($order, $row, $lines, $receipts, $bank, $transfers=array())
     $t=$transfers[0];
     if((int)($t['Type']??0)!==2)return 'receipt_transfer_type';
     if (!$bank || (int)($t['BankId']??0) !== $bank) return 'receipt_bank';
-    if (!isset($t['Amount']) || abs((float)$t['Amount']+(float)($r['CashAmount']??0) - (float)$order->get_total()*10) > 0.51) return 'receipt_amount';
+    if (!isset($t['Amount']) || abs((float)$t['Amount']+(float)($r['CashAmount']??0) - (float)$order->get_total()*$multiplier) > 0.51) return 'receipt_amount';
     return '';
 }

@@ -1,0 +1,33 @@
+name: Restore Vesta outgoing Bazara invoices to Toman
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/restore-vesta-bazara-toman-20261115.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-accounting-outbox-production
+  cancel-in-progress: false
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass php-cli
+      - name: Verify both legacy Rial and new Toman accounting
+        run: |
+          php tests/accounting-policy-test.php infra/plugins/vesta-accounting-reliability/vesta-accounting-policy.php
+          php tests/accounting-outbox-test.php infra/plugins/vesta-accounting-reliability/vesta-accounting-reliability.php
+          python3 -m py_compile scripts/restore-vesta-bazara-toman-20261115.py
+      - name: Back up and restore outgoing Toman under the accounting sender lock
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          stage="/tmp/vesta-restore-toman-${GITHUB_SHA}"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" "mkdir -m 0700 -p '$stage'"
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/restore-vesta-bazara-toman-20261115.py infra/plugins/vesta-accounting-reliability/*.php "root@$HOST:$stage/"
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" "python3 '$stage/restore-vesta-bazara-toman-20261115.py'"
