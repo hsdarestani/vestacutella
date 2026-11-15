@@ -18,7 +18,8 @@ gzip -t "$backup/accounts-before.sql.gz"
 echo "CUSTOMER_BACKUP_VERIFIED=$backup"
 expected=$(cat "$stage/otp-before.sha256")
 actual=$(sha256sum "$otp" | cut -d' ' -f1)
-[[ "$actual" = "$expected" ]] || { echo OTP_SOURCE_DRIFT_ABORT_NO_CHANGES=yes; exit 20; }
+candidate=$(sha256sum "$stage/vesta-sms-login.php" | cut -d' ' -f1)
+[[ "$actual" = "$expected" || "$actual" = "$candidate" ]] || { echo OTP_SOURCE_DRIFT_ABORT_NO_CHANGES=yes; exit 20; }
 sha256sum "$base/mu-plugins/vesta-accounting-policy.php" "$base/mu-plugins/vesta-accounting-reliability.php" "$base/plugins/bazara/classes/class.bazara.api.php" > "$backup/financial-code.sha256"
 docker cp "$stage" vc-vesta:/tmp/vesta-channel-accounts-check
 for f in vesta-sms-login.php vesta-channel-customers.php verify-vesta-channel-customers.php;do

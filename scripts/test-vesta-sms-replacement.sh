@@ -55,12 +55,26 @@ echo '=== Build isolated plugin directory using hardlinks (no writes to source f
 cp -al "$RUNTIME/wp-content/plugins" "$STAGE/plugins"
 # Keep legacy ionCube files under their disabled names to prevent PHP fatals.
 mkdir -p "$STAGE/plugins/vesta-sms-login"
-cp /tmp/vesta-sms-login.php "$STAGE/plugins/vesta-sms-login/vesta-sms-login.php"
+cp --remove-destination /tmp/vesta-sms-login.php "$STAGE/plugins/vesta-sms-login/vesta-sms-login.php"
+# Break the replaced plugin's hardlink and isolate runtime caches, mail and HTTP.
+# A database clone must never share Redis user/option cache entries with production.
+cat > "$STAGE/object-cache.php" <<'PHP'
+<?php
+require_once ABSPATH . WPINC . '/cache.php';
+PHP
+cp -al "$RUNTIME/wp-content/mu-plugins" "$STAGE/mu-plugins"
+cat > "$STAGE/mu-plugins/000-vesta-isolated-test.php" <<'PHP'
+<?php
+add_filter('pre_http_request',function($pre){return new WP_Error('isolated_test_no_network','External HTTP blocked in isolated tests');},1,3);
+add_filter('pre_wp_mail',function(){return true;},1,2);
+PHP
 echo '=== Start isolated site. Production WordPress files mounted read-only ==='
 docker run -d --name "$CT" --network "$NET" -p 127.0.0.1:18087:80 --memory 1000m \
   -v "$RUNTIME:/var/www/html:ro" \
   -v "$STAGE/wp-config.php:/var/www/html/wp-config.php:ro" \
   -v "$STAGE/plugins:/var/www/html/wp-content/plugins:ro" \
+  -v "$STAGE/object-cache.php:/var/www/html/wp-content/object-cache.php:ro" \
+  -v "$STAGE/mu-plugins:/var/www/html/wp-content/mu-plugins:ro" \
   "$IMAGE" >/dev/null
 sleep 8
 request() {

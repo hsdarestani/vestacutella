@@ -3,6 +3,8 @@ error_reporting(E_ERROR|E_PARSE);
 $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
 $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
 require '/var/www/html/wp-load.php';
+set_time_limit(0);
+register_shutdown_function(function(){ $e=error_get_last(); if($e && in_array($e['type'],[E_ERROR,E_PARSE,E_CORE_ERROR,E_COMPILE_ERROR],true)) echo 'CHANNEL_ACCEPTANCE_FATAL_TYPE='.$e['type'].' FILE='.basename($e['file']).' LINE='.$e['line']."\n"; });
 function require_channel($ok,$reason){if(!$ok)throw new RuntimeException($reason);}
 function snapshot_channel_order($o){
  $items=[];foreach($o->get_items() as $i)$items[]=[(int)$i->get_id(),(int)$i->get_product_id(),(int)$i->get_variation_id(),(float)$i->get_quantity(),(float)$i->get_subtotal(),(float)$i->get_total(),(float)$i->get_total_tax()];

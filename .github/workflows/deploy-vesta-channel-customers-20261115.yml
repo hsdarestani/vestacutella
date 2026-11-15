@@ -1,4 +1,5 @@
 name: Automatic Woo customer panels for Vesta sales channels
+# Accept an exact already-staged OTP candidate after independent regression checks.
 on:
   push:
     branches: [main]
