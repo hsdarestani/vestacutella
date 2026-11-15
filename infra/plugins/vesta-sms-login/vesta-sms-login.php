@@ -272,6 +272,47 @@ add_action('wp_ajax_vesta_otp_recovery_send', 'vesta_otp_recovery_send');
 add_action('wp_ajax_nopriv_vesta_otp_recovery_verify', 'vesta_otp_recovery_verify');
 add_action('wp_ajax_vesta_otp_recovery_verify', 'vesta_otp_recovery_verify');
 
+/** Resolve or create a customer under the same identity lock for OTP and channel orders.
+ * This does not authenticate a session or send a message. Only OTP verification logs in.
+ */
+function vesta_otp_resolve_customer($phone) {
+    global $wpdb;
+    if (!$phone || vesta_otp_phone($phone) !== $phone) return new WP_Error('invalid_mobile', 'شماره موبایل معتبر نیست.');
+    $lock = 'vesta_otp_' . substr(vesta_otp_phone_key($phone), 0, 32);
+    if ((int)$wpdb->get_var($wpdb->prepare('SELECT GET_LOCK(%s, 5)', $lock)) !== 1) {
+        return new WP_Error('mobile_lookup_busy', 'درخواست در حال بررسی است. دوباره تلاش کنید.');
+    }
+    try {
+        $user_id = vesta_otp_existing_user($phone);
+        if (is_wp_error($user_id)) return $user_id;
+        if (!$user_id) {
+            $username = 'vesta_mobile_' . substr(hash_hmac('sha256', $phone, wp_salt('secure_auth')), 0, 24);
+            if (username_exists($username)) return new WP_Error('mobile_username_conflict', 'امکان ثبت‌نام وجود ندارد. با پشتیبانی تماس بگیرید.');
+            $user_id = wp_insert_user(array(
+                'user_login'=>$username,
+                'user_pass'=>wp_generate_password(40, true, true),
+                'role'=>'customer',
+            ));
+            if (is_wp_error($user_id)) return $user_id;
+            update_user_meta($user_id, 'smsir_phone', $phone);
+            update_user_meta($user_id, 'phone', $phone);
+            update_user_meta($user_id, 'billing_phone', $phone);
+            // Read back the actual identity binding before exposing an order to this account.
+            if (vesta_otp_phone(get_user_meta($user_id,'smsir_phone',true)) !== $phone) {
+                return new WP_Error('mobile_binding_failed', 'ثبت شماره حساب کامل نشد. با پشتیبانی تماس بگیرید.');
+            }
+        }
+        $user = get_user_by('id', $user_id);
+        if (!$user || !array_intersect(array('customer','subscriber'), (array)$user->roles) ||
+            array_intersect(array('administrator','editor','author','shop_manager'), (array)$user->roles)) {
+            return new WP_Error('non_customer_account', 'این حساب نیاز به ورود با رمز عبور دارد.');
+        }
+        return (int)$user_id;
+    } finally {
+        $wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)', $lock));
+    }
+}
+
 function vesta_otp_verify() {
     vesta_otp_ajax_check();
     $phone = vesta_otp_phone(isset($_POST['phone']) ? wp_unslash($_POST['phone']) : '');
@@ -297,7 +338,7 @@ function vesta_otp_verify() {
     }
     // A verified code is single-use, even when account lookup or creation fails.
     delete_transient($challenge_key);
-    $user_id = vesta_otp_existing_user($phone);
+    $user_id = vesta_otp_resolve_customer($phone);
     if (is_wp_error($user_id)) {
         if ($user_id->get_error_code() === 'duplicate_mobile') {
             $recovery_token = bin2hex(random_bytes(32));
@@ -310,28 +351,7 @@ function vesta_otp_verify() {
         }
         wp_send_json_error(array('message'=>$user_id->get_error_message()), 409);
     }
-    if (!$user_id) {
-        $username = 'vesta_mobile_' . substr(hash_hmac('sha256', $phone, wp_salt('secure_auth')), 0, 24);
-        if (username_exists($username)) {
-            wp_send_json_error(array('message'=>'امکان ثبت‌نام وجود ندارد. با پشتیبانی تماس بگیرید.'), 409);
-        }
-        $user_id = wp_insert_user(array(
-            'user_login'=>$username,
-            'user_pass'=>wp_generate_password(40, true, true),
-            'role'=>'customer',
-        ));
-        if (is_wp_error($user_id)) {
-            wp_send_json_error(array('message'=>'ساخت حساب کاربری ناموفق بود.'), 500);
-        }
-        update_user_meta($user_id, 'smsir_phone', $phone);
-        update_user_meta($user_id, 'phone', $phone);
-        update_user_meta($user_id, 'billing_phone', $phone);
-    }
     $user = get_user_by('id', $user_id);
-    if (!$user || !array_intersect(array('customer','subscriber'), (array) $user->roles) || array_intersect(array('administrator','editor','author','shop_manager'), (array) $user->roles)) {
-        // Do not give passwordless access to privileged or non-customer WordPress accounts.
-        wp_send_json_error(array('message'=>'این حساب نیاز به ورود با رمز عبور دارد.'), 403);
-    }
     wp_set_current_user($user_id);
     wp_set_auth_cookie($user_id, true, is_ssl());
     do_action('wp_login', $user->user_login, $user);
