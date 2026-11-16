@@ -6,6 +6,7 @@
  */
 if (!defined('ABSPATH')) exit;
 require_once __DIR__.'/vesta-accounting-policy.php';
+require_once __DIR__.'/vesta-accounting-identity.php';
 class Vesta_Accounting_Reliability {
     public static $dispatching = false;
     static function table() { global $wpdb; return $wpdb->prefix.'vesta_accounting_outbox'; }
@@ -96,6 +97,8 @@ class Vesta_Accounting_Reliability {
         $local=(int)$o->get_meta('mahak_id');
         if($local>0&&$local!==$erp){self::set($id,'conflict','local_remote_invoice_id_disagree',array('remote_id'=>$erp,'next_attempt'=>time()+3600));return true;}
         $error=vcar_verify($o,$r,$cloud['details'][$erp]??array(),$cloud['receipts'][$erp]??array(),$bank,$cloud['transfers'],(int)($o->get_meta('_vcar_money_multiplier') ?: 10));
+        // Financial parity alone cannot prove the invoice belongs to the correct person.
+        if (!$error) $error=vcar_identity_guard($o,(int)($r['PersonId']??0));
         self::set($id,$error?'cloud_mismatch':'verified',$error,array('remote_id'=>$erp,'next_attempt'=>time()+3600));
         if(!$error) {
             if(!$local)$o->update_meta_data('mahak_id',$erp);
@@ -199,7 +202,9 @@ class Vesta_Accounting_Reliability {
             if((float)$it->get_quantity()<=0)return 'invalid_quantity';
             $sum+=(float)$it->get_total();
         }
-        return abs($sum+(float)$o->get_shipping_total()-(float)$o->get_total())>0.51?'order_total_mismatch':'';
+        if (abs($sum+(float)$o->get_shipping_total()-(float)$o->get_total())>0.51) return 'order_total_mismatch';
+        // Never submit an invoice to an ERP person whose identity was inherited from the wrong Woo account.
+        return vcar_identity_guard($o);
     }
     static function dashboard() {
         if(!current_user_can('manage_woocommerce'))return;
