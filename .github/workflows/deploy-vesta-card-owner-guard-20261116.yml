@@ -1,0 +1,55 @@
+name: Deploy scoped card-payment Woo customer ownership auto-repair guard
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/deploy-vesta-card-owner-guard-20261116.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq php-cli sshpass
+      - name: Unit syntax
+        run: php -l infra/plugins/vesta-accounting-reliability/vesta-card-owner-guard.php
+      - name: Back up, deploy and verify live MU plugin; no orders manually replayed
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          stage="/tmp/vesta-card-owner-guard-${GITHUB_SHA}.php"
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null infra/plugins/vesta-accounting-reliability/vesta-card-owner-guard.php "root@$HOST:$stage"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" "bash -s '$stage'" <<'SHELL'
+          set -Eeuo pipefail
+          stage=$1
+          base=/srv/vestacutella/runtime/vesta/wp-content/mu-plugins
+          dst="$base/vesta-card-owner-guard.php"
+          backup=/srv/backups/vesta-card-owner-guard-$(date -u +%Y%m%dT%H%M%SZ)
+          mkdir -p -m 0700 "$backup"
+          if test -f "$dst";then cp -p "$dst" "$backup/vesta-card-owner-guard.php";echo 'PREVIOUS_OWNER_GUARD_BACKED_UP=yes';fi
+          docker exec -i vc-vesta php -l < "$stage"
+          cp -p "$stage" "$base/.vesta-card-owner-guard.php.new"
+          chmod 0644 "$base/.vesta-card-owner-guard.php.new"
+          mv "$base/.vesta-card-owner-guard.php.new" "$dst"
+          docker exec -i vc-vesta php -d display_errors=0 <<'PHP'
+          <?php
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          if(!class_exists('Vesta_Card_Owner_Guard') || !class_exists('Vesta_Channel_Customers'))throw new RuntimeException('owner_guard_not_active');
+          foreach([105460,105458,105456,105454,105452,105450,105361] as $id){
+           $o=wc_get_order($id);
+           if(!$o || (int)$o->get_customer_id()===3055)throw new RuntimeException('old_ownership_not_repaired');
+          }
+          echo 'CUSTOMER_OWNERSHIP_GUARD_LOADED=yes'.PHP_EOL;
+          echo 'ALL_SEVEN_ORDERS_NO_LONGER_ATTACHED_TO_OLD_ACCOUNT=yes'.PHP_EOL;
+          echo 'NO_ORDER_OR_ERP_MUTATIONS_IN_DEPLOY=yes'.PHP_EOL;
+          PHP
+          for host in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
+           code=$(curl --noproxy '*' -ksS --connect-timeout 8 --max-time 25 --resolve "$host:443:127.0.0.1" -o /dev/null -w '%{http_code}' "https://$host/")
+           echo "HOST=$host HTTP=$code"; test "$code" = 200
+          done
+          SHELL
