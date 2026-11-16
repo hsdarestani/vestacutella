@@ -11,6 +11,7 @@ Patch exactly the known reviewed Bazara methods; abort on vendor source drift.
 No picture synchronization is enabled by this script.
 """
 import argparse
+import os
 import pathlib
 import re
 import sys
@@ -125,7 +126,7 @@ def main():
         staging = path.with_name(path.name+".vesta-safe.next")
         staging.write_text(new, encoding="utf-8")
         staging.chmod(path.stat().st_mode)
-        staging.chown(path.stat().st_uid, path.stat().st_gid)
+        os.chown(staging, path.stat().st_uid, path.stat().st_gid)
         staging.replace(path)
         print(f"IMAGE_SAFE_PATCH_INSTALLED={path.name}")
     print("IMAGE_SAFE_PATCH_INSTALLED_KEEPS_SYNC_SETTING_UNCHANGED=yes")
