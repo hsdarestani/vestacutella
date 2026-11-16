@@ -1,0 +1,71 @@
+name: Vesta final post-remediation independent finance/identity readback (no writes)
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-incident-final-readback-20261116.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 14
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Cloud identity+freight+amount parity, queue, sender, person cron
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'SHELL'
+          set -Eeuo pipefail
+          test -s /etc/cron.d/vesta-safe-person-worker
+          test -s /etc/cron.d/vesta-accounting-outbox
+          systemctl is-active --quiet cron
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1024M <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $api=new BazaraApi(true);$cloud=Vesta_Accounting_Reliability::cloud($api);
+          $sender=(int)get_option('vcar_sender_enabled',false);
+          $c=['eligible_since_nov12'=>0,'cloud_present'=>0,'verified_full'=>0,'financial_mismatch'=>0,'identity_mismatch'=>0,'cloud_missing'=>0,'recent_valid_woo_no_remote'=>0];
+          $settings=get_option('bazara_visitor_settings',[]);
+          $ids=$wpdb->get_col("SELECT ID FROM {$wpdb->posts} WHERE post_type='shop_order' AND post_date_gmt>='2026-11-12 00:00:00' ORDER BY ID DESC LIMIT 400");
+          $newest=0;
+          foreach($ids as $id){
+            $o=wc_get_order((int)$id);if(!vcar_eligible($o))continue;
+            $c['eligible_since_nov12']++;
+            $rows=$cloud['orders'][(int)$id]??[];
+            if(count($rows)!==1) {
+              $c['cloud_missing']++;
+              if(vcar_identity_guard($o)==='')$c['recent_valid_woo_no_remote']++;
+              continue;
+            }
+            $c['cloud_present']++;
+            $r=$rows[0];$erp=(int)$r['OrderId'];
+            $bank=vcar_bank($settings,$o->get_payment_method());
+            $financial=vcar_verify($o,$r,$cloud['details'][$erp]??[],$cloud['receipts'][$erp]??[],$bank,$cloud['transfers'],(int)($o->get_meta('_vcar_money_multiplier')?:10));
+            $identity=vcar_identity_guard($o,(int)($r['PersonId']??0));
+            if(!$financial&&!$identity)$c['verified_full']++;
+            else{
+              if($financial)$c['financial_mismatch']++;
+              if($identity)$c['identity_mismatch']++;
+            }
+          }
+          $q=$wpdb->get_results('SELECT state,reason,COUNT(*) n FROM '.Vesta_Accounting_Reliability::table()." WHERE state NOT IN ('verified') GROUP BY state,reason",ARRAY_A);
+          echo 'SENDER_ENABLED='.$sender.PHP_EOL;
+          echo 'POST_FIX_NOV12_ORDERS='.json_encode($c).PHP_EOL;
+          echo 'UNVERIFIED_OUTBOX_REASONS='.json_encode($q).PHP_EOL;
+          echo 'PERSON_CRON_FILE_PRESENT=yes'.PHP_EOL;
+          echo 'READ_ONLY_CLOUD_AND_WOO_AUDIT=yes'.PHP_EOL;
+          PHP
+          SHELL
+      - name: Endpoints externally healthy
+        run: |
+          set -Eeuo pipefail
+          for host in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
+            code=$(curl -L -sS --retry 1 --connect-timeout 8 --max-time 30 -o /dev/null -w '%{http_code}' "https://$host/")
+            echo "PUBLIC_HOST=$host HTTP=$code";test "$code" = 200
+          done
