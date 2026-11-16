@@ -1,0 +1,28 @@
+name: Vesta full backup before Mahak image changes
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/backup-vesta-before-mahak-images-20261116.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-full-backup
+  cancel-in-progress: false
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash -n scripts/backup-vesta-before-mahak-images-20261116.sh
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Export database, archive images and files, verify checksums
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          stage="/tmp/vesta-image-backup-${GITHUB_SHA}.sh"
+          sshpass -e scp -o ConnectTimeout=18 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/backup-vesta-before-mahak-images-20261116.sh "root@$HOST:$stage"
+          sshpass -e ssh -o ConnectTimeout=18 -o ServerAliveInterval=15 -o ServerAliveCountMax=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" "bash '$stage'"
