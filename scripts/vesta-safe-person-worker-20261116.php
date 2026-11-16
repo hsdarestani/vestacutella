@@ -45,7 +45,8 @@ try{
     $owner=vesta_otp_existing_user($phone);
     if(is_wp_error($owner)||(int)$owner!==$uid){$review++;continue;}
     $email=trim((string)$o->get_billing_email());
-    if($email!=='' && is_email($email)){
+    if($email!=='' && !is_email($email)){$review++;continue;}
+    if($email!==''){
        $emailOwner=get_user_by('email',$email);
        if($emailOwner && (int)$emailOwner->ID!==$uid){$review++;continue;}
     }
@@ -56,6 +57,10 @@ try{
         $name=vcar_identity_normalize_name(($person['FirstName']??'').' '.($person['LastName']??''));
         $ph=vesta_otp_phone((string)($person['Mobile']??''));
         if($pid<=0||$name!==$bill||$ph!==$phone){$review++;continue;}
+        if(getenv('VC_PERSON_WORKER_COMMIT')!=='yes'){
+            echo 'EXISTING_PERSON_RELINK_PLAN UID='.$uid.' PERSON_ID='.$pid.' NO_WRITES=yes'.PHP_EOL;
+            $n++;continue;
+        }
         update_user_meta($uid,'mahak_id',$pid);
         update_user_meta($uid,'_vesta_erp_cloud_verified_person_id',$pid);
         update_user_meta($uid,'_vesta_erp_cloud_verified_person_name',$name);
