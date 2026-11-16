@@ -22,6 +22,7 @@ class Vesta_Card_Owner_Guard {
             $o=wc_get_order($id);
             if(!$o || $o->get_payment_method()!=='pcs_smart_cardpay' ||
                (int)$o->get_customer_id()!==self::LEGACY_WOO_UID ||
+               !$o->get_date_created() || $o->get_date_created()->getTimestamp()<strtotime('2026-11-12 00:00:00 UTC') ||
                !$o->get_date_paid() ||
                !$o->has_status(array('processing','completed','processing5','pws-packaged','pws-shipping','arrival-shipment','pws-courier','pws-post')))return;
             $ph=vesta_otp_phone((string)$o->get_billing_phone());
