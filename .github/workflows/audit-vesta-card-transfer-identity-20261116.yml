@@ -1,0 +1,112 @@
+name: Read-only Vesta card-transfer invoice freight and ERP customer identity audit
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/audit-vesta-card-transfer-identity-20261116.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Prepare SSH client
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Compare real Woo orders with cloud invoice freight and customer record, without PII
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=768M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR | E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir'; $_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on'; $_SERVER['SERVER_PORT']='443'; $_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          global $wpdb;
+          if(!class_exists('BazaraApi') || !class_exists('Vesta_Accounting_Reliability')) { echo 'ACCOUNTING_PLUGIN_NOT_READY'.PHP_EOL; exit(10); }
+          $cloud = Vesta_Accounting_Reliability::cloud(new BazaraApi(true));
+          $settings = get_option('bazara_visitor_settings', []);
+          $pTable = $wpdb->prefix.'bazara_persons';
+          $pTableExists = ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $pTable)) === $pTable);
+          $norm = function($s) {
+            $s=str_replace(['ي','ك','ة','‌'], ['ی','ک','ه',' '], (string)$s);
+            return trim(preg_replace('/\s+/u',' ', $s));
+          };
+          $ids=$wpdb->get_col("SELECT ID FROM {$wpdb->posts} WHERE post_type='shop_order' AND post_date_gmt >= '2026-11-11 00:00:00' ORDER BY ID DESC LIMIT 1200");
+          $stat=['card_eligible'=>0,'card_cloud_missing'=>0,'card_with_shipping'=>0,'card_shipping_mismatch'=>0,'card_total_mismatch'=>0,'card_name_mismatch'=>0,'card_name_match'=>0,'card_name_unknown'=>0,'other_name_mismatch'=>0,'other_shipping_mismatch'=>0];
+          $shown=0; $schemaShown=false;
+          foreach ($ids as $id) {
+            $o=wc_get_order((int)$id);
+            if(!vcar_eligible($o)) continue;
+            $gateway=(string)$o->get_payment_method();
+            $card=($gateway==='pcs_smart_cardpay' || stripos($gateway,'card_to_card')!==false);
+            if($card)$stat['card_eligible']++;
+            $rows=$cloud['orders'][(int)$id]??[];
+            if(count($rows)!==1) {
+              if($card) {
+                $stat['card_cloud_missing']++;
+                if($shown++<90) echo 'CARD_CLOUD_MISSING ORDER_ID='.(int)$id.' COUNT='.count($rows).PHP_EOL;
+              }
+              continue;
+            }
+            $r=$rows[0];
+            if(!$schemaShown && $card) {
+              $allowed=['OrderClientId','OrderId','PersonId','PersonClientId','CustomerId','SendCost','Discount','Price','TotalAmount','TotalPrice','ReceiptId'];
+              echo 'CLOUD_INVOICE_FIELDS_PRESENT='.implode(',',array_values(array_intersect($allowed,array_keys($r)))).PHP_EOL;
+              $schemaShown=true;
+            }
+            $mult=(int)($o->get_meta('_vcar_money_multiplier')?:10);
+            if(!in_array($mult,[1,10],true)) $mult=0;
+            $wooShip=(float)$o->get_shipping_total();
+            $erpShip=(float)($r['SendCost']??0);
+            $shippingMismatch=($mult===0 || abs($wooShip*$mult-$erpShip)>0.51);
+            $details=$cloud['details'][(int)($r['OrderId']??0)]??[];
+            $net=0.0;
+            foreach($details as $d)if(empty($d['Deleted']))$net+=(float)($d['Price']??0)*(float)($d['Count1']??0)-(float)($d['Discount']??0);
+            $erpTotal=$net-(float)($r['Discount']??0)+$erpShip;
+            $wooTotal=(float)$o->get_total()*$mult;
+            $totalMismatch=($mult===0||abs($erpTotal-$wooTotal)>0.51);
+            $personId=0;
+            foreach(['PersonId','PersonClientId','CustomerId'] as $key) {
+              if(isset($r[$key]) && (int)$r[$key]>0) { $personId=(int)$r[$key]; break; }
+            }
+            $nameState='unknown';
+            if($pTableExists && $personId) {
+              $person=$wpdb->get_row($wpdb->prepare("SELECT FirstName,LastName FROM $pTable WHERE PersonId=%d AND Deleted=0 LIMIT 1",$personId));
+              if($person) {
+                $erpName=$norm(trim((string)$person->FirstName.' '.(string)$person->LastName));
+                $wooName=$norm(trim((string)$o->get_billing_first_name().' '.(string)$o->get_billing_last_name()));
+                if($erpName!=='' && $wooName!=='')$nameState=($erpName===$wooName)?'match':'mismatch';
+              }
+            }
+            if($card) {
+              if($wooShip>0)$stat['card_with_shipping']++;
+              if($shippingMismatch)$stat['card_shipping_mismatch']++;
+              if($totalMismatch)$stat['card_total_mismatch']++;
+              $stat['card_name_'.$nameState]++;
+            } else {
+              if($shippingMismatch)$stat['other_shipping_mismatch']++;
+              if($nameState==='mismatch')$stat['other_name_mismatch']++;
+            }
+            if($card && ($shown<90)) {
+              echo 'CARD_AUDIT ORDER_ID='.(int)$id.' GATEWAY='.$gateway.
+                ' WOO_TOTAL='.$o->get_total().' WOO_SHIPPING='.$wooShip.
+                ' ERP_COMPUTED_TOTAL='.$erpTotal.' ERP_SHIPPING='.$erpShip.' UNIT_MULTIPLIER='.$mult.
+                ' SHIPPING_MISMATCH='.(int)$shippingMismatch.' TOTAL_MISMATCH='.(int)$totalMismatch.
+                ' CUSTOMER_NAME_COMPARISON='.$nameState.PHP_EOL;
+              $shown++;
+            }
+            if(!$card && ($shippingMismatch || $nameState==='mismatch') && $shown<90) {
+              echo 'OTHER_MISMATCH ORDER_ID='.(int)$id.' GATEWAY='.$gateway.
+                ' SHIPPING_MISMATCH='.(int)$shippingMismatch.' CUSTOMER_NAME_COMPARISON='.$nameState.PHP_EOL;
+              $shown++;
+            }
+          }
+          echo 'AUDIT_COUNTS='.json_encode($stat,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'PERSON_TABLE_PRESENT='.(int)$pTableExists.PHP_EOL;
+          echo 'ACCOUNTING_SENDER_ENABLED='.(int)get_option('vcar_sender_enabled',false).PHP_EOL;
+          echo 'AUDIT_READ_ONLY_NO_WOO_OR_ERP_WRITES=yes'.PHP_EOL;
+          PHP
