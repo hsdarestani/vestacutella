@@ -57,18 +57,26 @@ jobs:
              exit "$rc"
           }
           trap rollback EXIT
-          # Acquire existing sender lock to avoid changing loaded code during a worker pass.
-          PID=$(docker inspect -f '{{.State.Pid}}' vc-vesta)
-          lock="/proc/$PID/root/tmp/vesta-bazara-order-sync.lock"
-          flock -w 60 "$lock" bash -s "$stage" "$base" <<'INNER'
-          set -Eeuo pipefail
-          stage=$1; base=$2
-          for name in vesta-accounting-identity.php vesta-accounting-reliability.php;do
-            cp -p "$stage/$name" "$base/.$name.next"
-            chmod 0644 "$base/.$name.next"
-            mv "$base/.$name.next" "$base/$name"
-          done
-          INNER
+          # Opening the existing container lock O_RDWR fails under Linux protected_regular.
+          # A read-only fd still supports an exclusive flock (as in the verified worker deployment).
+          STAGE="$stage" BASE="$base" python3 - <<'PY'
+          import os, pathlib, fcntl, time, subprocess
+          stage=pathlib.Path(os.environ['STAGE']);base=pathlib.Path(os.environ['BASE'])
+          pid=subprocess.check_output(['docker','inspect','-f','{{.State.Pid}}','vc-vesta'],text=True).strip()
+          lock=pathlib.Path('/proc')/pid/'root/tmp/vesta-bazara-order-sync.lock'
+          with lock.open('rb') as f:
+            for attempt in range(120):
+              try: fcntl.flock(f, fcntl.LOCK_EX|fcntl.LOCK_NB); break
+              except BlockingIOError: time.sleep(.25)
+            else: raise RuntimeError('accounting_sender_lock_timeout')
+            for name in ['vesta-accounting-identity.php','vesta-accounting-reliability.php']:
+              target=base/name;tmp=base/('.'+name+'.next')
+              tmp.write_bytes((stage/name).read_bytes())
+              os.chmod(tmp,0o644)
+              if target.exists():os.chown(tmp,target.stat().st_uid,target.stat().st_gid)
+              os.replace(tmp,target)
+            print('IDENTITY_GUARD_ATOMIC_SOURCE_SWAP=yes',flush=True)
+          PY
           docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=768M <<'PHP'
           <?php
           $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
