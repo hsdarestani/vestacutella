@@ -1,0 +1,93 @@
+name: Diagnose Vesta ERP person selection and card-transfer shared Woo account
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/audit-vesta-identity-root-20261116.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read Woo customer ownership and Mahak person mappings, no personal data printed
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d memory_limit=768M -d display_errors=0' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          global $wpdb;
+          $settings=get_option('bazara_visitor_settings',[]);
+          foreach(['radioCustomer','chkGuestCustomer','guestPersonID','generalCustomerID','chkShippingOrder','chkBankOrder'] as $k) echo 'SETTING_'.$k.'='.preg_replace('/[^a-zA-Z0-9_-]/','',(string)($settings[$k]??'unset')).PHP_EOL;
+          echo 'SENDER_ENABLED='.(int)get_option('vcar_sender_enabled',false).PHP_EOL;
+          $ids=[105460,105458,105456,105454,105452,105450,105361,105487,105444,105383,105355];
+          $firstUser=0;$sameUid=0;
+          foreach($ids as $id) {
+            $o=wc_get_order($id); if(!$o)continue;
+            $uid=(int)$o->get_customer_id();$u=$uid?get_user_by('id',$uid):false;
+            if(!$firstUser)$firstUser=$uid;
+            $userMahak=(int)get_user_meta($uid,'mahak_id',true);
+            $norm=function($s){return trim(preg_replace('/\s+/u',' ',str_replace(['ي','ك','‌'],['ی','ک',' '],(string)$s)));};
+            $billName=$norm($o->get_billing_first_name().' '.$o->get_billing_last_name());
+            $userName=$u?$norm($u->first_name.' '.$u->last_name):'';
+            $bphone= preg_replace('/\D/','',(string)$o->get_billing_phone());
+            $bemail= strtolower(trim((string)$o->get_billing_email()));
+            $uphone= $uid?get_user_meta($uid,'billing_phone',true):'';
+            $uphone=preg_replace('/\D/','',(string)$uphone);
+            $uemail=$u?strtolower(trim($u->user_email)):'';
+            $otpUid=0; $otpValid=false;
+            if(function_exists('vesta_otp_phone')&&function_exists('vesta_otp_existing_user')){
+               $ph=vesta_otp_phone($o->get_billing_phone());
+               if($ph){$otpValid=true;$resolved=vesta_otp_existing_user($ph);if(is_numeric($resolved))$otpUid=(int)$resolved;}
+            }
+            $emailUid=$bemail?get_user_by('email',$bemail):false;
+            $born=$o->get_date_created()?$o->get_date_created()->date('Y-m-d'):'none';
+            $linked=$o->get_meta('_vesta_account_linked_at')?'yes':'no';
+            $issue=$o->get_meta('_vesta_account_issue')?'yes':'no';
+            echo 'ORDER='.$id.' CUSTOMER_UID='.$uid.' USER_EXISTS='.(int)(bool)$u.
+              ' USER_ROLE='.($u?implode(',',array_map('sanitize_key',(array)$u->roles)):'none').
+              ' USER_REG_DATE='.($u?substr($u->user_registered,0,10):'none').
+              ' USER_MAHAK_ID='.$userMahak.
+              ' BILL_NAME_EQ_USER_NAME='.(int)($billName!=='' && $billName===$userName).
+              ' BILL_PHONE_EQ_USER_META='.(int)($bphone!=='' && $bphone===$uphone).
+              ' BILL_EMAIL_EQ_USER_EMAIL='.(int)($bemail!=='' && $bemail===$uemail).
+              ' OTP_PHONE_VALID='.(int)$otpValid.' OTP_OWNER_EQ_ORDER_UID='.(int)($otpUid>0 && $otpUid===$uid).
+              ' OTP_OWNER_EXISTS='.(int)($otpUid>0).
+              ' EMAIL_OWNER_EQ_ORDER_UID='.(int)($emailUid&& (int)$emailUid->ID===$uid).
+              ' EMAIL_OWNER_EXISTS='.(int)(bool)$emailUid.
+              ' ORDER_DATE='.$born.' ACCOUNT_LINKED_BY_PLUGIN='.$linked.' HAS_ACCOUNT_ISSUE='.$issue.PHP_EOL;
+          }
+          if($firstUser){
+           $all=$wpdb->get_col($wpdb->prepare("SELECT post_id FROM {$wpdb->postmeta} WHERE meta_key='_customer_user' AND meta_value=%d ORDER BY post_id DESC LIMIT 200",$firstUser));
+           $byGateway=[];
+           foreach($all as $id){$o=wc_get_order((int)$id);if(!$o)continue;$g=$o->get_payment_method()?:'unknown';$byGateway[$g]=($byGateway[$g]??0)+1;}
+           echo 'SHARED_USER_ORDER_COUNT_SAMPLE='.count($all).' GATEWAY_DISTRIBUTION='.json_encode($byGateway).PHP_EOL;
+          }
+          echo 'DIAGNOSTIC_READ_ONLY=yes'.PHP_EOL;
+          PHP
+      - name: Inspect vendor ERP identity select path without secrets or PII
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'python3 -' <<'PY'
+          from pathlib import Path
+          import re
+          p=Path('/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara/classes/class.bazara.api.php')
+          lines=p.read_text(errors='replace').splitlines()
+          begins=[i for i,s in enumerate(lines) if 'function bazara_save_order(' in s]
+          a=begins[0] if begins else 0
+          for i in range(a+65,min(a+128,len(lines))):
+             s=lines[i].strip()
+             if re.search(r'password|secret|token|authorization|api_key|http|\bkey\b',s,re.I):s='[REDACTED]'
+             print('VENDOR',i+1,s[:220])
+          PY
