@@ -1,0 +1,34 @@
+name: Contain Vesta accounting identity incident (pause outbound sender, preserve queue)
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-identity-contain-20261116.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  contain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Pause new ERP writes but retain paid Woo orders and durable queue
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0' <<'PHP'
+          <?php
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          if(!class_exists('Vesta_Accounting_Reliability'))exit(21);
+          $prior=get_option('vcar_sender_enabled',false);
+          if($prior) update_option('vcar_sender_enabled',false,false);
+          if(get_option('vcar_sender_enabled',false)) exit(22);
+          global $wpdb;
+          echo 'OUTBOUND_SENDER_PAUSED=yes PRIOR_STATE='.(int)(bool)$prior.PHP_EOL;
+          echo 'ACCOUNTING_QUEUE_RETAINED='.(int)$wpdb->get_var('SELECT COUNT(*) FROM '.Vesta_Accounting_Reliability::table()).PHP_EOL;
+          echo 'ORDERS_AND_REMOTE_INVOICES_UNCHANGED=yes'.PHP_EOL;
+          PHP
