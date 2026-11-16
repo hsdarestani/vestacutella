@@ -56,9 +56,16 @@ if (!function_exists('vcar_identity_guard')) {
         $row=$wpdb->get_row($wpdb->prepare(
             "SELECT FirstName,LastName FROM $table WHERE PersonId=%d AND Deleted=0 LIMIT 1", $personId
         ));
-        if (!$row) return 'customer_erp_person_not_found';
-        $erpName=vcar_identity_normalize_name(($row->FirstName??'').' '.($row->LastName??''));
-        if ($erpName==='' || $erpName!==$billing) return 'customer_erp_name_mismatch';
+        if (!$row) {
+            // The vendor local cache can lag behind a confirmed cloud person registration.
+            // Accept ONLY a person ID/name proof recorded after direct cloud readback.
+            $proofId=(int)get_user_meta($uid,'_vesta_erp_cloud_verified_person_id',true);
+            $proofName=vcar_identity_normalize_name(get_user_meta($uid,'_vesta_erp_cloud_verified_person_name',true));
+            if ($proofId!==$personId || $proofName==='' || $proofName!==$billing) return 'customer_erp_person_not_found';
+        } else {
+            $erpName=vcar_identity_normalize_name(($row->FirstName??'').' '.($row->LastName??''));
+            if ($erpName==='' || $erpName!==$billing) return 'customer_erp_name_mismatch';
+        }
 
         return '';
     }
