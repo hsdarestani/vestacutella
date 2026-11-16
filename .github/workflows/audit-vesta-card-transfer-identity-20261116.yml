@@ -37,7 +37,7 @@ jobs:
           };
           $ids=$wpdb->get_col("SELECT ID FROM {$wpdb->posts} WHERE post_type='shop_order' AND post_date_gmt >= '2026-11-11 00:00:00' ORDER BY ID DESC LIMIT 1200");
           $stat=['card_eligible'=>0,'card_cloud_missing'=>0,'card_with_shipping'=>0,'card_shipping_mismatch'=>0,'card_total_mismatch'=>0,'card_name_mismatch'=>0,'card_name_match'=>0,'card_name_unknown'=>0,'other_name_mismatch'=>0,'other_shipping_mismatch'=>0];
-          $shown=0; $schemaShown=false; $cardMismatchPersonFrequency=[]; $cardMismatchGuest=0;
+          $shown=0; $schemaShown=false; $cardMismatchPersonFrequency=[]; $cardMismatchGuest=0; $cardMismatchWooUsers=[]; $cardMismatchMetaPerson=[]; $cardMismatchPhoneKeys=[]; $cardUserMetaEqualsErp=0; $cardUserMetaMissing=0;
           foreach ($ids as $id) {
             $o=wc_get_order((int)$id);
             if(!vcar_eligible($o)) continue;
@@ -87,7 +87,16 @@ jobs:
               if($shippingMismatch)$stat['card_shipping_mismatch']++;
               if($totalMismatch)$stat['card_total_mismatch']++;
               $stat['card_name_'.$nameState]++;
-              if($nameState==='mismatch' && $personId) $cardMismatchPersonFrequency[$personId]=($cardMismatchPersonFrequency[$personId]??0)+1;
+              if($nameState==='mismatch' && $personId) {
+                $cardMismatchPersonFrequency[$personId]=($cardMismatchPersonFrequency[$personId]??0)+1;
+                $uid=(int)$o->get_customer_id();
+                $cardMismatchWooUsers[$uid]=1;
+                $metaPerson=(int)get_user_meta($uid,'mahak_id',true);
+                if($metaPerson>0) $cardMismatchMetaPerson[$metaPerson]=1; else $cardUserMetaMissing++;
+                if($metaPerson>0 && $metaPerson===$personId) $cardUserMetaEqualsErp++;
+                $phone=preg_replace('/[^0-9]/','',(string)$o->get_billing_phone());
+                if($phone!=='') $cardMismatchPhoneKeys[hash('sha256',$phone)]=1;
+              }
               if($nameState==='mismatch' && (int)$o->get_customer_id()===0) $cardMismatchGuest++;
             } else {
               if($shippingMismatch)$stat['other_shipping_mismatch']++;
@@ -110,6 +119,7 @@ jobs:
           echo 'AUDIT_COUNTS='.json_encode($stat,JSON_UNESCAPED_UNICODE).PHP_EOL;
           arsort($cardMismatchPersonFrequency);
           echo 'CARD_MISMATCH_DISTINCT_ERP_PERSON_COUNT='.count($cardMismatchPersonFrequency).' LARGEST_GROUP='.(count($cardMismatchPersonFrequency)?reset($cardMismatchPersonFrequency):0).' GUEST_ORDER_COUNT='.$cardMismatchGuest.PHP_EOL;
+          echo 'CARD_MISMATCH_DISTINCT_WOO_USERS='.count($cardMismatchWooUsers).' DISTINCT_WOO_BILLING_PHONES='.count($cardMismatchPhoneKeys).' DISTINCT_WOO_USER_MAHAK_IDS='.count($cardMismatchMetaPerson).' META_ID_EQUALS_ERP_PERSON='.$cardUserMetaEqualsErp.' META_ID_MISSING='.$cardUserMetaMissing.PHP_EOL;
           echo 'PERSON_TABLE_PRESENT='.(int)$pTableExists.PHP_EOL;
           echo 'ACCOUNTING_SENDER_ENABLED='.(int)get_option('vcar_sender_enabled',false).PHP_EOL;
           echo 'AUDIT_READ_ONLY_NO_WOO_OR_ERP_WRITES=yes'.PHP_EOL;
