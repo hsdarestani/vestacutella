@@ -38,7 +38,7 @@ for required in vesta/wp-config.php vesta/wp-content/uploads/ vesta/wp-content/p
 done
 mv "$dest/wordpress.tar.gz.partial" "$dest/wordpress.tar.gz"
 # A separate image-relationship export allows recovery without reverting later orders.
-docker exec vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot "$MARIADB_DATABASE" --batch --raw -e "SELECT post_id,meta_key,meta_value FROM wp_postmeta WHERE meta_key IN (\x27_thumbnail_id\x27,\x27_product_image_gallery\x27,\x27_wp_attached_file\x27,\x27_wp_attachment_metadata\x27);"' | gzip -1 > "$dest/image-relationships.tsv.gz.partial"
+docker exec vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot "$MARIADB_DATABASE" --batch --raw -e "SELECT post_id,meta_key,meta_value FROM wp_postmeta WHERE meta_key IN (0x5f7468756d626e61696c5f6964,0x5f70726f647563745f696d6167655f67616c6c657279,0x5f77705f61747461636865645f66696c65,0x5f77705f6174746163686d656e745f6d65746164617461);"' | gzip -1 > "$dest/image-relationships.tsv.gz.partial"
 gzip -t "$dest/image-relationships.tsv.gz.partial"
 mv "$dest/image-relationships.tsv.gz.partial" "$dest/image-relationships.tsv.gz"
 (cd "$dest" && sha256sum database.sql.gz wordpress.tar.gz image-relationships.tsv.gz > SHA256SUMS && sha256sum -c SHA256SUMS)
