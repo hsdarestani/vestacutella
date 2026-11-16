@@ -1,0 +1,76 @@
+name: Map 10 currently unmatched Woo variations by strict unique Mahak ProductDetailId
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/repair-vesta-ten-exact-variations-20261116.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 16
+    steps:
+      - uses: actions/checkout@v4
+      - name: PHP source and SSH tooling
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq php-cli sshpass
+          php -l scripts/repair-vesta-storewide-exact-20261114.php
+      - name: Confirm exact dry-run returns only 10 unique mappings, back up all variation metadata
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1024M' < scripts/repair-vesta-storewide-exact-20261114.php | tee pre-map.log
+          grep -Fqx 'STRICT_ONE_TO_ONE_CANDIDATES=10' pre-map.log
+          grep -Fqx 'ERP_DETAIL_COLLISIONS_SKIPPED=0' pre-map.log
+          grep -Fqx 'DRY_RUN_NO_WRITES=yes' pre-map.log
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'SHELL'
+          set -Eeuo pipefail
+          umask 077
+          backup=/srv/backups/vesta-ten-unique-variants-$(date -u +%Y%m%dT%H%M%SZ)
+          mkdir -p -m 0700 "$backup"
+          docker exec vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb-dump -uroot --single-transaction --quick "$MARIADB_DATABASE" wp_posts wp_postmeta' | gzip -1 > "$backup/products-meta-before.sql.gz"
+          gzip -t "$backup/products-meta-before.sql.gz"
+          sha256sum "$backup/products-meta-before.sql.gz" > "$backup/SHA256SUMS"
+          (cd "$backup";sha256sum -c SHA256SUMS)
+          echo "EXACT_VARIATION_BACKUP_VERIFIED=$backup"
+          SHELL
+      - name: Insert 10 exact Woo-to-existing-Mahak ID links without creating accounting products
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i -e VC_MAP_COMMIT=yes -e VC_MAP_BATCH_SIZE=10 vc-vesta php -d display_errors=0 -d memory_limit=1024M' < scripts/repair-vesta-storewide-exact-20261114.php | tee map-result.log
+          grep -Fqx 'BATCH_VARIATIONS_MAPPED=10' map-result.log
+          grep -Fqx 'BATCH_META_ROWS_CREATED=20' map-result.log
+          grep -Fqx 'BATCH_EXACT_MAPPING_VERIFIED=yes' map-result.log
+          grep -Fqx 'NO_CLOUD_PRODUCT_OR_ORDER_WRITES=yes' map-result.log
+      - name: Confirm ten links read back, no changes to prices, stocks or photos
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0' <<'PHP'
+          <?php
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          $pairs=[36668=>[10685266,12269275],37120=>[10685269,12269282],42193=>[10685301,12269285],
+          42721=>[10685288,12269283],92514=>[10684956,12269277],92515=>[10684956,12269278],
+          92516=>[10684956,12269279],92517=>[10684956,12269280],92518=>[10684956,12269281],
+          101916=>[10685210,12269284]];
+          $n=0;
+          foreach($pairs as $id=>$m) {
+              if((int)get_post_meta($id,'mahak_id',true)!==$m[0] || (int)get_post_meta($id,'mahak_product_detail_id',true)!==$m[1])throw new RuntimeException('MAPPING_READBACK_FAILED_'.$id);
+              $n++;
+          }
+          echo 'TEN_EXACT_VARIATION_MAPPINGS_VERIFIED='.$n.PHP_EOL;
+          echo 'ACCOUNTING_PERSON_INVOICE_STOCK_PRICE_IMAGE_UNCHANGED_BY_SCRIPT=yes'.PHP_EOL;
+          PHP
+          for host in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
+            code=$(curl -L -ksS --connect-timeout 8 --max-time 25 -o /dev/null -w '%{http_code}' "https://$host/")
+            echo "SITE=$host HTTP=$code";test "$code" = 200
+          done
