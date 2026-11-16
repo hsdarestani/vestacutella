@@ -49,3 +49,40 @@ jobs:
           echo 'ACCOUNTING_SENDER_ENABLED='.(int)get_option('vcar_sender_enabled',false).PHP_EOL;
           echo 'READ_ONLY_NO_PERSON_CREATES=yes'.PHP_EOL;
           PHP
+      - name: Check cloud person identities, duplicates and safe single-user provisioning readiness
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1024M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $api=new BazaraApi(true);
+          $r=$api->get_all_data('',array('fromPersonVersion'=>0));
+          $m=is_array($r)?($r['message']??[]):[];
+          $people=$m['People']??$m['Persons']??null;
+          echo 'CLOUD_PEOPLE_PRESENT='.(int)is_array($people).' COUNT='.(is_array($people)?count($people):-1).' TOP_LEVEL_KEYS='.(is_array($m)?implode(',',array_keys($m)):'none').PHP_EOL;
+          $ids=[105460,105458,105456,105454,105452,105450,105361];
+          $table=$wpdb->prefix.'bazara_persons';
+          $found=0;$ambiguous=0;
+          foreach($ids as $id){
+            $o=wc_get_order($id);if(!$o)continue;
+            $uid=(int)$o->get_customer_id();$phone=vesta_otp_phone($o->get_billing_phone());
+            $foundInCache=$wpdb->get_results($wpdb->prepare("SELECT PersonId,PersonClientID,FirstName,LastName,Mobile FROM $table WHERE PersonClientID=%d AND Deleted=0",$uid));
+            $fromCloud=[]; $phoneMatches=0;
+            if(is_array($people))foreach($people as $p){
+              if(!empty($p['Deleted']))continue;
+              if((int)($p['PersonClientId']??$p['PersonClientID']??-1)===$uid)$fromCloud[]=$p;
+            }
+            echo 'PERSON_DUPLICATE_CHECK ORDER='.$id.' WOO_UID='.$uid.' CACHE_CLIENT_MATCHES='.count($foundInCache).
+              ' CLOUD_CLIENT_MATCHES='.count($fromCloud).
+              ' WORDPRESS_MAHAK='.(int)get_user_meta($uid,'mahak_id',true).
+              ' PERSON_CACHE_FRESH='.(int)is_array($people).PHP_EOL;
+            $found+=count($fromCloud);$ambiguous+=(int)(count($fromCloud)>1 || count($foundInCache)>1);
+          }
+          echo 'PERSON_PROVISION_PREFLIGHT_EXISTING_CLOUD='.$found.' AMBIGUOUS='.$ambiguous.' NO_REMOTE_WRITES=yes'.PHP_EOL;
+          PHP
