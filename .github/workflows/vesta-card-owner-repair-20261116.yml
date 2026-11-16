@@ -22,3 +22,40 @@ jobs:
         run: |
           set -Eeuo pipefail
           sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d memory_limit=768M -d display_errors=0' < scripts/repair-vesta-card-owner-20261116.php
+      - name: Back up customer/order state and repair seven proven card-to-card collisions
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'SHELL'
+          set -Eeuo pipefail
+          base=/srv/backups/vesta-card-identity-repair-$(date -u +%Y%m%dT%H%M%SZ)
+          mkdir -p -m 0700 "$base"
+          test "$(df -Pk /srv | awk 'NR==2{print $4}')" -gt 800000
+          docker exec -i vc-vesta php -d display_errors=0 <<'PHP'
+          <?php
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          if(get_option('vcar_sender_enabled',false))throw new RuntimeException('SENDER_NOT_PAUSED');
+          echo 'SENDER_STILL_PAUSED=yes'.PHP_EOL;
+          PHP
+          docker exec vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb-dump -uroot --single-transaction --quick "$MARIADB_DATABASE" wp_posts wp_postmeta wp_users wp_usermeta' | gzip -1 > "$base/orders-users-before.sql.gz"
+          gzip -t "$base/orders-users-before.sql.gz"
+          sha256sum "$base/orders-users-before.sql.gz" > "$base/sha256.txt"
+          echo 'PRIVATE_ORDER_USER_BACKUP_VERIFIED=yes'
+          echo "BACKUP_LOCATION=$base"
+          SHELL
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i -e VC_OWNER_REPAIR_COMMIT=yes -e VC_OWNER_BACKUP_VERIFIED=yes vc-vesta php -d memory_limit=768M -d display_errors=0' < scripts/repair-vesta-card-owner-20261116.php | tee repair-result.log
+          grep -Fq 'ERP_INVOICES_UNCHANGED=yes' repair-result.log
+          python3 - <<'PY'
+          import json,re
+          s=open('repair-result.log').read()
+          m=re.search(r'REPAIR_RESULT=(\{[^\n]+\})',s)
+          if not m:raise SystemExit('REPAIR_RESULT_MISSING')
+          stats=json.loads(m.group(1))
+          print('REPAIRED_WOO_ORDER_COUNT=',stats['updated'])
+          print('REPAIR_REVIEW_REQUIRED=',stats['errors']+stats['skipped'])
+          if stats['updated']!=7 or stats['errors'] or stats['skipped']:
+            raise SystemExit('PARTIAL_REPAIR_REQUIRES_MANUAL_REVIEW_NO_AUTO_REPLAY')
+          PY
