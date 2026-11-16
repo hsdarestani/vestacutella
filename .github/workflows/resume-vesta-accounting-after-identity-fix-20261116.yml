@@ -1,0 +1,71 @@
+name: Resume Vesta accounting sender with mandatory verified customer identity guard
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/resume-vesta-accounting-after-identity-fix-20261116.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  resume:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Fail-closed live identity, currency and worker prerequisites before enabling
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'SHELL'
+          set -Eeuo pipefail
+          systemctl is-active --quiet cron
+          test -s /etc/cron.d/vesta-safe-person-worker
+          test -s /etc/cron.d/vesta-accounting-outbox
+          docker exec -i vc-vesta php -d memory_limit=1024M -d display_errors=0 <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          if(!class_exists('Vesta_Accounting_Reliability')||!class_exists('Vesta_Card_Owner_Guard')||!function_exists('vcar_identity_guard'))throw new RuntimeException('guard_or_worker_missing');
+          $s=get_option('bazara_visitor_settings',[]);
+          if(get_woocommerce_currency()!=='IRT'||($s['selectCurrencySoftware']??'')!=='toman'||($s['selectCurrencyPlugin']??'')!=='toman')throw new RuntimeException('currency_not_toman_toman');
+          foreach([105487,105458,105456] as $id){
+             $o=wc_get_order($id);$why=vcar_identity_guard($o);
+             echo 'IDENTITY_GOOD_CANARY='.$id.' GUARD='.($why?:'pass').PHP_EOL;
+             if($why!=='')throw new RuntimeException('verified_customer_guard_rejected');
+          }
+          $bad=wc_get_order(105460);
+          if(!vcar_identity_guard($bad))throw new RuntimeException('known_ambiguous_customer_not_blocked');
+          echo 'KNOWN_UNRESOLVED_CUSTOMER_STAYS_BLOCKED=yes'.PHP_EOL;
+          if(get_option('vcar_sender_enabled',false))throw new RuntimeException('sender_already_enabled_unexpected');
+          if(!update_option('vcar_sender_enabled',true,false))throw new RuntimeException('sender_enable_failed');
+          if(!get_option('vcar_sender_enabled',false))throw new RuntimeException('sender_enable_readback_failed');
+          echo 'ACCOUNTING_OUTBOUND_SENDER_RESUMED_WITH_IDENTITY_GUARD=yes'.PHP_EOL;
+          PHP
+          SHELL
+      - name: Run one bounded pass and read back queue without replaying historical invoices
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -u www-data -i -e VCAR_FORCE=yes -e VCAR_MAX_SEND=1 vc-vesta php -d memory_limit=768M -d display_errors=0' < scripts/vesta-accounting-worker.php
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0' <<'PHP'
+          <?php
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          if(!get_option('vcar_sender_enabled',false))throw new RuntimeException('sender_lost');
+          echo 'OUTBOX_WORKER_ACTIVE_AFTER_RESUME=yes'.PHP_EOL;
+          echo 'OUTBOX_HEARTBEAT='.json_encode(get_option('vcar_heartbeat',[])).PHP_EOL;
+          echo 'CLOUD_AND_DESKTOP_VERIFICATION_ARE_SEPARATE=yes'.PHP_EOL;
+          PHP
+      - name: Public endpoints remain operational
+        run: |
+          set -Eeuo pipefail
+          for host in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
+           code=$(curl -L -sS --retry 1 --connect-timeout 10 --max-time 35 -o /dev/null -w '%{http_code}' "https://$host/")
+           echo "PUBLIC_HOST=$host HTTP=$code";test "$code" = 200
+          done
