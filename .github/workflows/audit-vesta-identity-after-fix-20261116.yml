@@ -1,0 +1,51 @@
+name: Read-only audit of repaired Woo customer accounts and ERP person provisioning
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/audit-vesta-identity-after-fix-20261116.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Check new Woo account integrity, Mahak cached Person IDs, match evidence, and invoice states
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=768M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $ids=[105460,105458,105456,105454,105452,105450,105361];
+          $peopleTable=$wpdb->prefix.'bazara_persons';
+          $columns=$wpdb->get_col("SHOW COLUMNS FROM $peopleTable",0);
+          echo 'PERSON_COLUMNS='.implode(',',array_values(array_filter($columns,fn($c)=>preg_match('/person|mobile|phone|email|first|last|deleted/i',$c)))).PHP_EOL;
+          $s=['repaired'=>0,'guard_ok'=>0,'person_missing'=>0,'person_valid'=>0];
+          $api=new BazaraApi(true);$cloud=Vesta_Accounting_Reliability::cloud($api);
+          foreach($ids as $id){
+            $o=wc_get_order($id);if(!$o)continue;
+            $uid=(int)$o->get_customer_id();$mid=(int)get_user_meta($uid,'mahak_id',true);
+            $why=vcar_identity_guard($o);
+            $rows=$cloud['orders'][$id]??[];
+            $erp= count($rows)===1 ? $rows[0] : null;
+            $cloudPerson=(int)($erp['PersonId']??0);
+            $hasNote=$o->get_meta('_vesta_identity_repaired_at')!=='';
+            $s['repaired']+=(int)$hasNote;$s['guard_ok']+=(int)($why==='');
+            $s[$mid?'person_valid':'person_missing']++;
+            echo 'REPAIRED_ACCOUNT ORDER='.$id.' WOO_UID='.$uid.' PERSON_ID='.$mid.' ERP_PERSON_PRESENT='.(int)($mid>0).
+              ' REMOTE_PERSON_MATCHES_NEW='.(int)($mid>0&&$cloudPerson===$mid).
+              ' REPAIR_NOTE='.(int)$hasNote.' GUARD='.$why.
+              ' ACCOUNT_OWNER_EQUAL_LEGACY='.(int)($uid===3055).PHP_EOL;
+          }
+          echo 'CURRENT_REPAIR_STATUS='.json_encode($s).PHP_EOL;
+          echo 'ACCOUNTING_SENDER_ENABLED='.(int)get_option('vcar_sender_enabled',false).PHP_EOL;
+          echo 'READ_ONLY_NO_PERSON_CREATES=yes'.PHP_EOL;
+          PHP
