@@ -143,3 +143,31 @@ jobs:
           echo CHECKOUT_ASSIGNMENT_OTHER_PLUGINS
           find "$root/mu-plugins" -maxdepth 1 -type f -name '*.php' -print0 | xargs -0 grep -nEi 'set_customer_id|_customer_user|checkout_create_order|customer_id|user_id' | grep -Ev 'password|secret|token|apikey|authorization' | head -80 || true
           SHELL
+      - name: Check guest-person history and fresh user provisioning safely
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d memory_limit=768M -d display_errors=0' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $ids=[105474,105469,105449,105447,105443,105431,105430,105429,105390,105381,105317,105281,105230,105465,105468];
+          $counts=[];
+          foreach($ids as $id) {
+           $o=wc_get_order($id);if(!$o)continue;
+           $uid=(int)$o->get_customer_id();
+           $mahak=(int)get_user_meta($uid,'mahak_id',true);
+           $person=$mahak?$wpdb->get_row($wpdb->prepare("SELECT FirstName,LastName FROM {$wpdb->prefix}bazara_persons WHERE PersonId=%d AND Deleted=0",$mahak)):null;
+           $norm=function($s){return trim(preg_replace('/\s+/u',' ',str_replace(['ي','ك','‌'],['ی','ک',' '],(string)$s)));};
+           $personName=$person?$norm($person->FirstName.' '.$person->LastName):'';
+           $billName=$norm($o->get_billing_first_name().' '.$o->get_billing_last_name());
+           echo 'ERP_GUEST_CASE ORDER='.$id.' UID='.$uid.' USER_MAHAK='.$mahak.' MAHAK_GUEST='.(int)($mahak===12677842).
+           ' USER_PERSON_MATCHES_BILL='.(int)($personName!==''&&$billName===$personName).
+           ' ACCOUNT_PLUGIN_LINKED='.(int)(bool)$o->get_meta('_vesta_account_linked_at').
+           ' ORDER_PAYMENT='.$o->get_payment_method().PHP_EOL;
+          }
+          echo 'GUEST_CAUSE_READ_ONLY=yes'.PHP_EOL;
+          PHP
