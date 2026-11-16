@@ -1,0 +1,74 @@
+name: Vesta current Mahak-to-Woo images and variation safety audit (read only)
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/audit-vesta-product-media-variations-20261116.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Inspect live Bazara image overwrite paths and current Woo variation mappings
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'SHELL'
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          root=Path('/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara')
+          wanted=re.compile(r'sync_pictures|sync.*image|image.*sync|_thumbnail_id|_product_image_gallery|set_image_id|set_gallery_image_ids|delete_post_thumbnail|set_post_thumbnail|wp_delete_attachment|delete_attachment|PictureUrl|PictureId|product_variation|ProductDetailId',re.I)
+          matches=[]
+          for p in root.rglob('*.php'):
+            if any(x in p.parts for x in ('vendor','lib','dompdf','tcpdf')):continue
+            try:a=p.read_text(errors='replace').splitlines()
+            except Exception:continue
+            for n,s in enumerate(a,1):
+              if wanted.search(s):
+                if re.search(r'password|secret|token|authorization|api.?key|https?://|base64',s,re.I):continue
+                matches.append((p.relative_to(root),n,s.strip()[:195]))
+          print('BAZARA_PICTURE_VARIANT_SOURCE_MATCHES=',len(matches))
+          for p,n,s in matches[:160]: print('BAZARA_CODE',str(p),n,s)
+          print('NO_CODE_OR_DB_WRITES=yes')
+          PY
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=768M <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $o=get_option('bazara_visitor_settings',[]);
+          foreach((array)$o as $k=>$v) if(preg_match('/image|picture|photo|gallery|variant|product|stock/i',(string)$k)) {
+            if(is_scalar($v) && strlen((string)$v)<45 && preg_match('/^[a-zA-Z0-9_,.:-]*$/',(string)$v))
+              echo 'BAZARA_MEDIA_VARIANT_OPTION='.sanitize_key($k).' VALUE='.(string)$v.PHP_EOL;
+            else echo 'BAZARA_MEDIA_VARIANT_OPTION='.sanitize_key($k).' VALUE=[complex_or_redacted]'.PHP_EOL;
+          }
+          echo 'MAHAK_DRAFT_IMPORT_INSTALLED='.(int)function_exists('vms_import_existing').PHP_EOL;
+          echo 'MAHAK_CATALOG_BRIDGE_INSTALLED='.(int)function_exists('vmb_catalog').PHP_EOL;
+          $s=$wpdb->get_row("SELECT COUNT(*) total, SUM(EXISTS(SELECT 1 FROM {$wpdb->postmeta} m WHERE m.post_id=p.ID AND m.meta_key='_thumbnail_id' AND m.meta_value<>'0' AND m.meta_value<>'')) with_images FROM {$wpdb->posts} p WHERE p.post_type='product' AND p.post_status='publish'",ARRAY_A);
+          echo 'PUBLISHED_PRODUCTS_IMAGE_COVERAGE='.json_encode($s).PHP_EOL;
+          $v=$wpdb->get_row("SELECT COUNT(*) total, SUM(EXISTS(SELECT 1 FROM {$wpdb->postmeta} m WHERE m.post_id=v.ID AND m.meta_key='mahak_product_detail_id' AND CAST(m.meta_value AS UNSIGNED)>0)) detail_mapped, SUM(EXISTS(SELECT 1 FROM {$wpdb->postmeta} m WHERE m.post_id=v.ID AND m.meta_key='_sku' AND m.meta_value<>'')) sku_exists FROM {$wpdb->posts} v INNER JOIN {$wpdb->posts} p ON p.ID=v.post_parent WHERE v.post_type='product_variation' AND v.post_status='publish' AND p.post_status='publish'",ARRAY_A);
+          echo 'PUBLISHED_VARIATION_DETAIL_COVERAGE='.json_encode($v).PHP_EOL;
+          $ids=[92517,92515,70337,37188,101916,42721,37120,101962];
+          foreach($ids as $id){
+             $p=get_post($id);
+             if(!$p)continue;
+             $sku=get_post_meta($id,'_sku',true);
+             echo 'VARIANT_SAMPLE ID='.$id.' PARENT='.(int)$p->post_parent.' SKU_SET='.(int)(trim((string)$sku)!=='').
+               ' ERP_PARENT_ID='.(int)get_post_meta($id,'mahak_id',true).
+               ' ERP_DETAIL_ID='.(int)get_post_meta($id,'mahak_product_detail_id',true).PHP_EOL;
+          }
+          $actions=$wpdb->prefix.'actionscheduler_actions';
+          if($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s',$actions))){
+            $q=$wpdb->get_results("SELECT hook,status,COUNT(*) n FROM $actions WHERE hook LIKE '%bazara%' OR hook LIKE '%picture%' GROUP BY hook,status LIMIT 40",ARRAY_A);
+            echo 'SCHEDULER_BAZARA_IMAGE_STATUS='.json_encode($q).PHP_EOL;
+          }
+          echo 'CURRENT_MEDIA_VARIANT_AUDIT_READ_ONLY=yes'.PHP_EOL;
+          PHP
+          SHELL
