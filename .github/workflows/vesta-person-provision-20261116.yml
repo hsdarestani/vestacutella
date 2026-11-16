@@ -22,3 +22,21 @@ jobs:
         run: |
           set -Eeuo pipefail
           sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i -e VC_PERSON_ORDER_ID=105458 vc-vesta php -d memory_limit=1024M -d display_errors=0' < scripts/provision-vesta-mahak-person-20261116.php
+      - name: Private backup and ONE confirmed Mahak person canary; no invoice creation
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'SHELL'
+          set -Eeuo pipefail
+          backup=/srv/backups/vesta-person-registration-canary-$(date -u +%Y%m%dT%H%M%SZ)
+          mkdir -p -m 0700 "$backup"
+          docker exec vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb-dump -uroot --single-transaction --quick "$MARIADB_DATABASE" wp_users wp_usermeta wp_bazara_persons' | gzip -1 > "$backup/person-data-before.sql.gz"
+          gzip -t "$backup/person-data-before.sql.gz"
+          sha256sum "$backup/person-data-before.sql.gz" > "$backup/sha256.txt"
+          echo "PERSON_PROVISION_BACKUP_VERIFIED=yes LOCATION=$backup"
+          SHELL
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i -e VC_PERSON_ORDER_ID=105458 -e VC_PERSON_COMMIT=yes -e VC_PERSON_BACKUP_VERIFIED=yes vc-vesta php -d memory_limit=1024M -d display_errors=0' < scripts/provision-vesta-mahak-person-20261116.php | tee provision-canary-result.log
+          grep -Fq 'PERSON_CREATED_AND_READBACK_VERIFIED ORDER=105458' provision-canary-result.log
+          grep -Fq 'NO_INVOICE_WRITES=yes' provision-canary-result.log
