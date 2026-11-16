@@ -17,4 +17,4 @@ jobs:
           HOST: ${{ secrets.HOST }}
           SSHPASS: ${{ secrets.PASS }}
         run: |
-          sshpass -e ssh -o ConnectTimeout=18 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'd=$(find /srv/backups -maxdepth 1 -type d -name "vesta-before-mahak-images-*" | sort | tail -1); test -n "$d"; echo "BACKUP=$d"; date -u; du -h "$d"/*; df -h /srv/backups; if test -f "$d/VERIFIED_UTC"; then cat "$d/VERIFIED_UTC"; else echo BACKUP_IN_PROGRESS; fi'
+          sshpass -e ssh -o ConnectTimeout=18 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'd=$(find /srv/backups -maxdepth 1 -type d -name "vesta-before-mahak-images-*" | sort | tail -1); test -n "$d"; echo "BACKUP=$d"; date -u; du -sh /srv/vestacutella/runtime/vesta; du -h "$d"/*; df -h /srv/backups; if test -f "$d/VERIFIED_UTC"; then cat "$d/VERIFIED_UTC"; else echo BACKUP_IN_PROGRESS; fi'
