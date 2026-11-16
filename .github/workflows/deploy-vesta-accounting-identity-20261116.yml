@@ -36,7 +36,7 @@ jobs:
           backup=/srv/backups/vesta-identity-guard-$(date -u +%Y%m%dT%H%M%SZ)
           mkdir -p -m 0700 "$backup"
           test "$(df -Pk /srv | awk 'NR==2{print $4}')" -gt 900000
-          for name in vesta-accounting-reliability.php;do cp -p "$base/$name" "$backup/$name";done
+          for name in vesta-accounting-reliability.php vesta-accounting-identity.php;do cp -p "$base/$name" "$backup/$name";done
           echo "PRODUCTION_BACKUP=$backup"
           docker exec vc-vesta php -l /var/www/html/wp-content/mu-plugins/vesta-accounting-reliability.php
           test -f "$base/vesta-accounting-policy.php"
@@ -52,7 +52,7 @@ jobs:
              rc=$?
              trap - EXIT
              cp -p "$backup/vesta-accounting-reliability.php" "$base/vesta-accounting-reliability.php"
-             rm -f "$base/vesta-accounting-identity.php"
+             cp -p "$backup/vesta-accounting-identity.php" "$base/vesta-accounting-identity.php"
              echo IDENTITY_GUARD_CODE_ROLLED_BACK=yes
              exit "$rc"
           }
