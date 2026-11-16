@@ -1,0 +1,24 @@
+name: Safely provision verified Vesta Woo customer in Mahak (single-person canary)
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-person-provision-20261116.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+    timeout-minutes: 13
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq php-cli sshpass
+      - name: Syntax check
+        run: php -l scripts/provision-vesta-mahak-person-20261116.php
+      - name: Dry-run strict cloud/mobile/identity prerequisites without writes
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i -e VC_PERSON_ORDER_ID=105458 vc-vesta php -d memory_limit=1024M -d display_errors=0' < scripts/provision-vesta-mahak-person-20261116.php
