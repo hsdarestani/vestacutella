@@ -171,3 +171,26 @@ jobs:
           }
           echo 'GUEST_CAUSE_READ_ONLY=yes'.PHP_EOL;
           PHP
+      - name: Locate current Bazaar person sync methods and order-level account safeguards
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'python3 -' <<'PY'
+          from pathlib import Path
+          import re
+          base=Path('/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara')
+          targets=[base/'classes/class.bazara.api.php',base/'classes/functions.php']
+          for p in targets:
+              if not p.exists():continue
+              lines=p.read_text(encoding='utf8',errors='replace').splitlines()
+              for i,s in enumerate(lines):
+                  if re.search(r'(function\s+\w*(?:save_user|convert_user_to_people|save_people|save_person|sync_user|sync_customer)|add_action\(.*user_register|woocommerce_created_customer)',s,re.I):
+                      print('PERSON_SYNC_SYMBOL',p.name,i+1,s[:180])
+                      a=max(0,i-4);b=min(len(lines),i+34)
+                      for j in range(a,b):
+                          line=lines[j].strip()
+                          if re.search(r'password|secret|token|authorization|api.?key|curl|https?:',line,re.I):line='[REDACTED]'
+                          print('PERSON_SYNC_CONTEXT',j+1,line[:200])
+          PY
