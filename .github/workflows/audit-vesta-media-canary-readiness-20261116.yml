@@ -1,0 +1,58 @@
+name: Audit Mahak image canary readiness without enabling sync or touching Woo media
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/audit-vesta-media-canary-readiness-20261116.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Check actual pending picture volume, mapped Woo products, source code and image preservation
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'SHELL'
+          set -Eeuo pipefail
+          root=/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara
+          python3 /srv/vestacutella/repo/scripts/patch-vesta-bazara-image-preserve-20261116.py --plugin-root "$root" 2>/dev/null || python3 /tmp/patch-vesta-bazara-image-preserve-20261116.py --plugin-root "$root"
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          root=Path('/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara')
+          for p in root.rglob('*.php'):
+            if p.name in ['functions.php','class.bazara.api.php']:
+              a=p.read_text(errors='replace').splitlines()
+              for i,s in enumerate(a):
+                if re.search(r'function\s+get_pictures\s*\(',s):
+                  print('GET_PICTURES_FUNCTION=',p.name, i+1)
+                  for j in range(i,min(len(a),i+48)):
+                    line=a[j].strip()
+                    if re.search(r'password|secret|token|authorization|api.?key|http',line,re.I):line='[REDACTED]'
+                    print('CODE',j+1,line[:220])
+          PY
+          docker exec -i vc-vesta php -d memory_limit=768M -d display_errors=0 <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $table=$wpdb->prefix.'bazara_pictures';$gallery=$wpdb->prefix.'bazara_photo_gallery';
+          foreach(['picture','gallery'] as $what){
+            $name=$what==='picture'?$table:$gallery;
+            echo strtoupper($what).'_COLUMN_NAMES='.implode(',',$wpdb->get_col("SHOW COLUMNS FROM $name",0)).PHP_EOL;
+            echo strtoupper($what).'_TOTAL='.(int)$wpdb->get_var("SELECT COUNT(*) FROM $name").PHP_EOL;
+          }
+          $s=$wpdb->get_row("SELECT COUNT(*) total,SUM(CASE WHEN Deleted=0 THEN 1 ELSE 0 END) active,SUM(CASE WHEN Deleted=0 AND isSync=0 THEN 1 ELSE 0 END) pending FROM $table",ARRAY_A);
+          echo 'MAHAK_LOCAL_PICTURE_COUNTS='.json_encode($s).PHP_EOL;
+          $counts=$wpdb->get_results("SELECT p.ID,p.post_status,COUNT(*) n FROM $gallery g JOIN {$wpdb->postmeta} m ON m.meta_key='mahak_id' AND CAST(m.meta_value AS UNSIGNED)=g.ItemCode JOIN {$wpdb->posts} p ON p.ID=m.post_id WHERE p.post_type='product' GROUP BY p.ID,p.post_status ORDER BY n DESC LIMIT 4",ARRAY_A);
+          echo 'SAMPLE_MAPPED_MAHAK_PICTURES='.json_encode(array_map(fn($x)=>['woo_id'=>(int)$x['ID'],'status'=>$x['post_status'],'pictures'=>(int)$x['n']],$counts)).PHP_EOL;
+          echo 'PHOTO_SYNC_SETTING='.(empty(get_option('bazara_visitor_settings',[])['chkPicture'])?'disabled':'enabled').PHP_EOL;
+          echo 'IMAGE_CANARY_READONLY_COMPLETE=yes'.PHP_EOL;
+          PHP
+          SHELL
