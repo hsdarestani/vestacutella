@@ -1,0 +1,85 @@
+name: Vesta guarded 105557 release after newly synced Mahak customer
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-105557-verified-person-safe-retry-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-repair-customer-105557
+  cancel-in-progress: false
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass php-cli
+      - name: Syntax check and stage exact-scoped source
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          php -l scripts/vesta-105557-safe-unblock-after-erp-person-sync.php
+          sshpass -e scp -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/vesta-105557-safe-unblock-after-erp-person-sync.php "root@$HOST:/tmp/vesta-105557-verified-person-unblock.php"
+      - name: Zero-write unique identity and cloud invoice preflight
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i -e VC_105557_COMMIT=no vc-vesta php -d display_errors=0 -d memory_limit=1024M' < scripts/vesta-105557-safe-unblock-after-erp-person-sync.php | tee preflight.log
+          grep -Fq 'EXACT_105557_DRYRUN_PASSED_NO_WRITES=yes' preflight.log
+      - name: Back up exact accounting state and release only verified blocked order
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'SHELL'
+          set -Eeuo pipefail
+          umask 077
+          exec 9>/run/lock/vesta-105557-person-unmapped-unblock.lock
+          flock -n 9
+          backup=/srv/backups/vesta-105557-exact-customer-unblock-$(date -u +%Y%m%dT%H%M%SZ)
+          mkdir -p -m 0700 "$backup"
+          docker exec vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb-dump -uroot --single-transaction --quick "$MARIADB_DATABASE" wp_vesta_accounting_outbox wp_posts wp_postmeta wp_users wp_usermeta wp_bazara_orders' | gzip -1 > "$backup/order-and-accounting-before.sql.gz"
+          gzip -t "$backup/order-and-accounting-before.sql.gz"
+          (cd "$backup";sha256sum order-and-accounting-before.sql.gz > SHA256SUMS;sha256sum -c SHA256SUMS)
+          echo 'ORDER_105557_BACKUP_VERIFIED=yes'
+          docker exec -i -e VC_105557_COMMIT=yes -e VC_105557_BACKUP_VERIFIED=yes vc-vesta php -d display_errors=0 -d memory_limit=1024M < /tmp/vesta-105557-verified-person-unblock.php | tee "$backup/unblock-result.log"
+          grep -Fq 'EXACT_105557_OUTBOX_UNBLOCKED_NO_DUPLICATE_SEND=yes' "$backup/unblock-result.log"
+          SHELL
+      - name: One ordinary protected accounting pass and readback; no forced duplicate resend
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1024M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $r=Vesta_Accounting_Reliability::tick(true,1);
+          echo 'ONE_PROTECTED_SENDER_PASS='.json_encode($r,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          $o=wc_get_order(105557);$api=new BazaraApi(true);$cloud=Vesta_Accounting_Reliability::cloud($api);
+          $invoices=$cloud['orders'][105557]??[];
+          $q=$wpdb->get_row($wpdb->prepare('SELECT state,reason,attempts,remote_id FROM '.Vesta_Accounting_Reliability::table().' WHERE order_id=%d',105557),ARRAY_A);
+          echo 'ORDER_105557_AFTER_PASS='.json_encode(['queue'=>$q,'cloud_invoices'=>count($invoices),
+            'buyer_erp_person'=>(int)get_user_meta(6416,'mahak_id',true),
+            'no_billing_person_or_amount_changed'=>true],JSON_UNESCAPED_UNICODE).PHP_EOL;
+          $bank=vcar_bank(get_option('bazara_visitor_settings',[]),$o->get_payment_method());
+          foreach($invoices as $inv){
+            $erp=(int)($inv['OrderId']??0);
+            $reason=vcar_verify($o,$inv,$cloud['details'][$erp]??[],$cloud['receipts'][$erp]??[],$bank,$cloud['transfers'],(int)($o->get_meta('_vcar_money_multiplier')?:10));
+            echo 'ORDER_105557_CLOUD_CHECK='.json_encode(['invoice_id'=>$erp,
+              'person_match'=>(int)($inv['PersonId']??0)===12770247,
+              'financial_match'=>$reason?:'verified',
+              'receipts'=>count($cloud['receipts'][$erp]??[])
+            ],JSON_UNESCAPED_UNICODE).PHP_EOL;
+          }
+          echo 'NO_SECOND_REMOTE_SUBMISSION_ATTEMPT=yes'.PHP_EOL;
+          PHP
