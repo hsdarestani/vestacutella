@@ -1,0 +1,80 @@
+name: Vesta one-time verified Woo ownership repair for three admin-linked orders
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-commit-verified-admin-owner-correction-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-verified-legacy-owner-correction
+  cancel-in-progress: false
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq php-cli sshpass
+      - name: Confirm previewed script syntax and backup before any Woo order ownership changes
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          php -l scripts/repair-vesta-privileged-order-owners-20261117.php
+          sshpass -e scp -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/repair-vesta-privileged-order-owners-20261117.php "root@$HOST:/tmp/vesta-admin-owner-one-time-20261117.php"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'SHELL'
+          set -Eeuo pipefail
+          umask 077
+          exec 9>/run/lock/vesta-verified-legacy-owner-correction.lock
+          flock -n 9
+          backup=/srv/backups/vesta-admin-owner-verified-$(date -u +%Y%m%dT%H%M%SZ)
+          mkdir -m 0700 -p "$backup"
+          docker exec vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb-dump -uroot --single-transaction --quick "$MARIADB_DATABASE" wp_posts wp_postmeta wp_users wp_usermeta' | gzip -1 > "$backup/orders-users.sql.gz"
+          gzip -t "$backup/orders-users.sql.gz"
+          (cd "$backup"; sha256sum orders-users.sql.gz > SHA256SUMS; sha256sum -c SHA256SUMS)
+          echo 'BACKUP_AND_SHA256_VERIFIED=yes'
+          enabled=$(docker exec -i vc-vesta php -d display_errors=0 <<'PHP'
+          <?php
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          echo get_option('vcar_sender_enabled',false)?'yes':'no';
+          PHP
+          )
+          if [[ "$enabled" != yes ]]; then echo 'SENDER_WAS_DISABLED_NO_CHANGES=yes';exit 12;fi
+          restore_sender(){
+            docker exec -i vc-vesta php -d display_errors=0 <<'PHP'
+          <?php
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          update_option('vcar_sender_enabled',true,false);
+          echo 'PROTECTED_SENDER_RESTORED='.(int)get_option('vcar_sender_enabled',false).PHP_EOL;
+          PHP
+          }
+          trap restore_sender EXIT
+          docker exec -i vc-vesta php -d display_errors=0 <<'PHP'
+          <?php
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          update_option('vcar_sender_enabled',false,false);
+          if(get_option('vcar_sender_enabled',true))exit(19);
+          echo 'SENDER_PAUSED_FOR_VERIFIED_ORDER_OWNERSHIP=yes'.PHP_EOL;
+          PHP
+          docker exec -i -e VC_PRIV_OWNER_COMMIT=no vc-vesta php -d memory_limit=768M -d display_errors=0 < /tmp/vesta-admin-owner-one-time-20261117.php | tee "$backup/preflight.log"
+          grep -Fq '"ready":3' "$backup/preflight.log"
+          grep -Fq '"blocked":0' "$backup/preflight.log"
+          docker exec -i -e VC_PRIV_OWNER_COMMIT=yes -e VC_PRIV_BACKUP_VERIFIED=yes vc-vesta php -d memory_limit=768M -d display_errors=0 < /tmp/vesta-admin-owner-one-time-20261117.php | tee "$backup/commit.log"
+          grep -Fq '"repaired":3' "$backup/commit.log"
+          grep -Fq 'NO_ERP_FINANCIAL_WRITES=yes' "$backup/commit.log"
+          docker exec -i -e VC_PRIV_OWNER_COMMIT=no vc-vesta php -d memory_limit=768M -d display_errors=0 < /tmp/vesta-admin-owner-one-time-20261117.php | tee "$backup/readback.log"
+          grep -Fq '"already_repaired":3' "$backup/readback.log"
+          echo 'THREE_VERIFIED_WOO_ORDER_OWNERS_REPAIRED=yes NO_ERP_INVOICE_OR_PAYMENT_WRITES=yes'
+          SHELL
+      - name: Site availability after ownership correction
+        run: |
+          set -Eeuo pipefail
+          for host in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir; do
+            code=$(curl -LsS --connect-timeout 8 --max-time 25 -o /dev/null -w '%{http_code}' "https://$host/")
+            echo "SITE=$host HTTP=$code"; test "$code" = 200
+          done
