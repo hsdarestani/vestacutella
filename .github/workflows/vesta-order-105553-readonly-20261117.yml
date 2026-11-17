@@ -1,0 +1,76 @@
+name: Read only root-cause check for paid Vesta order 105553 versus Mahak Cloud
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-order-105553-readonly-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Verify the Woo order, local Bazara, protected sender queue, remote invoices and shipping without writes
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1024M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          global $wpdb;
+          $id=105553;$o=wc_get_order($id);
+          if(!$o || !class_exists('Vesta_Accounting_Reliability') || !class_exists('BazaraApi')){echo "ORDER_OR_SYNC_CLASS_UNAVAILABLE=yes\n";exit(21);}
+          $settings=get_option('bazara_visitor_settings',array());
+          $bank=vcar_bank($settings,$o->get_payment_method());
+          $outbox=$wpdb->get_row($wpdb->prepare("SELECT state,reason,remote_id,attempts,submitted_at,updated_at,next_attempt FROM ".Vesta_Accounting_Reliability::table()." WHERE order_id=%d",$id),ARRAY_A);
+          $items=[];
+          foreach($o->get_items('line_item') as $it){
+            $pid=$it->get_variation_id() ?: $it->get_product_id();
+            $p=(int)get_post_meta($pid,'mahak_id',true);$d=(int)get_post_meta($pid,'mahak_product_detail_id',true);
+            $exists=$p>0&&$d>0&&(bool)$wpdb->get_var($wpdb->prepare("SELECT ProductDetailId FROM {$wpdb->prefix}bazara_product_details WHERE ProductDetailId=%d AND ProductId=%d AND Deleted=0",$d,$p));
+            $items[]=['woo_product_id'=>(int)$it->get_product_id(),'variation_id'=>(int)$it->get_variation_id(),'qty'=>(float)$it->get_quantity(),'net_toman'=>(float)$it->get_total(),'mapped_product_id'=>$p,'mapped_detail_id'=>$d,'erp_detail_pointer_valid'=>(int)$exists];
+          }
+          $localCount=(int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$wpdb->prefix}bazara_orders WHERE OrderClientId=%d",$id));
+          $diagnostic=[
+            'order_id'=>$id,'status'=>$o->get_status(),'paid'=>(bool)$o->get_date_paid(),'eligible'=>(bool)vcar_eligible($o),
+            'gateway'=>$o->get_payment_method(),'currency'=>$o->get_currency(),'total_toman'=>(float)$o->get_total(),
+            'shipping_toman'=>(float)$o->get_shipping_total(),'discount_toman'=>(float)$o->get_discount_total(),
+            'line_toman'=>array_sum(array_column($items,'net_toman')),
+            'tax_toman'=>(float)$o->get_total_tax(),'fee_count'=>count($o->get_items('fee')),
+            'customer_account_present'=>(int)$o->get_customer_id()>0,
+            'customer_person_id_present'=>(int)get_user_meta((int)$o->get_customer_id(),'mahak_id',true)>0,
+            'bank_mapping'=>$bank,'preflight_reason'=>Vesta_Accounting_Reliability::preflight($o,$bank),
+            'identity_reason'=>vcar_identity_guard($o),'order_local_mahak_id'=>(int)$o->get_meta('mahak_id'),
+            'local_bazara_order_cache_rows'=>$localCount,'outbox'=>$outbox,'line_items'=>$items,
+            'sender_enabled'=>(int)get_option('vcar_sender_enabled',false),
+            'worker_heartbeat'=>get_option('vcar_heartbeat')
+          ];
+          // Avoid dumping embedded exception text or personal information from opaque worker heartbeat.
+          $hb=$diagnostic['worker_heartbeat'];$diagnostic['worker_heartbeat']=is_array($hb)?['at'=>$hb['at']??null,'success'=>$hb['success']??null]:null;
+          echo 'ORDER_105553_LOCAL='.json_encode($diagnostic,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          try{
+            $api=new BazaraApi(true);$cloud=Vesta_Accounting_Reliability::cloud($api);
+            $rows=$cloud['orders'][$id]??[];
+            echo 'ORDER_105553_CLOUD_INVOICE_COUNT='.count($rows).PHP_EOL;
+            foreach($rows as $r){
+              $erp=(int)($r['OrderId']??0);$m=(int)($o->get_meta('_vcar_money_multiplier')?:10);
+              $ver=vcar_verify($o,$r,$cloud['details'][$erp]??[],$cloud['receipts'][$erp]??[],$bank,$cloud['transfers'],$m);
+              $personCheck=vcar_identity_guard($o,(int)($r['PersonId']??0));
+              echo 'ORDER_105553_CLOUD='.json_encode([
+                'invoice_id'=>$erp,'multiplier'=>$m,
+                'cloud_shipping'=>(float)($r['SendCost']??0),'cloud_discount'=>(float)($r['Discount']??0),
+                'cloud_line_count'=>count($cloud['details'][$erp]??[]),
+                'cloud_receipt_count'=>count($cloud['receipts'][$erp]??[]),
+                'finance_verification_reason'=>$ver?:'verified',
+                'person_verification_reason'=>$personCheck?:'verified'
+              ],JSON_UNESCAPED_UNICODE).PHP_EOL;
+            }
+          }catch(Throwable $e){echo 'CLOUD_READ_FAILED_CLASS='.preg_replace('/[^A-Za-z]/','',get_class($e)).' CLOUD_STATUS=unverified'.PHP_EOL;}
+          echo 'READ_ONLY_NO_INVOICE_ORDER_PRODUCT_CUSTOMER_OR_CLOUD_WRITES=yes'.PHP_EOL;
+          PHP
