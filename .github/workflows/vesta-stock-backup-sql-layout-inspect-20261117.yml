@@ -1,0 +1,66 @@
+name: Vesta identify October SQL inventory backup table insert syntax without printing values
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-stock-backup-sql-layout-inspect-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 14
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Identify SQL serialization and whether product stock IDs appear in Woo postmeta backup
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'python3 -' <<'PY'
+          from pathlib import Path
+          import gzip,re,json
+          paths=[
+            ('oct11','/srv/backups/pre-vesta-live/vesta-before-live-20261011T224826Z.sql.gz'),
+            ('oct24','/srv/backups/vesta-full-db-verify-20261024/vestacos_m-full.sql.gz'),
+          ]
+          for name,path in paths:
+            counts={'insert_any':0,'insert_postmeta':0,'mentions_70299':0,'mentions_70300':0,
+              'postmeta_mentions_70299':0,'postmeta_mentions_70300':0,'create_postmeta':0}
+            styles=[];matches=[]
+            with gzip.open(path,'rt',encoding='utf-8',errors='replace') as f:
+              for line in f:
+                first=line[:230]
+                if line.startswith('INSERT INTO'):
+                  counts['insert_any']+=1
+                  if 'postmeta' in first:
+                    counts['insert_postmeta']+=1
+                    if len(styles)<3:
+                      prefix=line.split('VALUES',1)[0]
+                      styles.append(prefix[:180])
+                if '70299' in line:
+                  counts['mentions_70299']+=1
+                  if 'postmeta' in first:
+                    counts['postmeta_mentions_70299']+=1
+                if '70300' in line:
+                  counts['mentions_70300']+=1
+                  if 'postmeta' in first:
+                    counts['postmeta_mentions_70300']+=1
+                if 'CREATE TABLE' in first and 'postmeta' in first:counts['create_postmeta']+=1
+                if 'postmeta' in first and ('70299' in line or '70300' in line):
+                  for id in ('70299','70300'):
+                    i=line.find(id)
+                    if i<0:continue
+                    context=line[max(0,i-35):i+65]
+                    # Never print raw content. Replace every ASCII/Unicode letter
+                    # in a context window with X except the stock key names.
+                    context=re.sub(r'[A-Za-z\u0600-\u06ff]+', 'X', context)
+                    matches.append({'item':id,'length':len(line),'sanitized_punct_context':context})
+                    if len(matches)>=5:break
+              print('INVENTORY_BACKUP_SQL_STYLE_'+name+'='+json.dumps({
+                'counts':counts,'sanitized_statement_prefixes':styles,
+                'sanitized_id_context':matches[:5]
+              },ensure_ascii=False))
+          print('SQL_LAYOUT_ONLY_READ_ONLY=yes')
+          PY
