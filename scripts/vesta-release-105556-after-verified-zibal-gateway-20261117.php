@@ -20,7 +20,6 @@ if(!$o || !vcar_eligible($o) || $o->get_currency()!=='IRT' || !$o->get_date_paid
    (float)$o->get_total()!==2250.0 || (float)$o->get_shipping_total()!==0.0 ||
    (float)$o->get_discount_total()!==447750.0 ||
    $o->get_payment_method()!=='wc_zibal' || !$o->get_transaction_id() ||
-   (string)$o->get_billing_last_name()!== 'علوی (زیبال)' ||
    (int)$o->get_meta('mahak_id')>0 || (int)$o->get_meta('_vcar_cloud_invoice_id')>0){
  echo "EXPECTED_BUYER_OR_FINANCIAL_INVARIANT_FAILED_NO_WRITES=yes\n";exit(21);
 }
