@@ -1,0 +1,53 @@
+name: Vesta strict read-only ERP detail matching for 4 blocked orders and 3 variations
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-3-new-blocked-variant-exact-details-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Inspect ERP product details and name attributes for exactly 3 blocked variants, no changes
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1024M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);set_time_limit(0);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $list=[[70337,10685058],[101738,10685229],[52855,10685552]];$out=[];
+          foreach($list as [$vId,$erpId]){
+            $v=wc_get_product($vId);$parent=$v?wc_get_product($v->get_parent_id()):null;
+            $p=$wpdb->get_row($wpdb->prepare("SELECT ProductId,ProductCode,ProductName,Deleted FROM {$wpdb->prefix}bazara_products WHERE ProductId=%d",$erpId),ARRAY_A);
+            $ds=$wpdb->get_results($wpdb->prepare("SELECT ProductId,ProductDetailId,Properties,Deleted FROM {$wpdb->prefix}bazara_product_details WHERE ProductId=%d",$erpId),ARRAY_A);
+            $detail=[];
+            foreach($ds as $d){
+              $assigned=$wpdb->get_results($wpdb->prepare("SELECT p.ID,p.post_type FROM {$wpdb->posts} p JOIN {$wpdb->postmeta} m ON m.post_id=p.ID
+                WHERE m.meta_key='mahak_product_detail_id' AND m.meta_value=%s AND p.post_status NOT IN ('trash','auto-draft')",(string)$d['ProductDetailId']),ARRAY_A);
+              $detail[]=['detail_id'=>(int)$d['ProductDetailId'],'properties_json'=>$d['Properties'],'deleted'=>(int)$d['Deleted'],'woo_references'=>$assigned];
+            }
+            $siblings=[];
+            if($parent){
+             foreach($parent->get_children() as $ch){
+                $s=wc_get_product($ch);if(!$s)continue;
+                $siblings[]=['id'=>(int)$ch,'name'=>$s->get_name(),'attributes'=>$s->get_variation_attributes(),
+                  'erp_product'=>(int)get_post_meta($ch,'mahak_id',true),
+                  'erp_detail'=>(int)get_post_meta($ch,'mahak_product_detail_id',true)];
+                if(count($siblings)>=35)break;
+             }
+            }
+            $out[]=['woo_variation'=>$vId,'variation_name'=>$v?$v->get_name():null,
+              'variation_attrs'=>$v?$v->get_variation_attributes():null,'parent_sku'=>$parent?$parent->get_sku():null,
+              'erp_good'=>$p,'erp_details'=>$detail,'published_woo_siblings'=>$siblings];
+          }
+          echo 'BLOCKED_VARIATION_EXACT_ERP_DETAILS='.json_encode($out,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'NO_NEW_GOODS_OR_VARIATION_WRITES=yes'.PHP_EOL;
+          PHP
