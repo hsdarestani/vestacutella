@@ -1,0 +1,62 @@
+name: Vesta inspect six Mahak picture to Woo product links and plugin photo matching read-only
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-inspect-mahak-photo-match-and-safe-canary-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Inspect safe vendor photo mapping logic and six cached picture identifiers
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=12 "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          p=Path('/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara/classes/class.bazara.api.php')
+          text=p.read_text(encoding='utf-8',errors='replace').splitlines()
+          start=next((i for i,l in enumerate(text) if 'function sync_pictures(' in l),-1)
+          print('SYNC_PICTURES_START_LINE=',start+1)
+          if start<0:raise SystemExit(31)
+          for i in range(start,min(len(text),start+220)):
+            line=text[i]
+            if i>start and re.search(r'^\s*(public|private|protected) function ',line):break
+            if not re.search(r'picture|product|sku|file|attach|image|gallery|Url|Photo|Code|thumb|delete|split|explode|basename|regex|sync|PictureId',line,re.I):continue
+            if re.search(r'https?://|apikey|token|password|credential',line,re.I):continue
+            print('PHOTO_SYNC_CODE_LINE',i+1,re.sub(r'\s+',' ',line).strip()[:230])
+          PY
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=384M <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $rows=$wpdb->get_results("SELECT PictureId,FileName,Url,isSync,queue,Deleted FROM {$wpdb->prefix}bazara_pictures",ARRAY_A);
+          $items=[];
+          foreach($rows as $r){
+            $base=basename((string)($r['FileName']??''));
+            $numbers=preg_match_all('/[0-9]{3,}/',$base,$matches)?$matches[0]:[];
+            $linked=[];
+            foreach(array_unique($numbers) as $number){
+              $ids=$wpdb->get_col($wpdb->prepare("SELECT ID FROM {$wpdb->posts} WHERE ID=%d AND post_type IN ('product','product_variation')",(int)$number));
+              foreach($ids as $id)$linked[]=(int)$id;
+            }
+            $items[]=['picture_id'=>(int)$r['PictureId'],'active'=>(int)empty($r['Deleted']),
+             'synced'=>(int)!empty($r['isSync']),'queued'=>(int)!empty($r['queue']),
+             'filename_numeric_candidates'=>$numbers,'woo_product_id_from_exact_filename'=>$linked,
+             'has_url'=>!empty($r['Url']),'has_file_name'=>!empty($base)];
+          }
+          echo 'MAHAK_PICTURE_LINK_CANDIDATES='.json_encode($items,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'IMAGE_SYNC_SAFETY_ACTIVE='.(function_exists('vesta_bazara_image_patch_verified')&&vesta_bazara_image_patch_verified()?'yes':'no').PHP_EOL;
+          echo 'NO_PHOTO_PRODUCT_OR_ATTACHMENT_CHANGES=yes'.PHP_EOL;
+          PHP
+          REMOTE
