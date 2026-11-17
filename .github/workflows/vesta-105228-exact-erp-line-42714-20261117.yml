@@ -1,0 +1,40 @@
+name: Vesta exact cloud invoice 105228 line identity to Woo 42714 safe mapping preflight
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-105228-exact-erp-line-42714-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Cross-check ERP detail 12182833, its parent good properties and any existing Woo matches
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=512M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $v=wc_get_product(42714);$parent=$v && $v->is_type('variation')?wc_get_product($v->get_parent_id()):null;
+          $d=$wpdb->get_row("SELECT ProductId,ProductDetailId,Properties,Deleted FROM {$wpdb->prefix}bazara_product_details WHERE ProductDetailId=12182833",ARRAY_A);
+          $g=$d?$wpdb->get_row($wpdb->prepare("SELECT ProductId,ProductCode,ProductName,Deleted FROM {$wpdb->prefix}bazara_products WHERE ProductId=%d",(int)$d['ProductId']),ARRAY_A):null;
+          $refs=$wpdb->get_results("SELECT p.ID,p.post_type,p.post_status,m.meta_value FROM {$wpdb->posts} p JOIN {$wpdb->postmeta} m ON m.post_id=p.ID WHERE m.meta_key='mahak_product_detail_id' AND m.meta_value='12182833' ORDER BY p.ID",ARRAY_A);
+          $siblings=[];
+          if($parent)foreach($parent->get_children() as $id){$p=wc_get_product($id);if(!$p)continue;
+              $siblings[]=['id'=>$id,'name'=>$p->get_name(),'sku'=>$p->get_sku(),'attrs'=>$p->get_variation_attributes(),'erp_detail'=>(int)get_post_meta($id,'mahak_product_detail_id',true)];
+          }
+          $out=['woo_id'=>42714,'name'=>$v?$v->get_name():null,
+            'woo_sku'=>$v?$v->get_sku():null,'woo_attrs'=>$v?$v->get_variation_attributes():null,
+            'parent_id'=>$v?$v->get_parent_id():null,'parent_name'=>$parent?$parent->get_name():null,
+            'parent_sku'=>$parent?$parent->get_sku():null,'erp_detail'=>$d,'erp_parent_good'=>$g,'existing_refs'=>$refs,'siblings'=>$siblings];
+          echo 'EXACT_MISSING_MAHK_ORDER_105228_PRODUCT_MAPPING='.json_encode($out,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'NO_PRODUCT_FINANCIAL_OR_STOCK_WRITES=yes'.PHP_EOL;
+          PHP
