@@ -1,0 +1,58 @@
+name: Vesta guarded recheck two paid washbag orders 105364 105428 after exact ERP mapping
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-guarded-retry-two-washbag-paid-orders-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-one-time-two-washbag-paid-order-recovery
+  cancel-in-progress: false
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax check and stage exact 2 never-submitted outbox orders recovery
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq php-cli sshpass
+          php -l scripts/vesta-release-two-previously-unmapped-washbag-orders-20261117.php
+          sshpass -e scp -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/vesta-release-two-previously-unmapped-washbag-orders-20261117.php "root@$HOST:/tmp/vesta-two-washbag-order-guarded-recovery.php"
+      - name: Verify cloud invoice absence, no earlier submissions and exact preflight before any outbox mutation
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          umask 077
+          exec 9>/run/lock/vesta-protected-two-washbag-orders.lock
+          flock -n 9
+          backup=/srv/backups/vesta-two-washbag-105364-105428-$(date -u +%Y%m%dT%H%M%SZ)
+          mkdir -p -m 0700 "$backup"
+          docker exec -i -e VC_2_WASHBAG_COMMIT=no vc-vesta php -d display_errors=0 -d memory_limit=1024M < /tmp/vesta-two-washbag-order-guarded-recovery.php | tee "$backup/dryrun.log"
+          grep -Fq 'WASHBAG_TWO_ORDERS_RECHECK_DRYRUN_NO_WRITES=yes' "$backup/dryrun.log"
+          docker exec vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw' > "$backup/order-outbox-and-erp-map-before.tsv" <<'SQL'
+          SELECT * FROM wp_vesta_accounting_outbox WHERE order_id IN (105364,105428);
+          SELECT meta_id,post_id,meta_key,meta_value FROM wp_postmeta WHERE post_id IN (105364,105428,70337) AND meta_key IN ('mahak_id','mahak_product_detail_id','_vcar_money_multiplier');
+          SQL
+          (cd "$backup";sha256sum order-outbox-and-erp-map-before.tsv > SHA256SUMS;sha256sum -c SHA256SUMS)
+          echo 'EXACT_TWO_ORDER_OUTBOX_AND_MAPPING_BACKUP_VERIFIED=yes'
+          docker exec -i -e VC_2_WASHBAG_COMMIT=yes -e VC_2_WASHBAG_BACKUP_VERIFIED=yes vc-vesta php -d display_errors=0 -d memory_limit=1536M < /tmp/vesta-two-washbag-order-guarded-recovery.php | tee "$backup/result.log"
+          grep -Fq 'NO_DIRECT_ERP_REPLAY_OR_STOCK_MUTATIONS_BY_RECOVERY_SCRIPT=yes' "$backup/result.log"
+          echo 'EXACT_TWO_ORDERS_SAFE_PROTECTED_RECHECK_COMPLETED=yes'
+          REMOTE
+      - name: HTTP storefront health after controlled outbox pass
+        run: |
+          set -Eeuo pipefail
+          for host in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
+            code=$(curl -LsS --connect-timeout 8 --max-time 25 -o /dev/null -w '%{http_code}' "https://$host/")
+            echo "SITE=$host HTTP=$code";test "$code" = 200
+          done
