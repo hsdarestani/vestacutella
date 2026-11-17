@@ -58,8 +58,9 @@ function check_swap_preflight($wpdb,$plan,$meta,$posts,$lookup){
     if(!$product || strpos((string)$product->get_name(),$expect['size'])===false ||
       $product->get_sku()!==(string)$id)throw new RuntimeException('woo_size_identity_changed');
     $good=$goods[$expect['product']]??null;
+    $erpName=$good?strtr((string)$good['ProductName'],['ي'=>'ی','ك'=>'ک','‌'=>' ']):'';
     if(!$good || (string)$good['ProductCode']!==$expect['sku'] ||
-        strpos((string)$good['ProductName'],$expect['size'])===false)
+        strpos($erpName,$expect['size'])===false)
       throw new RuntimeException('erp_good_size_or_code_changed');
     if(count($details[$expect['product']]??[])!==1||
        (int)$details[$expect['product']][0]['ProductDetailId']!==$expect['detail'])
