@@ -1,0 +1,65 @@
+name: Vesta trace 10 recent risk orders safe mapping and repeated local acknowledgement ids read-only
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-10-risk-orders-recovery-preflight-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Identify exact missing item mappings and ambiguous old local ack, with cloud read and no mutations
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1536M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);set_time_limit(0);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $api=new BazaraApi(true);$cloud=Vesta_Accounting_Reliability::cloud($api);
+          $orders=[105545,105540,105537,105535,105482,105480,105428,105419,105369,105364];
+          $out=[];
+          foreach($orders as $id){
+            $o=wc_get_order($id);if(!$o)continue;
+            $q=$wpdb->get_row($wpdb->prepare("SELECT * FROM ".Vesta_Accounting_Reliability::table()." WHERE order_id=%d",$id),ARRAY_A);
+            $local=(int)$o->get_meta('mahak_id');
+            $sameLocal=[];
+            if($local)$sameLocal=$wpdb->get_col($wpdb->prepare(
+              "SELECT post_id FROM {$wpdb->postmeta} WHERE meta_key='mahak_id' AND meta_value=%s ORDER BY post_id LIMIT 40",(string)$local));
+            $cache=$wpdb->get_results($wpdb->prepare("SELECT OrderId,OrderClientId,OrderCode,PersonId FROM {$wpdb->prefix}bazara_orders WHERE OrderClientId=%d OR OrderId=%d ORDER BY OrderId DESC LIMIT 15",$id,$local),ARRAY_A);
+            $missing=[];
+            foreach($o->get_items('line_item') as $it){
+              $pId=$it->get_variation_id()?:$it->get_product_id();
+              $p=wc_get_product($pId);if(!$p)continue;
+              $ep=(int)get_post_meta($pId,'mahak_id',true);$ed=(int)get_post_meta($pId,'mahak_product_detail_id',true);
+              if($ep && $ed)continue;
+              $sku=(string)$p->get_sku();$parent=$p->is_type('variation')?wc_get_product($p->get_parent_id()):null;
+              $codes=array_values(array_unique(array_filter([$sku,(string)$pId,$parent?(string)$parent->get_id():null,$parent?(string)$parent->get_sku():null])));
+              $matched=[];
+              foreach($codes as $code){
+                foreach($wpdb->get_results($wpdb->prepare("SELECT ProductId,ProductCode,ProductName FROM {$wpdb->prefix}bazara_products WHERE Deleted=0 AND ProductCode=%s",$code),ARRAY_A) as $good)
+                  $matched[]=['product_id'=>(int)$good['ProductId'],'product_code'=>(string)$good['ProductCode'],
+                    'good_name'=>$good['ProductName']];
+              }
+              $missing[]=['woo_item_id'=>$pId,'type'=>$p->get_type(),'qty'=>$it->get_quantity(),'name'=>$p->get_name(),
+                'sku'=>$sku,'parent_id'=>$parent?$parent->get_id():null,
+                'erp_mapping_exists'=>false,'good_by_stable_codes'=>$matched];
+            }
+            $out[]=['order_id'=>$id,'state'=>$q['state']??null,'reason'=>$q['reason']??null,
+              'attempts'=>(int)($q['attempts']??0),'outbox_remote_id'=>(int)($q['remote_id']??0),
+              'local_invoice'=>$local,'other_woo_orders_same_local_ack'=>array_values(array_diff(array_map('intval',$sameLocal),[$id])),
+              'cached_bazara_order_rows'=>$cache,
+              'new_cloud_invoice_count'=>count($cloud['orders'][$id]??[]),
+              'missing_line_items'=>$missing,
+              'person_mapped'=>(int)get_user_meta((int)$o->get_customer_id(),'mahak_id',true)>0];
+          }
+          echo 'RECENT_RISK_ORDER_DETAILED_TRIAGE='.json_encode($out,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'NO_FINANCIAL_STOCK_CUSTOMER_OR_CATALOG_WRITES=yes'.PHP_EOL;
+          PHP
