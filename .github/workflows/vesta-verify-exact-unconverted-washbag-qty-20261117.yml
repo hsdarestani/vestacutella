@@ -1,0 +1,56 @@
+name: Vesta exact pending unconverted Mahak washbag quantities compared with site stock gap
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-verify-exact-unconverted-washbag-qty-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Execute Bazaar's own two stock deduction functions read-only for the precise variants
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=512M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);ini_set('display_errors','0');
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          if(!function_exists('get_order_item_qty')||!function_exists('get_bazara_not_converted_qty'))exit(21);
+          $s=get_option('bazara_visitor_settings',[]);
+          echo 'BAZARA_ORDER_ID_LOWER_BOUND='.json_encode($s['order_id_greater_than']??null).PHP_EOL;
+          $report=[];
+          foreach([
+            ['size'=>'large','woo_id'=>70299,'detail'=>12269302,'mahak_opening'=>11],
+            ['size'=>'small','woo_id'=>70300,'detail'=>12269303,'mahak_opening'=>7]
+          ] as $a){
+            $v=wc_get_product($a['woo_id']);
+            $o=get_order_item_qty($a['woo_id'],'_variation_id');
+            $b=get_bazara_not_converted_qty($a['detail']);
+            $cases=$wpdb->get_results($wpdb->prepare(
+             "SELECT o.OrderClientId,o.OrderId,o.OrderCode,od.Count1
+                FROM {$wpdb->prefix}bazara_orders o JOIN {$wpdb->prefix}bazara_order_details od ON o.OrderId=od.OrderId
+                WHERE o.OrderCode=0 AND od.ProductDetailId=%d AND o.Deleted=0 AND od.Deleted=0 ORDER BY o.OrderClientId DESC LIMIT 30",$a['detail']),ARRAY_A);
+            $report[]=[
+              'size'=>$a['size'],'woo_variation_id'=>$a['woo_id'],
+              'erp_detail_id'=>$a['detail'],'woo_stock_now'=>$v->get_stock_quantity(),
+              'mahak_desktop_opening_stock'=>$a['mahak_opening'],
+              'unlinked_woo_order_qty_vendor'=>(float)$o,
+              'bazara_not_converted_qty_vendor'=>(float)$b,
+              'difference_opening_minus_woo'=>$a['mahak_opening']-$v->get_stock_quantity(),
+              'outstanding_bazara_order_rows'=>array_map(fn($r)=>[
+                'woo_or_client_order_id'=>(int)$r['OrderClientId'],
+                'remote_order_id'=>(int)$r['OrderId'],
+                'quantity'=>(float)$r['Count1']],$cases)
+            ];
+          }
+          echo 'EXACT_BAZARA_QUANTITY_COMPONENTS='.json_encode($report,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'NO_ERP_INVOICE_OR_WOO_STOCK_CHANGED=yes'.PHP_EOL;
+          PHP
