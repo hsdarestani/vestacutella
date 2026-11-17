@@ -1,0 +1,50 @@
+name: Vesta explain identity guard rejects for admin-associated orders without personal data
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-legacy-owner-eligibility-diagnostic-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read-only audit of verified owner exact-match requirements
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d memory_limit=768M -d display_errors=0' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          foreach([105208,105203,105052,57387,105554,105556] as $id){
+           $o=wc_get_order($id);if(!$o)continue;
+           $phone=vesta_otp_phone((string)$o->get_billing_phone());
+           $owner=$phone?vesta_otp_existing_user($phone):false;
+           $uid=is_numeric($owner)?(int)$owner:0;
+           $u=$uid?get_user_by('id',$uid):false;
+           $bill=vcar_identity_normalize_name($o->get_billing_first_name().' '.$o->get_billing_last_name());
+           $userName=$u?vcar_identity_normalize_name($u->first_name.' '.$u->last_name):'';
+           $billPhone=$uid?vesta_otp_phone((string)get_user_meta($uid,'billing_phone',true)):false;
+           $email=trim((string)$o->get_billing_email());
+           $emailOwner=$email?get_user_by('email',$email):false;
+           $result=['order'=>$id,'paid'=>(bool)vcar_eligible($o),'current_woo_uid'=>$o->get_customer_id(),
+             'otp_unique'=>!is_wp_error($owner)&&$uid>0,'otp_owner_is_another_user'=>$uid>0&&$uid!==(int)$o->get_customer_id(),
+             'new_owner_is_customer'=>$u?Vesta_Channel_Customers::customer($uid):false,
+             'billing_name_complete'=>$bill!=='','target_profile_name_present'=>$userName!=='',
+             'target_name_matches_billing'=>($bill!==''&&$bill===$userName),
+             'profile_billing_phone_present'=>(bool)$billPhone,'profile_phone_matches_otp'=>($phone&&$phone===$billPhone),
+             'billing_email_present'=>$email!=='',
+             'email_matches_target'=>($email===''||!$emailOwner||(int)$emailOwner->ID===$uid),
+             'target_user_id'=>$uid,
+             'order_mahak_id_present'=>(int)$o->get_meta('mahak_id')>0];
+           echo 'OWNER_REPAIR_DIAG='.json_encode($result,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          }
+          echo 'DIAG_READ_ONLY_NO_WRITES=yes'.PHP_EOL;
+          PHP
