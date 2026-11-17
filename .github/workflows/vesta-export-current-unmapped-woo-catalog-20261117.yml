@@ -1,0 +1,59 @@
+name: Vesta export only public-product Woo IDs and SKUs currently without Mahak mappings
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-export-current-unmapped-woo-catalog-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read-only export of unmapped saleable Woo products and variants, without customer or financial data
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1024M' > vesta-woo-unmapped-safe-catalog.csv <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $out=fopen('php://output','w');
+          fputcsv($out,['woo_item_id','kind','parent_id','public_product_name','sku','variant_attributes','in_stock','price_defined','erp_product_id','erp_detail_id']);
+          $rows=$wpdb->get_results("SELECT p.ID,p.post_type,p.post_parent FROM {$wpdb->posts} p WHERE p.post_status='publish' AND (p.post_type='product' OR p.post_type='product_variation') ORDER BY p.ID",ARRAY_A);
+          foreach($rows as $r){
+            $id=(int)$r['ID'];$type=$r['post_type'];
+            if($type==='product_variation' && get_post_status($r['post_parent'])!=='publish')continue;
+            if($type==='product' && (int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$wpdb->posts} WHERE post_parent=%d AND post_type='product_variation'",$id))>0)continue;
+            $product=wc_get_product($id);
+            if(!$product||!$product->is_purchasable())continue;
+            $pid=(int)get_post_meta($id,'mahak_id',true);$did=(int)get_post_meta($id,'mahak_product_detail_id',true);
+            if($pid>0&&$did>0)continue;
+            $attr=[];if($type==='product_variation')foreach($product->get_variation_attributes() as $key=>$value){
+              $taxonomy=substr($key,10);$val=(string)$value;
+              if(taxonomy_exists($taxonomy)){
+                $term=get_term_by('slug',$val,$taxonomy);
+                if($term&&!is_wp_error($term))$val=$term->name;
+              }
+              $attr[]=$taxonomy.':'.$val;
+            }
+            fputcsv($out,[$id,$type==='product_variation'?'variation':'simple',(int)$r['post_parent'],
+              (string)$product->get_name(),(string)$product->get_sku(),implode(' | ',$attr),
+              $product->is_in_stock()?'yes':'no',$product->get_price()===''?'no':'yes',$pid,$did]);
+          }
+          fclose($out);
+          PHP
+          test -s vesta-woo-unmapped-safe-catalog.csv
+          echo "UNMAPPED_PUBLIC_CATALOG_ROW_COUNT=$(($(wc -l < vesta-woo-unmapped-safe-catalog.csv)-1))"
+          echo 'NO_CUSTOMER_FINANCE_PRICE_STOCK_COUNT_OR_ACCOUNTING_RECORDS_EXPORTED=yes'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vesta-woo-unmapped-catalog-20261117
+          path: vesta-woo-unmapped-safe-catalog.csv
+          retention-days: 3
+          if-no-files-found: error
