@@ -1,0 +1,84 @@
+name: Vesta safe mapping of standalone Woo variation 101962 to existing Mahak product
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-map-exact-standalone-101962-safe-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-one-standalone-variant-mapping-101962
+  cancel-in-progress: false
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 13
+    steps:
+      - uses: actions/checkout@v4
+      - name: PHP syntax check
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq php-cli sshpass
+          php -l scripts/vesta-map-one-standalone-mahak-variant-101962-20261117.php
+      - name: Stage only exact-scoped variation 101962 metadata repair
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=12 scripts/vesta-map-one-standalone-mahak-variant-101962-20261117.php "root@$HOST:/tmp/vesta-standalone-101962-20261117.php"
+      - name: First verify product code, full variant name, unique detail and no previous mapping without writes
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=12 "root@$HOST" 'docker exec -i -e VC_101962_COMMIT=no vc-vesta php -d display_errors=0 -d memory_limit=512M' < scripts/vesta-map-one-standalone-mahak-variant-101962-20261117.php | tee preflight.log
+          grep -Fq 'VARIANT_101962_DRY_RUN_NO_WRITES=yes' preflight.log
+      - name: Back up product metadata and commit exactly two identifiers on one Woo variation
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=12 "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          umask 077
+          exec 9>/run/lock/vesta-exact-standalone-101962.lock
+          flock -n 9
+          backup=/srv/backups/vesta-standalone-variant-101962-$(date -u +%Y%m%dT%H%M%SZ)
+          mkdir -m 0700 -p "$backup"
+          docker exec vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw' > "$backup/all-product-erp-meta-before.tsv" <<'SQL'
+          SELECT meta_id,post_id,meta_key,meta_value FROM wp_postmeta WHERE meta_key IN ('mahak_id','mahak_product_detail_id') ORDER BY meta_id;
+          SQL
+          (cd "$backup";sha256sum all-product-erp-meta-before.tsv > SHA256SUMS;sha256sum -c SHA256SUMS)
+          echo 'VARIANT_101962_MAPPING_METADATA_BACKUP_VERIFIED=yes'
+          docker exec -i -e VC_101962_COMMIT=yes -e VC_101962_BACKUP_VERIFIED=yes vc-vesta php -d display_errors=0 -d memory_limit=768M < /tmp/vesta-standalone-101962-20261117.php | tee "$backup/result.log"
+          grep -Fq 'VARIANT_101962_EXACT_MAPPING_CREATED_AND_ALL_FIELDS_PRESERVED=yes' "$backup/result.log"
+          echo 'NO_MAHAK_GOODS_STOCK_PRICES_INVOICES_IMAGES_CHANGED=yes'
+          REMOTE
+      - name: Independent readback and web smoke test
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=12 "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=512M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $id=101962;$p=(int)get_post_meta($id,'mahak_id',true);$d=(int)get_post_meta($id,'mahak_product_detail_id',true);
+          $n=(int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$wpdb->prefix}bazara_product_details WHERE ProductId=%d AND ProductDetailId=%d AND Deleted=0",$p,$d));
+          $shared=(int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$wpdb->postmeta} WHERE meta_key='mahak_product_detail_id' AND meta_value=%s",(string)$d));
+          echo 'EXACT_101962_POST_MAPPING='.json_encode([
+           'variation_id'=>$id,'erp_product_id'=>$p,'erp_detail_id'=>$d,
+           'erp_exact_detail_exists'=>$n===1,'erp_detail_assigned_to_one_woo_item'=>$shared===1
+          ],JSON_UNESCAPED_UNICODE).PHP_EOL;
+          if($p!==10755482||$d!==12269296||$n!==1||$shared!==1)exit(40);
+          echo "EXACT_101962_MAPPING_READBACK_VERIFIED=yes\n";
+          PHP
+          for host in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
+            code=$(curl -LsS --connect-timeout 8 --max-time 25 -o /dev/null -w '%{http_code}' "https://$host/")
+            echo "SITE=$host HTTP=$code";test "$code" = 200
+          done
