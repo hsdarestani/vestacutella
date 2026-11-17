@@ -1,0 +1,33 @@
+name: Vesta restore existing protected outbound accounting sender after no-op owner preflight
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-restore-guarded-sender-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Verify guard and re-enable existing no-duplicate protected sender only
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          if(!class_exists('Vesta_Accounting_Reliability') || !function_exists('vcar_identity_guard'))exit(30);
+          if(get_option('vcar_schema')!=='1')exit(31);
+          $before=get_option('vcar_sender_enabled',false);
+          update_option('vcar_sender_enabled',true,false);
+          if(!get_option('vcar_sender_enabled',false))exit(32);
+          echo 'GUARDED_OUTBOUND_SENDER_RESTORED=yes PRIOR_ENABLED='.(int)$before.PHP_EOL;
+          echo 'NO_DIRECT_INVOICE_PERSON_PRODUCT_OR_ORDER_WRITES=yes'.PHP_EOL;
+          PHP
