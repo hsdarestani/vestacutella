@@ -1,0 +1,31 @@
+name: Vesta inspect vendor embedded 54323444 fake invoice trigger without altering plugin
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-inspect-bazara-sentinel-54323444-source-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Vendor code context around fake invoice ID and non-financial fallback
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'python3 -' <<'PY'
+          from pathlib import Path
+          f=Path('/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara/classes/class.bazara.api.php')
+          lines=f.read_text(encoding='utf-8',errors='replace').splitlines()
+          for start,end in [(3880,3940),(3115,3153),(3778,3815)]:
+            print('CODE_CONTEXT_RANGE',start,end)
+            for i in range(start-1,min(end,len(lines))):
+              line=lines[i]
+              if any(t in line.lower() for t in ('password','token','apikey','api_key','secret','http://','https://','authorization','credential')):continue
+              print('CODE_LINE',i+1,line.rstrip()[:240])
+          PY
