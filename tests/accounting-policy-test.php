@@ -4,7 +4,7 @@ function wc_get_is_paid_statuses(){return array('processing','completed');}
 function get_post_meta($id,$key,$single){return $key==='mahak_id'?7:9;}
 class TestItem {
  function get_variation_id(){return 1;} function get_product_id(){return 2;}
- function get_total(){return 180;} function get_quantity(){return 2;}
+ function get_total(){return 180;} function get_subtotal(){return 200;} function get_quantity(){return 2;}
 }
 class TestOrder {
  function get_id(){return 33;} function get_date_paid(){return true;}
@@ -56,3 +56,28 @@ check(vcar_verify($o,$tomanRow,$tomanLines,$receipts,55,$wrongUnitReceipt,1)==='
 
 class TestTomanOrder extends TestOrder { function get_meta($key){return $key==='_vcar_money_multiplier'?1:0;} }
 check(vcar_verify(new TestTomanOrder,$tomanRow,$tomanLines,$receipts,55,$tomanTransfers)==='','standalone_monitor_uses_persisted_toman_unit');
+
+class HeaderCouponItem {
+ function get_variation_id(){return 100;} function get_product_id(){return 0;}
+ function get_quantity(){return 6;} function get_subtotal(){return 450000;} function get_total(){return 2250;}
+}
+class HeaderCouponOrder extends TestOrder {
+ function get_id(){return 105203;} function get_items($type){return $type==='fee'?[]:[new HeaderCouponItem];}
+ function get_shipping_total(){return 0;} function get_total(){return 2250;}
+ function get_discount_total(){return 447750;}
+}
+$couponOrder=new HeaderCouponOrder();
+$couponRow=['OrderId'=>308569697,'OrderClientId'=>105203,'SendCost'=>0,'Discount'=>447750,'ReceiptId'=>null];
+$couponLines=[['ProductDetailId'=>9,'Count1'=>6,'Price'=>75000,'Discount'=>0]];
+$couponReceipts=[['OrderId'=>308569697,'ReceiptId'=>65124614,'CashAmount'=>0]];
+$couponTransfers=[['ReceiptId'=>65124614,'BankId'=>55,'Amount'=>2250,'Type'=>2]];
+check(vcar_verify($couponOrder,$couponRow,$couponLines,$couponReceipts,55,$couponTransfers,1)==='','legitimate_coupon_booked_on_header_not_again_on_lines');
+$couponBad=$couponRow;$couponBad['Discount']=0;
+check(vcar_verify($couponOrder,$couponBad,$couponLines,$couponReceipts,55,$couponTransfers,1)==='line_quantity_or_amount','missing_coupon_header_does_not_bypass_line_check');
+$couponBad=$couponLines;$couponBad[0]['Price']=76000;
+check(vcar_verify($couponOrder,$couponRow,$couponBad,$couponReceipts,55,$couponTransfers,1)==='line_quantity_or_amount','wrong_gross_line_cannot_hide_behind_header_discount');
+$couponBad=$couponRow;$couponBad['SendCost']=150000;
+check(vcar_verify($couponOrder,$couponBad,$couponLines,$couponReceipts,55,$couponTransfers,1)==='invoice_total_or_shipping','fake_shipping_not_accepted_with_coupon');
+$couponBad=$couponTransfers;$couponBad[0]['Amount']=450000;
+check(vcar_verify($couponOrder,$couponRow,$couponLines,$couponReceipts,55,$couponBad,1)==='receipt_amount','wrong_coupon_payment_still_rejected');
+echo 'STRICT_HEADER_COUPON_REGRESSION_COMPLETE=yes'.PHP_EOL;
