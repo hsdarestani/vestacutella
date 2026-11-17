@@ -1,0 +1,82 @@
+name: Vesta classify ERP/Woo name disagreements and shared ERP person safely (read-only)
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/vesta-cloud-invoice-name-discrepancy-classify-20261117.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  classify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 16
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Classify wrong customer links vs routine name differences without exposing private identities
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d memory_limit=1024M -d display_errors=0' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);set_time_limit(0);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          $api=new BazaraApi(true);$r=$api->get_all_data('',array('fromPersonVersion'=>0,'fromOrderVersion'=>0));
+          $m=$r['message']??[];if(empty($r['success'])||!is_array($m['People']??null)||!is_array($m['Orders']??null))exit(21);
+          $people=[];foreach($m['People'] as $p)if(empty($p['Deleted']) && (int)($p['PersonId']??0)>0)$people[(int)$p['PersonId']]=$p;
+          $C=[];$examples=[];$personOrders=[];$personPhones=[];$personNames=[];$personClients=[];$clientCounts=[];$personRecent=[];
+          $inc=function($key,$order=0)use(&$C,&$examples){$C[$key]=($C[$key]??0)+1;if($order>0 && count($examples[$key]??[])<8)$examples[$key][]=$order;};
+          $n=function($first,$last){return vcar_identity_normalize_name((string)$first.' '.(string)$last);};
+          foreach($m['Orders'] as $raw){
+            if(!empty($raw['Deleted']))continue;
+            $id=(int)($raw['OrderClientId']??0);$pid=(int)($raw['PersonId']??0);
+            if($id<=0 || !isset($people[$pid]))continue;
+            $o=wc_get_order($id);if(!$o)continue;
+            $p=$people[$pid];$pname=$n($p['FirstName']??'',$p['LastName']??'');
+            $oname=$n($o->get_billing_first_name(),$o->get_billing_last_name());
+            $ph=vesta_otp_phone((string)$o->get_billing_phone());
+            $ep=vesta_otp_phone((string)($p['Mobile']??''));
+            $uid=(int)$o->get_customer_id();$client=(int)($p['PersonClientID']??$p['PersonClientId']??0);
+            $personOrders[$pid]=($personOrders[$pid]??0)+1;
+            if($ph)$personPhones[$pid][$ph]=true;
+            if($oname)$personNames[$pid][$oname]=true;
+            $personClients[$pid]=$client;
+            if($id>=105000)$personRecent[$pid]=($personRecent[$pid]??0)+1;
+            if($oname===$pname){$inc('name_same',$id);continue;}
+            $inc('name_different',$id);
+            if(!$oname || !$pname)$inc('one_name_missing',$id);
+            $generic=['آقای مشتری سایت','خانم مشتری سایت','مشتری سایت','آقای مشتری','مشتری','کاربر سایت','website customer'];
+            if(in_array($oname,$generic,true))$inc('generic_woo_name',$id);
+            if(in_array($pname,$generic,true))$inc('generic_erp_name',$id);
+            if($ph && $ep && $ph===$ep)$inc('different_name_but_exact_phone',$id);
+            elseif($ph && $ep && $ph!==$ep)$inc('different_name_and_phone',$id);
+            else $inc('different_name_phone_unavailable',$id);
+            if($uid>0 && $client===$uid)$inc('different_name_but_same_client_uid',$id);
+            elseif($uid>0 && $client>0)$inc('different_name_and_different_client_uid',$id);
+            else $inc('different_name_without_both_client_uids',$id);
+            if($uid>0){
+              $u=get_user_by('id',$uid);
+              if($u && array_intersect((array)$u->roles,['administrator','shop_manager','editor','author']))$inc('different_name_order_privileged_uid',$id);
+            }
+            $date=$o->get_date_created();
+            if($date && $date->getTimestamp()>=strtotime('2026-11-01T00:00:00Z'))$inc('different_name_november_orders',$id);
+          }
+          arsort($personOrders);$top=[];
+          foreach(array_slice($personOrders,0,12,true) as $pid=>$count){
+            $top[]=['mahak_person_id'=>$pid,'invoice_count'=>$count,'distinct_woo_billing_names'=>count($personNames[$pid]??[]),
+              'distinct_woo_phone_numbers'=>count($personPhones[$pid]??[]),'cloud_client_uid'=>$personClients[$pid]??0,'recent_order_id_105000_plus_count'=>$personRecent[$pid]??0];
+          }
+          $sharing=['person_ids_with_multiple_billing_names'=>0,'person_ids_with_multiple_billing_phones'=>0,'invoices_using_a_multi_name_person'=>0,'invoices_using_a_multi_phone_person'=>0];
+          foreach($personOrders as $pid=>$count){
+            if(count($personNames[$pid]??[])>1){$sharing['person_ids_with_multiple_billing_names']++;$sharing['invoices_using_a_multi_name_person']+=$count;}
+            if(count($personPhones[$pid]??[])>1){$sharing['person_ids_with_multiple_billing_phones']++;$sharing['invoices_using_a_multi_phone_person']+=$count;}
+          }
+          echo 'ERP_NAME_MISMATCH_BREAKDOWN='.json_encode($C,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'ERP_NAME_MISMATCH_EXAMPLE_ORDER_IDS='.json_encode($examples,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'ERP_PERSON_REUSE_METRICS='.json_encode($sharing,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'ERP_TOP_PERSONS_BY_INVOICE_COUNT='.json_encode($top,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'NO_FINANCIAL_OR_PERSON_MUTATION=yes'.PHP_EOL;
+          PHP
