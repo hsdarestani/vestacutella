@@ -1,0 +1,55 @@
+name: Vesta check exact person 12706969 after desktop rename without modifying accounting
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-check-person-12706969-after-desktop-edit-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Verify Mahak cloud person name versus local Bazara cache and real buyer
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=768M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          global $wpdb;
+          $o=wc_get_order(105554);$b=wc_get_order(105203);$uid=2918;$admin=1;$pid=12706969;
+          if(!$o||!$b||!class_exists('BazaraApi'))exit(11);
+          $name=vcar_identity_normalize_name($o->get_billing_first_name().' '.$o->get_billing_last_name());
+          $api=new BazaraApi(true);
+          $r=$api->get_all_data('',array('fromPersonVersion'=>0,'fromOrderVersion'=>0));
+          if(empty($r['success']) || !is_array($r['message']['People']??null))exit(12);
+          $people=array_values(array_filter($r['message']['People'],fn($p)=>empty($p['Deleted'])&&(int)($p['PersonId']??0)===$pid));
+          if(count($people)!==1)exit(13);
+          $p=$people[0];$cloud=vcar_identity_normalize_name(($p['FirstName']??'').' '.($p['LastName']??''));
+          $local=$wpdb->get_row($wpdb->prepare("SELECT PersonId,PersonClientId,FirstName,LastName,Mobile FROM {$wpdb->prefix}bazara_persons WHERE PersonId=%d AND Deleted=0",$pid),ARRAY_A);
+          $localName=$local?vcar_identity_normalize_name($local['FirstName'].' '.$local['LastName']):'';
+          $phone=vesta_otp_phone((string)$o->get_billing_phone());
+          $hasNewInvoice=false;foreach(($r['message']['Orders']??[]) as $remote)if(empty($remote['Deleted']) && (int)($remote['OrderClientId']??0)===105554)$hasNewInvoice=true;
+          echo 'AFTER_DESKTOP_RENAME='.json_encode([
+            'cloud_person_id'=>$pid,
+            'cloud_name_matches_buyer'=>$cloud!==''&&$cloud===$name,
+            'cloud_client_uid'=>(int)($p['PersonClientID']??$p['PersonClientId']??0),
+            'cloud_phone_matches_buyer'=>$phone && $phone===vesta_otp_phone((string)($p['Mobile']??'')),
+            'local_cache_person_exists'=>(bool)$local,
+            'local_cache_name_matches_buyer'=>$localName!==''&&$localName===$name,
+            'local_cache_client_uid'=>$local?(int)$local['PersonClientId']:0,
+            'buyer_woo_uid'=>(int)$o->get_customer_id(),
+            'buyer_erp_uid'=>(int)get_user_meta($uid,'mahak_id',true),
+            'legacy_admin_erp_uid'=>(int)get_user_meta($admin,'mahak_id',true),
+            'cloud_invoice_105554_exists'=>$hasNewInvoice,
+            'accounting_sender_enabled'=>(bool)get_option('vcar_sender_enabled',false)
+          ],JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'READ_ONLY_NO_PEOPLE_ORDER_OR_INVOICE_WRITES=yes'.PHP_EOL;
+          PHP
