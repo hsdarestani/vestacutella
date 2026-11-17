@@ -1,0 +1,110 @@
+name: Vesta exact 105554 guarded first-time invoice dispatch after verified customer repair
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-submit-mona-105554-guarded-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-order-105554-first-time-dispatch
+  cancel-in-progress: false
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 17
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -y php-cli sshpass
+      - name: Verify exact-order requeue script and stage protected source
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          php -l scripts/vesta-release-mona-105554-queue-20261117.php
+          sshpass -e scp -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/vesta-release-mona-105554-queue-20261117.php "root@$HOST:/tmp/vesta-mona-105554-safe-requeue-20261117.php"
+      - name: Exact buyer, payment, person and remote absence preflight without writes
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i -e VC_RELEASE_MONA_COMMIT=no vc-vesta php -d display_errors=0 -d memory_limit=768M' < scripts/vesta-release-mona-105554-queue-20261117.php | tee preflight.log
+          grep -Fq 'ORDER_REQUEUE_DRY_RUN_NO_WRITES=yes' preflight.log
+      - name: Backup and release exactly one blocked Woo order to existing protected queue
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'SHELL'
+          set -Eeuo pipefail
+          umask 077
+          exec 9>/run/lock/vesta-mona-order-105554-dispatch-20261117.lock
+          flock -n 9
+          backup=/srv/backups/vesta-mona-105554-protected-dispatch-$(date -u +%Y%m%dT%H%M%SZ)
+          mkdir -m 0700 -p "$backup"
+          docker exec vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb-dump -uroot --single-transaction --quick "$MARIADB_DATABASE" wp_vesta_accounting_outbox wp_posts wp_postmeta wp_users wp_usermeta wp_bazara_orders' | gzip -1 > "$backup/queue-order-before.sql.gz"
+          gzip -t "$backup/queue-order-before.sql.gz"
+          (cd "$backup"; sha256sum queue-order-before.sql.gz > SHA256SUMS;sha256sum -c SHA256SUMS)
+          echo 'ORDER_105554_PRIVATE_BACKUP_CHECKSUM_VERIFIED=yes'
+          docker exec -i -e VC_RELEASE_MONA_COMMIT=yes -e VC_RELEASE_MONA_BACKUP_VERIFIED=yes vc-vesta php -d display_errors=0 -d memory_limit=1024M < /tmp/vesta-mona-105554-safe-requeue-20261117.php | tee "$backup/queue-release.log"
+          grep -Fq 'ONLY_ORDER_105554_RELEASED_TO_PROTECTED_SENDER=yes' "$backup/queue-release.log"
+          echo 'EXACT_105554_REQUEUED_WITH_ZERO_PRIOR_SUBMISSION=yes'
+          SHELL
+      - name: Run single protected sender pass; never retry an ambiguous remote submission
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1024M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          if(!get_option('vcar_sender_enabled',false))exit(31);
+          $r=Vesta_Accounting_Reliability::tick(true,1);
+          echo 'GUARDED_ACCOUNTING_PASS='.json_encode($r,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'MAX_REMOTE_INVOICE_SENDS=1 NO_AUTOMATIC_REPLAY=yes'.PHP_EOL;
+          PHP
+      - name: Independently verify exact order state, person, shipping, receipt and no duplicate
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1024M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $id=105554;$o=wc_get_order($id);
+          $settings=get_option('bazara_visitor_settings',[]);
+          $bank=vcar_bank($settings,$o->get_payment_method());
+          $api=new BazaraApi(true);$cloud=Vesta_Accounting_Reliability::cloud($api);
+          $invoices=$cloud['orders'][$id]??[];
+          $q=$wpdb->get_row($wpdb->prepare('SELECT state,reason,attempts,submitted_at,remote_id FROM '.Vesta_Accounting_Reliability::table().' WHERE order_id=%d',$id),ARRAY_A);
+          echo 'MONA_105554_POST_SEND_QUEUE='.json_encode($q,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'MONA_105554_POST_SEND_CLOUD_INVOICE_COUNT='.count($invoices).PHP_EOL;
+          foreach($invoices as $inv){
+            $erp=(int)($inv['OrderId']??0);
+            $finance=vcar_verify($o,$inv,$cloud['details'][$erp]??[],$cloud['receipts'][$erp]??[],$bank,$cloud['transfers'],(int)($o->get_meta('_vcar_money_multiplier')?:10));
+            echo 'MONA_105554_POST_SEND_CHECK='.json_encode([
+              'invoice_id'=>$erp,
+              'person_correct'=>(int)($inv['PersonId']??0)===12706969,
+              'finance_and_shipping'=>$finance?:'verified',
+              'receipt_count'=>count($cloud['receipts'][$erp]??[]),
+              'actual_sender_attempts'=>(int)($q['attempts']??0)
+            ],JSON_UNESCAPED_UNICODE).PHP_EOL;
+          }
+          echo 'READBACK_ONLY_NO_SECOND_SEND=yes'.PHP_EOL;
+          PHP
+      - name: Storefronts still available
+        run: |
+          set -Eeuo pipefail
+          for host in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
+            code=$(curl -LsS --connect-timeout 8 --max-time 25 -o /dev/null -w '%{http_code}' "https://$host/")
+            echo "SITE=$host HTTP=$code";test "$code" = 200
+          done
