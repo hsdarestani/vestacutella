@@ -24,7 +24,7 @@ foreach($wpdb->get_results("SELECT ProductId,ProductCode,ProductName,Deleted FRO
  if((int)$p['Deleted']===0)$byCode[(string)$p['ProductCode']][]=$p;
 foreach($wpdb->get_results("SELECT ProductId,ProductDetailId,Properties,Deleted FROM {$wpdb->prefix}bazara_product_details",ARRAY_A) as $d)
  if((int)$d['Deleted']===0)$detailByProduct[(int)$d['ProductId']][]=$d;
-foreach($wpdb->get_results("SELECT m.meta_value,m.post_id FROM {$wpdb->postmeta} m JOIN {$wpdb->posts} p ON p.ID=m.post_id WHERE m.meta_key='mahak_product_detail_id' AND CAST(m.meta_value AS UNSIGNED)>0 AND p.post_status='publish'",ARRAY_A) as $r)
+foreach($wpdb->get_results("SELECT m.meta_value,m.post_id FROM {$wpdb->postmeta} m JOIN {$wpdb->posts} p ON p.ID=m.post_id WHERE m.meta_key='mahak_product_detail_id' AND CAST(m.meta_value AS UNSIGNED)>0 AND p.post_status NOT IN ('trash','auto-draft')",ARRAY_A) as $r)
  $used[(int)$r['meta_value']][]=(int)$r['post_id'];
 $plan=[];$observed=['unmapped_variations'=>0,'parent_code_candidates'=>0,'independent_good_candidates'=>0,
  'unresolved_or_ambiguous'=>0,'duplicate_detail_conflicts'=>0,'safe_candidates'=>0,'candidate_ids'=>[]];
@@ -80,7 +80,8 @@ foreach($rows as $row){
    vav_norm($variation->get_name())!==vav_norm($parent->get_name())){
    $ds=$detailByProduct[(int)$p['ProductId']]??[];
    if(count($ds)===1){
-    $props=json_decode((string)$ds[0]['Properties'],true);$vals=[];
+    $raw=trim((string)$ds[0]['Properties']);$props=json_decode($raw,true);$vals=[];
+    if($raw!==''&&$raw!=='null'&&!is_array($props))continue;
     foreach(is_array($props)?$props:[] as $a)
       if(is_array($a)&&isset($a['V'])&&trim((string)$a['V'])!=='')$vals[]=vav_attr($a['V']);
     if(!$vals)$found[]=[(int)$p['ProductId'],(int)$ds[0]['ProductDetailId'],'independent'];
