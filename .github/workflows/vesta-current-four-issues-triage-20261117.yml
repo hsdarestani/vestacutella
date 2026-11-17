@@ -1,0 +1,77 @@
+name: Vesta live integration triage unresolved new orders customer links catalog and discount parity read only
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-current-four-issues-triage-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 13
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Compare outbox queue and existing Woo/cloud invoices without financial writes
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1536M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);set_time_limit(0);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $t=Vesta_Accounting_Reliability::table();
+          $since=176?strtotime('2026-11-08T00:00:00Z'):0;
+          $metrics=[];
+          foreach($wpdb->get_results("SELECT state,reason,COUNT(*) n FROM $t GROUP BY state,reason ORDER BY n DESC LIMIT 70",ARRAY_A) as $r)$metrics[]=[$r['state'],$r['reason'],(int)$r['n']];
+          echo 'CURRENT_OUTBOX_GROUPS='.json_encode($metrics,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          $recent=$wpdb->get_results("SELECT q.order_id,q.state,q.reason,q.remote_id,q.attempts,q.submitted_at,q.next_attempt
+            FROM $t q JOIN {$wpdb->posts} p ON p.ID=q.order_id
+            WHERE p.post_type='shop_order' AND p.post_date >= '2026-11-08'
+            ORDER BY q.order_id DESC LIMIT 180",ARRAY_A);
+          $rows=[];$totals=[];$cloudIds=[];$api=new BazaraApi(true);
+          $cloud=Vesta_Accounting_Reliability::cloud($api);
+          $settings=get_option('bazara_visitor_settings',[]);
+          foreach($recent as $q){
+            $id=(int)$q['order_id'];$o=wc_get_order($id);if(!$o||!vcar_eligible($o))continue;
+            $bank=vcar_bank($settings,$o->get_payment_method());
+            $r=$cloud['orders'][$id]??[];
+            $remoteId=count($r)===1?(int)$r[0]['OrderId']:0;
+            $parity='not_checked';
+            if(count($r)===1) {
+              $parity=vcar_verify($o,$r[0],$cloud['details'][$remoteId]??[],$cloud['receipts'][$remoteId]??[],$bank,$cloud['transfers'],(int)($o->get_meta('_vcar_money_multiplier')?:10));
+            }
+            $state=$q['state'];$totals[$state]=($totals[$state]??0)+1;
+            $rows[]=[
+              'id'=>$id,'created'=>$o->get_date_created()?$o->get_date_created()->date('Y-m-d'):null,
+              'state'=>$state,'reason'=>$q['reason'],'tried'=>(int)$q['attempts'],
+              'local_invoice'=>(int)$o->get_meta('mahak_id'),
+              'cloud_count'=>count($r),'cloud_invoice'=>$remoteId,'parity'=>$parity,
+              'currency_multiplier'=>(int)($o->get_meta('_vcar_money_multiplier')?:0),
+              'discount'=>(float)$o->get_discount_total(),
+              'shipping'=>(float)$o->get_shipping_total(),
+              'total'=>(float)$o->get_total(),
+              'person_mapping_present'=>(int)get_user_meta((int)$o->get_customer_id(),'mahak_id',true)>0,
+              'erp_person_matches'=>count($r)===1?(int)($r[0]['PersonId']??0)===(int)get_user_meta((int)$o->get_customer_id(),'mahak_id',true):null
+            ];
+          }
+          echo 'CURRENT_NEW_ORDER_STATES='.json_encode($totals,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'CURRENT_NEW_ORDERS_RELEVANT='.json_encode(array_slice(array_values(array_filter($rows,fn($r)=>$r['state']!=='verified')) ,0,95),JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'CURRENT_NEW_ORDERS_RECENT_VERIFIED='.json_encode(array_slice(array_values(array_filter($rows,fn($r)=>$r['state']==='verified')) ,0,10),JSON_UNESCAPED_UNICODE).PHP_EOL;
+          $simple=[];$variation=[];
+          foreach([['product','simple'],['product_variation','variation']] as $entry){
+            [$ptype,$bucket]=$entry;
+            $data=$wpdb->get_row($wpdb->prepare("SELECT COUNT(*) total,
+              SUM(CASE WHEN m1.meta_value IS NOT NULL AND m2.meta_value IS NOT NULL THEN 1 ELSE 0 END) mapped
+              FROM {$wpdb->posts} p
+              LEFT JOIN {$wpdb->postmeta} m1 ON m1.post_id=p.ID AND m1.meta_key='mahak_id'
+              LEFT JOIN {$wpdb->postmeta} m2 ON m2.post_id=p.ID AND m2.meta_key='mahak_product_detail_id'
+              WHERE p.post_type=%s AND p.post_status='publish'",$ptype),ARRAY_A);
+            $simple[$bucket]=$data;
+          }
+          echo 'CURRENT_CATALOG_MAPPING_COVERAGE='.json_encode($simple,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'CURRENT_INTEGRATION_AUDIT_READ_ONLY_NO_PII_OUTPUT=yes'.PHP_EOL;
+          PHP
