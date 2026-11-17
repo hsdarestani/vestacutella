@@ -1,0 +1,36 @@
+name: Vesta inspect existing Mahak person client mapping rules before safe one-person relink
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-person-linking-method-preview-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Inspect Bazara lookup and read admin versus customer mappings with no PII
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          $r=new ReflectionClass('BazaraApi');$lines=file($r->getFileName());
+          foreach(['get_person_by_mahakID','register_users'] as $method) {
+            $ref=$r->getMethod($method);$len=min(125,$ref->getEndLine()-$ref->getStartLine()+1);
+            echo 'METHOD_BEGIN='.$method.PHP_EOL.implode('',array_slice($lines,$ref->getStartLine()-1,$len)).PHP_EOL.'METHOD_END='.$method.PHP_EOL;
+          }
+          foreach([1,2918] as $uid)echo 'ACCOUNT_PERSON_USERMETA UID='.$uid.' ERP_PERSON='.(int)get_user_meta($uid,'mahak_id',true).' ERP_CLOUD_PROOF_ID='.(int)get_user_meta($uid,'_vesta_erp_cloud_verified_person_id',true).PHP_EOL;
+          foreach([105554,105556,105208,105203,105052] as $id) {
+            $o=wc_get_order($id);echo 'ORDER_OWNER_VERIFICATION ID='.$id.' WOO_UID='.(int)$o->get_customer_id().' ERP_INVOICE_ID='.(int)$o->get_meta('mahak_id').' PRECHECK_REASON='.vcar_identity_guard($o).PHP_EOL;
+          }
+          echo 'NO_ERP_WOO_OR_FINANCIAL_WRITES=yes'.PHP_EOL;
+          PHP
