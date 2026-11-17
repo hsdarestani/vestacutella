@@ -105,7 +105,7 @@ try {
  $o->update_meta_data('_vesta_accounting_identity_name_fix_reason','verified_otp_owner_checkout_alias_20261117');
  $o->set_billing_last_name($u->last_name);
  $o->save();
- $read=wc_get_order($id);$line=reset($read->get_items('line_item'));
+ $read=wc_get_order($id);$readItems=$read->get_items('line_item');$line=reset($readItems);
  $after=[(float)$read->get_total(),(float)$read->get_discount_total(),(float)$read->get_shipping_total(),
   (float)$line->get_total(),$read->get_payment_method(),$read->get_transaction_id(),$read->get_status(),
   (int)$read->get_customer_id(),(int)$read->get_meta('mahak_id')];
