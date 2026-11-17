@@ -1,0 +1,107 @@
+name: Vesta auto recover newly mapped Mahak customer orders within two minutes
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-automate-person-sync-retry-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-accounting-person-mapping-retry-code
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: PHP syntax and full accounting regression tests
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq php-cli sshpass
+          php -l infra/plugins/vesta-accounting-reliability/vesta-accounting-reliability.php
+          php -l infra/plugins/vesta-accounting-reliability/vesta-accounting-identity.php
+          php tests/accounting-policy-test.php infra/plugins/vesta-accounting-reliability/vesta-accounting-policy.php
+          php tests/accounting-identity-test.php infra/plugins/vesta-accounting-reliability/vesta-accounting-identity.php
+          php tests/accounting-outbox-test.php infra/plugins/vesta-accounting-reliability/vesta-accounting-reliability.php
+          echo 'NEW_MAHAK_PERSON_RETRY_AND_EXISTING_INVOICE_GUARDS_TESTS_PASSED=yes'
+      - name: Stage only the accounting outbox retry source
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e scp -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null infra/plugins/vesta-accounting-reliability/vesta-accounting-reliability.php "root@$HOST:/tmp/vesta-new-person-retry-20261117.php"
+      - name: Back up and atomically install guarded retry tuning, with rollback and read-only canary
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          umask 077
+          exec 9>/run/lock/vesta-new-person-retry-install-20261117.lock
+          flock -n 9
+          target=/srv/vestacutella/runtime/vesta/wp-content/mu-plugins/vesta-accounting-reliability.php
+          backup=/srv/backups/vesta-new-person-retry-$(date -u +%Y%m%dT%H%M%SZ)
+          mkdir -p -m 0700 "$backup"
+          cp -p "$target" "$backup/vesta-accounting-reliability.php"
+          (cd "$backup" && sha256sum vesta-accounting-reliability.php > SHA256SUMS && sha256sum -c SHA256SUMS)
+          echo 'MAHAK_PERSON_RETRY_ORIGINAL_SOURCE_BACKUP_VERIFIED=yes'
+          docker exec -i vc-vesta php -l < /tmp/vesta-new-person-retry-20261117.php
+          changed=no; verified=no
+          rollback(){
+            rc=$?
+            trap - EXIT
+            if [[ "$changed" = yes && "$verified" != yes ]];then
+              cp -p "$backup/vesta-accounting-reliability.php" "$target"
+              echo 'MAHAK_PERSON_RETRY_CODE_ROLLED_BACK=yes'
+            fi
+            exit "$rc"
+          }
+          trap rollback EXIT
+          STAGE=/tmp/vesta-new-person-retry-20261117.php TARGET="$target" python3 - <<'PY'
+          import os,pathlib,fcntl,time,subprocess
+          src=pathlib.Path(os.environ['STAGE']);dst=pathlib.Path(os.environ['TARGET'])
+          pid=subprocess.check_output(['docker','inspect','-f','{{.State.Pid}}','vc-vesta'],text=True).strip()
+          lock=pathlib.Path('/proc')/pid/'root/tmp/vesta-bazara-order-sync.lock'
+          with lock.open('rb') as fd:
+            for attempt in range(120):
+              try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB);break
+              except BlockingIOError:time.sleep(.25)
+            else:raise RuntimeError('ACCOUNTING_WORKER_STILL_ACTIVE_NO_DEPLOY')
+            nxt=dst.with_name('.vesta-accounting-reliability.php.next')
+            nxt.write_bytes(src.read_bytes())
+            os.chmod(nxt,dst.stat().st_mode & 0o777)
+            os.chown(nxt,dst.stat().st_uid,dst.stat().st_gid)
+            os.replace(nxt,dst)
+            print('MAHAK_PERSON_RETRY_ATOMIC_SOURCE_DEPLOYED=yes',flush=True)
+          PY
+          changed=yes
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=768M <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          if(!class_exists('Vesta_Accounting_Reliability') ||
+             !method_exists('Vesta_Accounting_Reliability','blocked_retry_seconds') ||
+             Vesta_Accounting_Reliability::blocked_retry_seconds('customer_erp_person_unmapped')!==120 ||
+             Vesta_Accounting_Reliability::blocked_retry_seconds('customer_phone_owner_mismatch')!==600 ||
+             Vesta_Accounting_Reliability::blocked_retry_seconds('missing_product_mapping')!==600 ||
+             !get_option('vcar_sender_enabled',false))exit(22);
+          $o=wc_get_order(105557);
+          if(!$o || (int)get_user_meta((int)$o->get_customer_id(),'mahak_id',true)!==12770247||
+             vcar_identity_guard($o)!=='')exit(23);
+          echo 'EXACT_105557_PERSON_GUARD_STILL_VERIFIED=yes'.PHP_EOL;
+          echo 'FAST_PERSON_SYNC_RETRY_ACTIVE=yes PHONE_AND_PRODUCT_BLOCKS_UNCHANGED=yes'.PHP_EOL;
+          echo 'ACCOUNTING_SENDER_ENABLED_NO_INVOICE_ORDER_PERSON_OR_FINANCIAL_MUTATIONS=yes'.PHP_EOL;
+          PHP
+          for host in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
+            code=$(curl --noproxy '*' -ksS --connect-timeout 8 --max-time 25 --resolve "$host:443:127.0.0.1" -o /dev/null -w '%{http_code}' "https://$host/")
+            echo "SITE=$host HTTP=$code";test "$code" = 200
+          done
+          verified=yes
+          trap - EXIT
+          echo 'FAST_PERSON_SYNC_RETRY_INSTALLED_VERIFIED=yes'
+          REMOTE
