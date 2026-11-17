@@ -1,0 +1,56 @@
+name: Vesta inspect Bazara photo base URL initialization without printing credentials
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-image-config-url-reflection-readonly-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Inspect only image_url property set code and method names without connection secrets
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=12 "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          root=Path('/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara')
+          for f in sorted(root.rglob('*.php')):
+            if f.stat().st_size>1024*1024:continue
+            lines=f.read_text(encoding='utf-8',errors='replace').splitlines()
+            for i,l in enumerate(lines):
+              if not re.search(r'\bimg_url\b',l):continue
+              if re.search(r'api_key|password|secret|token|user.?name|base64',l,re.I):continue
+              # Redact all string literal values and URLs, but retain code structure
+              safe=re.sub(r'''(["'])(?:\\.|(?!\1).)*?\1''',"'<literal>'",l)
+              safe=re.sub(r'https?://[^\s;,]+','<url>',safe)
+              print('PHOTO_BASE_SOURCE',f.relative_to(root),i+1,safe[:180])
+          PY
+          docker exec -i vc-vesta php -d display_errors=0 <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);define('WP_DISABLE_FATAL_ERROR_HANDLER',true);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          $api=new BazaraApi(true);$r=new ReflectionClass($api);
+          $p=$r->getProperty('img_url');
+          echo 'IMAGE_BASE_DECLARING_CLASS='.$p->getDeclaringClass()->getName().PHP_EOL;
+          echo 'IMAGE_BASE_INITIALIZED='.($p->isInitialized($api)?'yes':'no').PHP_EOL;
+          echo 'IMAGE_BASE_PUBLIC='.($p->isPublic()?'yes':'no').PHP_EOL;
+          if($p->isInitialized($api)){
+            try{$value=(string)$p->getValue($api);$parsed=wp_parse_url($value);
+              echo 'IMAGE_BASE_HAS_HTTPS='.(strtolower((string)($parsed['scheme']??''))==='https'?'yes':'no').PHP_EOL;
+              echo 'IMAGE_BASE_LENGTH='.strlen($value).PHP_EOL;
+            }catch(Throwable $e){echo 'IMAGE_BASE_REFLECTION_ACCESS_ERROR_CLASS='.get_class($e).PHP_EOL;}
+          }
+          echo 'NO_IMAGE_OR_CREDENTIALS_WRITTEN=yes'.PHP_EOL;
+          PHP
+          REMOTE
