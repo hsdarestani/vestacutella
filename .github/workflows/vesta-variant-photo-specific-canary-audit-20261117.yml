@@ -1,0 +1,152 @@
+name: Vesta unique normalized SKU variant and Mahak picture source canary audit
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-variant-photo-specific-canary-audit-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Audit existing paid cloud invoice finance, safe variant matches, missing persons and available Mahak photo source without writes
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1536M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);set_time_limit(0);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          // 1. Cloud finance parity for last 150 WooCommerce orders.
+          $api=new BazaraApi(true);
+          $cloud=Vesta_Accounting_Reliability::cloud($api);
+          $ids=$wpdb->get_col("SELECT ID FROM {$wpdb->posts} WHERE post_type='shop_order' ORDER BY ID DESC LIMIT 220");
+          $f=['recent_eligible'=>0,'remote_exists'=>0,'remote_verified'=>0,'remote_mismatch'=>0,'not_in_cloud'=>0,'discount_orders'=>0,'shipping_orders'=>0,'ambiguous_invoice_count'=>0,'problems'=>[]];
+          foreach($ids as $id){
+             $o=wc_get_order((int)$id);if(!$o||!vcar_eligible($o))continue;
+             $f['recent_eligible']++;
+             if((float)$o->get_discount_total()>0)$f['discount_orders']++;
+             if((float)$o->get_shipping_total()>0)$f['shipping_orders']++;
+             $rs=$cloud['orders'][$id]??[];
+             if(!$rs){$f['not_in_cloud']++;continue;}
+             $f['remote_exists']++;
+             if(count($rs)!==1){$f['ambiguous_invoice_count']++;continue;}
+             $r=$rs[0];$erp=(int)($r['OrderId']??0);
+             $bank=vcar_bank(get_option('bazara_visitor_settings',[]),$o->get_payment_method());
+             $error=vcar_verify($o,$r,$cloud['details'][$erp]??[],$cloud['receipts'][$erp]??[],$bank,$cloud['transfers'],(int)($o->get_meta('_vcar_money_multiplier')?:10));
+             if($error!==''){
+               $f['remote_mismatch']++;
+               if(count($f['problems'])<30)$f['problems'][]=['id'=>(int)$id,'reason'=>$error,'has_discount'=>(float)$o->get_discount_total()>0];
+             }else $f['remote_verified']++;
+          }
+          echo 'FOUR_AUDIT_RECENT_CLOUD_FINANCE='.json_encode($f,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          // 2. Discover fail-closed unique existing Mahak variation code + all property matches.
+          function vc4_norm($s){
+            $s=rawurldecode((string)$s);
+            $s=strtr($s,['ي'=>'ی','ك'=>'ک','آ'=>'ا','‌'=>' ','٠'=>'0','١'=>'1','٢'=>'2','٣'=>'3','٤'=>'4','٥'=>'5','٦'=>'6','٧'=>'7','٨'=>'8','٩'=>'9','۰'=>'0','۱'=>'1','۲'=>'2','۳'=>'3','۴'=>'4','۵'=>'5','۶'=>'6','۷'=>'7','۸'=>'8','۹'=>'9']);
+            $s=function_exists('mb_strtolower')?mb_strtolower($s,'UTF-8'):strtolower($s);
+            $s=preg_replace('/[^\p{L}\p{N}]+/u','',$s);
+            return preg_replace_callback('/\d+/',function($m){return (string)(int)$m[0];},$s);
+          }
+          // Attribute labels may contain the human prefix 'کد' or 'پک'; this
+          // removes only that prefix, never a product name or other attributes.
+          function vc4_attr($s) {
+            $value=vc4_norm($s);
+            return preg_replace('/^(کد|پک)/u','',$value);
+          }
+          $ps=$wpdb->get_results("SELECT ProductId,ProductCode,ProductName,Deleted FROM {$wpdb->prefix}bazara_products",ARRAY_A);
+          $ds=$wpdb->get_results("SELECT ProductId,ProductDetailId,Properties,Deleted FROM {$wpdb->prefix}bazara_product_details",ARRAY_A);
+          $byCode=[];$byDetail=[];$used=[];
+          foreach($ps as $p)if((int)$p['Deleted']===0)$byCode[(string)$p['ProductCode']][]=$p;
+          foreach($ds as $d)if((int)$d['Deleted']===0)$byDetail[(int)$d['ProductId']][]=$d;
+          foreach($wpdb->get_results("SELECT p.ID,m.meta_value FROM {$wpdb->posts} p JOIN {$wpdb->postmeta} m ON m.post_id=p.ID AND m.meta_key='mahak_product_detail_id' WHERE p.post_status='publish' AND CAST(m.meta_value AS UNSIGNED)>0",ARRAY_A) as $usedRow)
+              $used[(int)$usedRow['meta_value']][]=(int)$usedRow['ID'];
+          $vs=$wpdb->get_results("SELECT v.ID,v.post_parent FROM {$wpdb->posts} v JOIN {$wpdb->posts} p ON p.ID=v.post_parent WHERE v.post_type='product_variation' AND v.post_status='publish' AND p.post_status='publish'",ARRAY_A);
+          $count=['active_variations'=>count($vs),'missing_or_partial'=>0,'unique_existing_parent_code'=>0,
+                  'safe_unassigned_detail_candidates'=>0,'no_stable_code'=>0,'different_parent_name'=>0,
+                  'detail_not_exact_unique'=>0,'detail_already_used'=>0,'sample'=>[]];
+          $plans=[];$detailUse=[];
+          foreach($vs as $v){
+            $id=(int)$v['ID'];$parent=(int)$v['post_parent'];
+            if(metadata_exists('post',$id,'mahak_id')||metadata_exists('post',$id,'mahak_product_detail_id'))continue;
+            $count['missing_or_partial']++;
+            $parentPost=get_post($parent);$parentSku=(string)get_post_meta($parent,'_sku',true);
+            $matches=[];
+            foreach(array_unique(array_filter([(string)$parent,$parentSku])) as $code)
+              foreach($byCode[$code]??[] as $p)$matches[(int)$p['ProductId']]=$p;
+            if(count($matches)!==1){$count['no_stable_code']++;continue;}
+            $p=reset($matches);$pid=(int)$p['ProductId'];$count['unique_existing_parent_code']++;
+            if(vc4_norm($p['ProductName'])!==vc4_norm($parentPost->post_title)){
+              $count['different_parent_name']++;continue;
+            }
+            $attrs=[];
+            foreach($wpdb->get_results($wpdb->prepare("SELECT meta_key,meta_value FROM {$wpdb->postmeta} WHERE post_id=%d AND meta_key LIKE 'attribute%%'",$id),ARRAY_A) as $m){
+              $raw=(string)$m['meta_value'];$tax=substr((string)$m['meta_key'],10);
+              if(taxonomy_exists($tax)){
+                $term=get_term_by('slug',$raw,$tax);if($term&&!is_wp_error($term))$raw=$term->name;
+              }
+              $norm=vc4_attr($raw);if($norm===''){$attrs=[];break;}
+              $attrs[]=$norm;
+            }
+            if(!$attrs){$count['detail_not_exact_unique']++;continue;}
+            sort($attrs);$options=[];
+            foreach($byDetail[$pid]??[] as $d){
+              $props=json_decode((string)$d['Properties'],true);$propVals=[];
+              foreach(is_array($props)?$props:[] as $prop)if(is_array($prop)&&isset($prop['V'])){
+                $norm=vc4_attr($prop['V']);if($norm!=='')$propVals[]=$norm;
+              }
+              sort($propVals);
+              if($propVals===$attrs)$options[]=(int)$d['ProductDetailId'];
+            }
+            if(count($options)!==1){$count['detail_not_exact_unique']++;continue;}
+            $did=$options[0];
+            if(isset($used[$did])){$count['detail_already_used']++;continue;}
+            $plans[$id]=['parent'=>$parent,'product_id'=>$pid,'detail_id'=>$did];
+            $detailUse[$did][]=$id;
+          }
+          foreach($plans as $id=>$p){
+            if(count($detailUse[$p['detail_id']])!==1)continue;
+            $count['safe_unassigned_detail_candidates']++;
+            if(count($count['sample'])<30)$count['sample'][]=['woo_variant_id'=>$id,'erp_product_id'=>$p['product_id'],'erp_detail_id'=>$p['detail_id']];
+          }
+          echo 'FOUR_AUDIT_EXACT_VARIATION_CANDIDATES='.json_encode($count,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          // 3. Pending ERP person worker candidate count, no writes.
+          $customer=[];
+          $outbox=Vesta_Accounting_Reliability::table();
+          foreach($wpdb->get_results("SELECT reason,COUNT(*) n FROM $outbox WHERE state='blocked' GROUP BY reason",ARRAY_A) as $r)
+            if(strpos($r['reason'],'customer_')===0)$customer[$r['reason']]=(int)$r['n'];
+          echo 'FOUR_AUDIT_BLOCKED_CUSTOMER_COUNTS='.json_encode($customer).PHP_EOL;
+          // 4. Raw Mahak picture cache, source availability and photo security gate.
+          $settings=get_option('bazara_visitor_settings',[]);
+          $pics=$wpdb->get_results("SELECT pi_id,PictureId,FileName,Url,isSync,queue,Deleted FROM {$wpdb->prefix}bazara_pictures",ARRAY_A);
+          $photo=['cached_rows'=>count($pics),'active'=>0,'pending'=>0,'with_source'=>0,'picture_sync_enabled'=>!empty($settings['chkPicture']),
+                  'vendor_image_patch_safety_verified'=>function_exists('vesta_bazara_image_patch_verified') && vesta_bazara_image_patch_verified(),
+                  'sample_photo_numbers'=>[]];
+          foreach($pics as $pic){if(!empty($pic['Deleted']))continue;$photo['active']++;
+            if(empty($pic['isSync']))$photo['pending']++;
+            if(!empty($pic['Url'])||!empty($pic['FileName']))$photo['with_source']++;
+            if(count($photo['sample_photo_numbers'])<12)$photo['sample_photo_numbers'][]=(int)$pic['PictureId'];
+          }
+          echo 'FOUR_AUDIT_MAHAK_PICTURES='.json_encode($photo,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          $pictureTables=[];
+          foreach($wpdb->get_col("SHOW TABLES LIKE '%picture%'") as $table){
+            if(!preg_match('/^[a-zA-Z0-9_]+$/',$table))continue;
+            $cols=$wpdb->get_col("SHOW COLUMNS FROM `$table`",0);
+            $pictureTables[]=['table'=>preg_replace('/^'.$wpdb->prefix.'/','',$table),'column_names'=>$cols,
+              'rows'=>(int)$wpdb->get_var("SELECT COUNT(*) FROM `$table`")];
+          }
+          echo 'PICTURE_ASSOCIATION_TABLE_STRUCTURE='.json_encode($pictureTables,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          $papi=$api->get_all_data('',array('fromPictureVersion'=>0,'fromProductPictureVersion'=>0));
+          $pMessage=$papi['message']??[];
+          $pictureKeys=[];
+          if(!empty($papi['success']) && is_array($pMessage))foreach($pMessage as $k=>$values)
+             if(stripos((string)$k,'pictur')!==false)$pictureKeys[$k]=is_array($values)?count($values):gettype($values);
+          echo 'REMOTE_PICTURE_ENTITY_KINDS='.json_encode($pictureKeys,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'FOUR_STREAM_AUDIT_READ_ONLY_NO_DATA_WRITES=yes'.PHP_EOL;
+          PHP
