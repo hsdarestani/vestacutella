@@ -11,6 +11,44 @@ if (!function_exists('vcar_identity_normalize_name')) {
         return trim((string)preg_replace('/\s+/u', ' ', $text));
     }
 }
+/**
+ * Gateway add-ons sometimes append their title in parentheses to the checkout
+ * surname, e.g. "علوی (زیبال)". Never trust the display label for ERP identity.
+ * Accept only a suffix that is the actual order gateway title (or its known
+ * identifier), with the *real* first and last name unchanged. The caller
+ * additionally requires uniquely owned OTP phone, matching profile, ERP cache
+ * person ID and the ERP person's registered phone.
+ */
+if (!function_exists('vcar_checkout_has_gateway_suffix')) {
+    function vcar_checkout_has_gateway_suffix($order,$erpFirst,$erpLast) {
+        if (!method_exists($order,'get_payment_method')) return false;
+        $first=vcar_identity_normalize_name($order->get_billing_first_name());
+        $last=vcar_identity_normalize_name($order->get_billing_last_name());
+        $erpFirst=vcar_identity_normalize_name($erpFirst);
+        $erpLast=vcar_identity_normalize_name($erpLast);
+        if ($first==='' || $erpFirst==='' || $erpLast==='' || $first!==$erpFirst) return false;
+        $last=str_replace(array('（','）'),array('(',')'),$last);
+        if (!preg_match('/^'.preg_quote($erpLast,'/').'\\s*\\(([^()]{2,48})\\)$/u',$last,$matched)) return false;
+        $suffix=vcar_identity_normalize_name($matched[1]);
+        if ($suffix==='') return false;
+        $method=strtolower(trim((string)$order->get_payment_method()));
+        $title=method_exists($order,'get_payment_method_title')
+            ? vcar_identity_normalize_name($order->get_payment_method_title()) : '';
+        $aliases=array(
+            'wc_zibal'=>array('زیبال','zibal'),
+            'zibal'=>array('زیبال','zibal'),
+            'pcs_smart_cardpay'=>array('کارت به کارت','کارت‌به‌کارت'),
+        );
+        $acceptable=$aliases[$method]??array();
+        if (in_array($suffix,$acceptable,true)) return true;
+        // Plugin-specific gateways need not be hard-coded. Their actual title
+        // must name the suffix; unrelated labels never authorize an invoice.
+        return $title!=='' && (
+            $title===$suffix || strpos($title,$suffix)!==false
+        );
+    }
+}
+
 if (!function_exists('vcar_identity_guard')) {
     function vcar_identity_guard($order, $remotePersonId = null) {
         // Test doubles without WordPress/Woo APIs are independently checked by policy tests.
@@ -54,7 +92,7 @@ if (!function_exists('vcar_identity_guard')) {
             !method_exists($wpdb,'prepare') || empty($wpdb->prefix)) return 'customer_person_cache_unavailable';
         $table=$wpdb->prefix.'bazara_persons';
         $row=$wpdb->get_row($wpdb->prepare(
-            "SELECT FirstName,LastName FROM $table WHERE PersonId=%d AND Deleted=0 LIMIT 1", $personId
+            "SELECT FirstName,LastName,Mobile FROM $table WHERE PersonId=%d AND Deleted=0 LIMIT 1", $personId
         ));
         if (!$row) {
             // The vendor local cache can lag behind a confirmed cloud person registration.
@@ -64,7 +102,20 @@ if (!function_exists('vcar_identity_guard')) {
             if ($proofId!==$personId || $proofName==='' || $proofName!==$billing) return 'customer_erp_person_not_found';
         } else {
             $erpName=vcar_identity_normalize_name(($row->FirstName??'').' '.($row->LastName??''));
-            if ($erpName==='' || $erpName!==$billing) return 'customer_erp_name_mismatch';
+            if ($erpName==='') return 'customer_erp_name_mismatch';
+            if ($erpName!==$billing) {
+                // The ERP number alone is insufficient: old admin-linked
+                // persons have reused IDs. Require unique OTP ownership,
+                // exact registered profile name, and exact ERP person phone.
+                $profileName=vcar_identity_normalize_name(($u->first_name??'').' '.($u->last_name??''));
+                $cachePhone=($row->Mobile??'') && function_exists('vesta_otp_phone')
+                    ? vesta_otp_phone((string)$row->Mobile) : false;
+                $validGatewaySuffix=$hasPhone && $customerContactVerified &&
+                    $profileName!=='' && $erpName===$profileName &&
+                    $cachePhone && $cachePhone===vesta_otp_phone($rawPhone) &&
+                    vcar_checkout_has_gateway_suffix($order,$row->FirstName??'',$row->LastName??'');
+                if (!$validGatewaySuffix) return 'customer_erp_name_mismatch';
+            }
         }
 
         return '';
