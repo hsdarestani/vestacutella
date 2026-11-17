@@ -35,16 +35,20 @@ function vcar_verify($order, $row, $lines, $receipts, $bank, $transfers=array(),
     if ((float)$order->get_total_tax() != 0 || count($order->get_items('fee'))) return 'unsupported_tax_or_fee';
     if ($multiplier === null) $multiplier = method_exists($order,'get_meta') ? (int)($order->get_meta('_vcar_money_multiplier') ?: 10) : 10;
     if (!in_array($multiplier, array(1,10), true)) return 'unsupported_accounting_unit';
-    $expected = array();
+    $expected = array(); $expectedGross = array();
     foreach ($order->get_items('line_item') as $item) {
         $pid = $item->get_variation_id() ?: $item->get_product_id();
         $detail = (int)get_post_meta($pid, 'mahak_product_detail_id', true);
         $product = (int)get_post_meta($pid, 'mahak_id', true);
         if (!$detail || !$product) return 'missing_mapping';
         $k = (string)$detail;
-        if (!isset($expected[$k])) $expected[$k] = array(0,0);
+        if (!isset($expected[$k])) { $expected[$k] = array(0,0); $expectedGross[$k] = array(0,0); }
         $expected[$k][0] += (float)$item->get_quantity();
         $expected[$k][1] += (float)$item->get_total() * $multiplier;
+        // Some legitimate Woo coupon invoices leave ERP line amounts gross
+        // and book the entire coupon against the invoice header instead.
+        $expectedGross[$k][0] += (float)$item->get_quantity();
+        $expectedGross[$k][1] += (float)$item->get_subtotal() * $multiplier;
     }
     $actual = array(); $sum = 0;
     foreach ($lines as $line) {
@@ -56,9 +60,20 @@ function vcar_verify($order, $row, $lines, $receipts, $bank, $transfers=array(),
         $actual[$k][0] += $qty; $actual[$k][1] += $net; $sum += $net;
     }
     if (count($actual) !== count($expected)) return 'line_identity';
+    $netMatch = true; $grossMatch = true;
     foreach ($expected as $key=>$v) {
-        if (!isset($actual[$key]) || abs($v[0]-$actual[$key][0]) > 0.00001 || abs($v[1]-$actual[$key][1]) > 0.51) return 'line_quantity_or_amount';
+        if (!isset($actual[$key]) || abs($v[0]-$actual[$key][0]) > 0.00001) return 'line_quantity_or_amount';
+        if (abs($v[1]-$actual[$key][1]) > 0.51) $netMatch = false;
+        if (abs($expectedGross[$key][1]-$actual[$key][1]) > 0.51) $grossMatch = false;
     }
+    // Only accept the gross-lines/header-coupon accounting layout when
+    // EACH SKU, quantity, gross line amount and exact Woo coupon agree,
+    // AND the header and payment math independently balance below.
+    // An unrelated header markdown cannot bypass invoice reconciliation.
+    $coupon = method_exists($order, 'get_discount_total') ? (float)$order->get_discount_total() : 0.0;
+    $headerCouponMatch = $coupon > 0.0 && $grossMatch &&
+        abs((float)($row['Discount'] ?? 0) - $coupon * $multiplier) <= 0.51;
+    if (!$netMatch && !$headerCouponMatch) return 'line_quantity_or_amount';
     $shipping = (float)($row['SendCost'] ?? 0);
     if (abs($shipping - (float)$order->get_shipping_total()*$multiplier) > 0.51 ||
         abs($sum - (float)($row['Discount'] ?? 0) + $shipping - (float)$order->get_total()*$multiplier) > 0.51) return 'invoice_total_or_shipping';
