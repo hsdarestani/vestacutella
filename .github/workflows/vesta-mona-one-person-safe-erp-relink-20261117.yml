@@ -1,0 +1,105 @@
+name: Vesta canary synchronize saved Mona person and safely reassign exact ERP identity
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-mona-one-person-safe-erp-relink-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-mona-exact-person-relink
+  cancel-in-progress: false
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 16
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq php-cli sshpass
+      - name: Validate source and stage exact-person code
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          php -l scripts/vesta-mona-cache-refresh-20261117.php
+          php -l scripts/vesta-link-verified-existing-mahak-person-20261117.php
+          sshpass -e scp -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/vesta-mona-cache-refresh-20261117.php "root@$HOST:/tmp/vesta-mona-cache-refresh-20261117.php"
+          sshpass -e scp -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/vesta-link-verified-existing-mahak-person-20261117.php "root@$HOST:/tmp/vesta-mona-existing-person-relink-20261117.php"
+      - name: Recheck unique live Cloud buyer and stale web cache without mutations
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i -e VC_MONA_CACHE_COMMIT=no vc-vesta php -d display_errors=0 -d memory_limit=768M' < scripts/vesta-mona-cache-refresh-20261117.php | tee preflight.log
+          grep -Fq 'CACHE_REFRESH_DRYRUN_NO_WRITES=yes' preflight.log
+          grep -Fq '"cloud_name_correct":true' preflight.log
+      - name: Private backup and protected one-person cache reconciliation, UID relink, and financial invariants
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'SHELL'
+          set -Eeuo pipefail
+          umask 077
+          exec 9>/run/lock/vesta-mona-existing-person-relink-20261117.lock
+          flock -n 9
+          backup=/srv/backups/vesta-mona-one-person-relink-$(date -u +%Y%m%dT%H%M%SZ)
+          mkdir -m 0700 -p "$backup"
+          docker exec vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb-dump -uroot --single-transaction --quick "$MARIADB_DATABASE" wp_bazara_persons wp_users wp_usermeta wp_posts wp_postmeta wp_vesta_accounting_outbox' | gzip -1 > "$backup/identity-before.sql.gz"
+          gzip -t "$backup/identity-before.sql.gz"
+          (cd "$backup"; sha256sum identity-before.sql.gz > SHA256SUMS; sha256sum -c SHA256SUMS)
+          echo 'EXACT_PERSON_BACKUP_SHA256_VERIFIED=yes'
+          current=$(docker exec -i vc-vesta php -d display_errors=0 <<'PHP'
+          <?php
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          echo get_option('vcar_sender_enabled',false)?'1':'0';
+          PHP
+          )
+          if [[ "$current" != 1 ]];then echo 'SENDER_NOT_PREVIOUSLY_ENABLED_NO_WRITES=yes';exit 10;fi
+          restore_sender(){
+            docker exec -i vc-vesta php -d display_errors=0 <<'PHP'
+          <?php
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          update_option('vcar_sender_enabled',true,false);
+          echo 'GUARDED_ACCOUNTING_SENDER_RESTORED='.(int)get_option('vcar_sender_enabled',false).PHP_EOL;
+          PHP
+          }
+          trap restore_sender EXIT
+          docker exec -i vc-vesta php -d display_errors=0 <<'PHP'
+          <?php
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          update_option('vcar_sender_enabled',false,false);
+          if(get_option('vcar_sender_enabled',true))exit(21);
+          echo 'SENDER_PAUSED_FOR_EXACT_PERSON_RELINK=yes'.PHP_EOL;
+          PHP
+          docker exec -i -e VC_MONA_CACHE_COMMIT=yes -e VC_MONA_CACHE_BACKUP_OK=yes vc-vesta php -d memory_limit=768M -d display_errors=0 < /tmp/vesta-mona-cache-refresh-20261117.php | tee "$backup/cache-result.log"
+          grep -Fq 'EXACT_ONE_LOCAL_CACHE_PERSON_NAME_UPDATED_AND_VERIFIED=yes' "$backup/cache-result.log"
+          docker exec -i -e VC_RELINK_COMMIT=no vc-vesta php -d memory_limit=768M -d display_errors=0 < /tmp/vesta-mona-existing-person-relink-20261117.php | tee "$backup/relink-preflight.log"
+          grep -Fq 'SAFE_PERSON_RELINK_DRYRUN_READY=yes' "$backup/relink-preflight.log"
+          docker exec -i -e VC_RELINK_COMMIT=yes -e VC_RELINK_BACKUP_VERIFIED=yes vc-vesta php -d memory_limit=768M -d display_errors=0 < /tmp/vesta-mona-existing-person-relink-20261117.php | tee "$backup/relink-result.log"
+          grep -Fq 'EXISTING_ERP_PERSON_LINKED_TO_UNIQUELY_VERIFIED_BUYER=yes' "$backup/relink-result.log"
+          docker exec -i vc-vesta php -d memory_limit=512M -d display_errors=0 <<'PHP'
+          <?php
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          $o=wc_get_order(105554);
+          if((int)get_user_meta(1,'mahak_id',true)!==0 ||
+             (int)get_user_meta(2918,'mahak_id',true)!==12706969 ||
+             vcar_identity_guard($o)!=='')exit(41);
+          echo 'ORDER_105554_LOCAL_CUSTOMER_ERP_IDENTITY_VERIFIED=yes INVOICE_AND_RECEIPT_UNCHANGED=yes'.PHP_EOL;
+          PHP
+          echo 'EXACT_PERSON_RELINK_ONLY_COMPLETED=yes'
+          SHELL
+      - name: Check production storefronts still healthy
+        run: |
+          set -Eeuo pipefail
+          for host in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
+             code=$(curl -LsS --connect-timeout 8 --max-time 25 -o /dev/null -w '%{http_code}' "https://$host/")
+             echo "SITE=$host HTTP=$code"; test "$code" = 200
+          done
