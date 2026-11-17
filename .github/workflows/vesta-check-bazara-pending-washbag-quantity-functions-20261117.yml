@@ -1,0 +1,41 @@
+name: Vesta inspect pending Bazara not converted quantity for two washbag ERP details
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-check-bazara-pending-washbag-quantity-functions-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Print exact read-only queue quantity function signatures and relevant stock update arguments
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'python3 -' <<'PY'
+          from pathlib import Path
+          import re
+          base=Path('/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara')
+          for path in sorted(base.rglob('*.php')):
+            if not path.is_file() or path.stat().st_size>2500000:continue
+            lines=path.read_text(encoding='utf8',errors='replace').splitlines()
+            for i,line in enumerate(lines):
+              if not re.search(r'function\s+(get_bazara_not_converted_qty|get_order_item_qty)\s*\(',line):continue
+              print('QUEUE_FUNCTION_SOURCE='+str(path.relative_to(base))+' LINE='+str(i+1))
+              for j in range(i,min(i+58,len(lines))):
+                l=lines[j]
+                if re.search(r'https?://|token|secret|password|api.?key|authorization|credentials',l,re.I):continue
+                print('QUEUE_FUNCTION_LINE',j+1,l.rstrip()[:230])
+          lines=(base/'classes/functions.php').read_text(encoding='utf8',errors='replace').splitlines()
+          for i in list(range(1924,1946))+list(range(1950,1961)):
+            l=lines[i]
+            if re.search(r'https?://|token|password|secret|api.?key',l,re.I):continue
+            print('QUANTITY_ARGS_LINE',i+1,l.rstrip()[:220])
+          print('BAZARA_PENDINGS_CODE_INSPECTED_READONLY=yes')
+          PY
