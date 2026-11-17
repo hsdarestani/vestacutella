@@ -1,0 +1,46 @@
+name: Vesta read-only remote acknowledgement for in-flight order 105557
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-105557-remote-ack-readback-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Inspect live cloud acknowledgement, receipt and outbox without re-sending
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1024M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $id=105557;$o=wc_get_order($id);if(!$o)exit(30);
+          $q=$wpdb->get_row($wpdb->prepare("SELECT state,reason,attempts,submitted_at,remote_id,next_attempt FROM ".Vesta_Accounting_Reliability::table()." WHERE order_id=%d",$id),ARRAY_A);
+          $api=new BazaraApi(true);$cloud=Vesta_Accounting_Reliability::cloud($api);
+          $rows=$cloud['orders'][$id]??[];
+          echo 'EXACT_105557_REMOTE_ACK_STATUS='.json_encode([
+           'order_id'=>$id,'queue'=>$q,'cloud_invoice_count'=>count($rows),
+           'erp_person_uid'=>(int)get_user_meta(6416,'mahak_id',true),
+           'order_erp_meta'=>(int)$o->get_meta('mahak_id'),
+           'seller_enabled'=>(bool)get_option('vcar_sender_enabled',false)
+          ],JSON_UNESCAPED_UNICODE).PHP_EOL;
+          $bank=vcar_bank(get_option('bazara_visitor_settings',[]),$o->get_payment_method());
+          foreach($rows as $inv){
+           $erp=(int)($inv['OrderId']??0);
+           $reason=vcar_verify($o,$inv,$cloud['details'][$erp]??[],$cloud['receipts'][$erp]??[],$bank,$cloud['transfers'],(int)($o->get_meta('_vcar_money_multiplier')?:10));
+           echo 'EXACT_105557_REMOTE_INVOICE='.json_encode([
+            'invoice_id'=>$erp,'correct_person'=>(int)($inv['PersonId']??0)===12770247,
+            'finances'=>$reason?:'verified','receipts'=>count($cloud['receipts'][$erp]??[])
+           ],JSON_UNESCAPED_UNICODE).PHP_EOL;
+          }
+          echo 'READ_ONLY_NO_SECOND_SEND_OR_WRITES=yes'.PHP_EOL;
+          PHP
