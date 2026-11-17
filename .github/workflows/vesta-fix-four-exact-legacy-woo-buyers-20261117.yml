@@ -1,0 +1,108 @@
+name: Vesta reconcile four unique-OTP-owned historical orders without issuing invoices
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-fix-four-exact-legacy-woo-buyers-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-exact-four-legacy-woo-customer-relinks
+  cancel-in-progress: false
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq php-cli sshpass
+      - name: Stage and lint four order Woo-only buyer relink script
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          php -l scripts/vesta-relink-four-verified-legacy-buyers-20261117.php
+          sshpass -e scp -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/vesta-relink-four-verified-legacy-buyers-20261117.php "root@$HOST:/tmp/vesta-exact-four-legacy-buyer-link-20261117.php"
+      - name: Four orders must all pass cloud and OTP zero-write preflight
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i -e VC_FOUR_BUYERS_COMMIT=no vc-vesta php -d display_errors=0 -d memory_limit=1024M' < scripts/vesta-relink-four-verified-legacy-buyers-20261117.php | tee preflight.log
+          grep -Fq 'FOUR_LEGACY_BUYER_RELINK_DRY_RUN_OK_NO_WRITES=yes' preflight.log
+      - name: Back up and update only four precisely verified Woo customer links, audit logged and rollback on failure
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          umask 077
+          exec 9>/run/lock/vesta-four-legacy-buyers-20261117.lock
+          flock -n 9
+          backup=/srv/backups/vesta-four-legacy-woo-buyers-$(date -u +%Y%m%dT%H%M%SZ)
+          mkdir -m 0700 -p "$backup"
+          docker exec vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb-dump -uroot --single-transaction --quick "$MARIADB_DATABASE" wp_posts wp_postmeta wp_users wp_usermeta wp_vesta_accounting_outbox wp_bazara_orders' | gzip -1 > "$backup/before.sql.gz"
+          gzip -t "$backup/before.sql.gz"
+          (cd "$backup"; sha256sum before.sql.gz > SHA256SUMS;sha256sum -c SHA256SUMS)
+          echo 'FOUR_LEGACY_CUSTOMERS_BACKUP_VERIFIED=yes'
+          original=$(docker exec -i vc-vesta php -d display_errors=0 <<'PHP'
+          <?php
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';echo get_option('vcar_sender_enabled',false)?'1':'0';
+          PHP
+          )
+          if [[ "$original" != 1 ]];then echo 'PROTECTED_SENDER_NOT_INITIAL_ENABLED_ABORT=yes';exit 32;fi
+          restore(){
+            docker exec -i vc-vesta php -d display_errors=0 <<'PHP'
+          <?php
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php'; update_option('vcar_sender_enabled',true,false);
+          echo 'PROTECTED_SENDER_RESTORED='.(int)get_option('vcar_sender_enabled',false).PHP_EOL;
+          PHP
+          }
+          trap restore EXIT
+          docker exec -i vc-vesta php -d display_errors=0 <<'PHP'
+          <?php
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';update_option('vcar_sender_enabled',false,false);
+          if(get_option('vcar_sender_enabled',true))exit(35);
+          echo 'SENDER_PAUSED_WHILE_RELINKING_EXISTING_WOO_ORDER_USERS=yes'.PHP_EOL;
+          PHP
+          docker exec -i -e VC_FOUR_BUYERS_COMMIT=yes -e VC_FOUR_BUYERS_BACKUP_VERIFIED=yes vc-vesta php -d display_errors=0 -d memory_limit=1024M < /tmp/vesta-exact-four-legacy-buyer-link-20261117.php | tee "$backup/result.log"
+          grep -Fq 'FOUR_WOO_CUSTOMER_LINKS_CORRECTED_WITHOUT_ERP_INVOICE_OR_RECEIPT_WRITES=yes' "$backup/result.log"
+          echo 'FOUR_EXACT_HISTORICAL_ORDER_CUSTOMER_LINKS_READBACK_VERIFIED=yes'
+          REMOTE
+      - name: Verify no cloud financial records were created and no buyer profile changed
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1024M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $expected=[102983=>[0,6061],102933=>[3055,6035],102918=>[3055,5981],102789=>[0,5983]];
+          $api=new BazaraApi(true);$r=$api->get_all_data('',array('fromOrderVersion'=>0));
+          if(empty($r['success'])||!is_array($r['message']['Orders']??null))exit(40);
+          $remote=[];foreach($r['message']['Orders'] as $inv)if(empty($inv['Deleted'])&&(int)($inv['OrderClientId']??0)>0)$remote[(int)$inv['OrderClientId']][]=$inv;
+          $out=[];
+          foreach($expected as $id=>$u){
+           $o=wc_get_order($id);
+           $old=(string)$o->get_meta('_vesta_legacy_original_customer_user_20261117',true);
+           $item=['order'=>$id,'buyer_uid'=>(int)$o->get_customer_id(),
+             'original_woo_uid'=>$old,
+             'cloud_invoice_count'=>count($remote[$id]??[]),
+             'local_invoice_id'=>(int)$o->get_meta('mahak_id')];
+           $out[]=$item;
+           if($item['buyer_uid']!==$u[1] || $old!==(string)$u[0] ||
+              $item['cloud_invoice_count']!==0 || $item['local_invoice_id']!==0)exit(41);
+          }
+          echo 'EXACT_FOUR_WOO_LINK_READBACK='.json_encode($out,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'NO_ERP_INVOICE_RECEIPT_OR_PERSON_CREATED=yes'.PHP_EOL;
+          PHP
