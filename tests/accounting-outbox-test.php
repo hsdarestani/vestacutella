@@ -73,6 +73,14 @@ function reset_case($remote,$ambiguous){
  $GLOBALS['vendor_error']='';$GLOBALS['deadlock_mode']=false;$GLOBALS['money_unit']=[];
 }
 function ensure($ok,$name){if(!$ok){fwrite(STDERR,'FAIL '.$name."\n");exit(1);}echo 'PASS '.$name."\n";}
+ensure(Vesta_Accounting_Reliability::blocked_retry_seconds('customer_erp_person_unmapped')===120,
+ 'new_person_unmapped_rechecks_after_2_minutes');
+ensure(Vesta_Accounting_Reliability::blocked_retry_seconds('customer_erp_person_not_found')===120,
+ 'mahaK_person_cache_lag_rechecks_after_2_minutes');
+ensure(Vesta_Accounting_Reliability::blocked_retry_seconds('customer_phone_owner_mismatch')===600,
+ 'unsafe_phone_mismatch_does_not_get_fast_retry');
+ensure(Vesta_Accounting_Reliability::blocked_retry_seconds('missing_product_mapping')===600,
+ 'product_mapping_stays_on_normal_retry');
 reset_case(false,false);Vesta_Accounting_Reliability::tick(true,2);
 ensure($GLOBALS['sends']===1&&$GLOBALS['wpdb']->rows[1]['state']==='blocked'&&$GLOBALS['wpdb']->rows[2]['state']==='verified','blocked_product_does_not_block_unrelated_order_and_actual_remote_ack_required');
 reset_case(true,false);Vesta_Accounting_Reliability::tick(true,2);
