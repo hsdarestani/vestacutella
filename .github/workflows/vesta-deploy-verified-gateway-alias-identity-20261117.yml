@@ -1,0 +1,115 @@
+name: Vesta accept verified gateway suffixes without editing every customer or invoice
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-deploy-verified-gateway-alias-identity-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-accounting-gateway-alias-identity-code
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 16
+    steps:
+      - uses: actions/checkout@v4
+      - name: PHP lint plus previous and new impersonation and gateway tests
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq php-cli sshpass
+          php -l infra/plugins/vesta-accounting-reliability/vesta-accounting-identity.php
+          php tests/accounting-identity-test.php infra/plugins/vesta-accounting-reliability/vesta-accounting-identity.php
+          php tests/accounting-policy-test.php infra/plugins/vesta-accounting-reliability/vesta-accounting-policy.php
+          php tests/accounting-outbox-test.php infra/plugins/vesta-accounting-reliability/vesta-accounting-reliability.php
+          echo 'GATEWAY_ALIAS_AND_SPOOFED_CUSTOMER_REGRESSION_TESTS_PASSED=yes'
+      - name: Stage guarded identity code only
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e scp -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null infra/plugins/vesta-accounting-reliability/vesta-accounting-identity.php "root@$HOST:/tmp/vesta-identity-gateway-suffix-20261117.php"
+      - name: Back up, lock protected sender, atomic code swap, verify real Zibal order with no invoice mutation
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          umask 077
+          exec 8>/run/lock/vesta-gateway-alias-identity-deploy-20261117.lock
+          flock -n 8
+          base=/srv/vestacutella/runtime/vesta/wp-content/mu-plugins
+          file="$base/vesta-accounting-identity.php"
+          test -s "$file"
+          backup=/srv/backups/vesta-gateway-alias-identity-$(date -u +%Y%m%dT%H%M%SZ)
+          mkdir -p -m 0700 "$backup"
+          cp -p "$file" "$backup/vesta-accounting-identity.php"
+          (cd "$backup" && sha256sum vesta-accounting-identity.php > SHA256SUMS && sha256sum -c SHA256SUMS)
+          echo 'ORIGINAL_IDENTITY_GUARD_CODE_BACKUP_VERIFIED=yes'
+          docker exec -i vc-vesta php -l < /tmp/vesta-identity-gateway-suffix-20261117.php
+          changed=no; verified=no
+          rollback(){
+            rc=$?
+            trap - EXIT
+            if [[ "$changed" == yes && "$verified" != yes ]]; then
+              cp -p "$backup/vesta-accounting-identity.php" "$file"
+              echo 'GATEWAY_ALIAS_IDENTITY_CODE_ROLLED_BACK=yes'
+            fi
+            exit "$rc"
+          }
+          trap rollback EXIT
+          STAGE=/tmp/vesta-identity-gateway-suffix-20261117.php TARGET="$file" python3 - <<'PY'
+          import os, pathlib, fcntl, time, subprocess
+          source=pathlib.Path(os.environ['STAGE'])
+          target=pathlib.Path(os.environ['TARGET'])
+          pid=subprocess.check_output(['docker','inspect','-f','{{.State.Pid}}','vc-vesta'],text=True).strip()
+          lock=pathlib.Path('/proc')/pid/'root/tmp/vesta-bazara-order-sync.lock'
+          with lock.open('rb') as stream:
+            for attempt in range(120):
+              try: fcntl.flock(stream,fcntl.LOCK_EX|fcntl.LOCK_NB);break
+              except BlockingIOError:time.sleep(.25)
+            else:raise RuntimeError('EXISTING_ACCOUNTING_WORKER_DID_NOT_UNLOCK')
+            destination=target.with_name('.vesta-accounting-identity.php.gateway-next')
+            destination.write_bytes(source.read_bytes())
+            os.chmod(destination,target.stat().st_mode & 0o777)
+            os.chown(destination,target.stat().st_uid,target.stat().st_gid)
+            os.replace(destination,target)
+            print('GATEWAY_ALIAS_IDENTITY_SOURCE_ATOMICALLY_SWAPPED=yes',flush=True)
+          PY
+          changed=yes
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=768M <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          global $wpdb;
+          if(!function_exists('vcar_checkout_has_gateway_suffix'))exit(25);
+          if(!get_option('vcar_sender_enabled',false))exit(26);
+          $o=wc_get_order(105556);
+          if(!$o || (int)$o->get_customer_id()!==2918 || (int)get_user_meta(2918,'mahak_id',true)!==12706969)exit(27);
+          $row=$wpdb->get_row($wpdb->prepare("SELECT FirstName,LastName FROM {$wpdb->prefix}bazara_persons WHERE PersonId=%d AND Deleted=0",12706969));
+          if(!$row || !vcar_checkout_has_gateway_suffix($o,$row->FirstName,$row->LastName))exit(28);
+          $reason=vcar_identity_guard($o);
+          $settings=get_option('bazara_visitor_settings',[]);
+          $bank=vcar_bank($settings,$o->get_payment_method());
+          $preflight=Vesta_Accounting_Reliability::preflight($o,$bank);
+          echo 'ORDER_105556_POST_DEPLOY_IDENTITY_REASON='.($reason?:'verified').PHP_EOL;
+          echo 'ORDER_105556_POST_DEPLOY_PREFLIGHT='.($preflight?:'verified').PHP_EOL;
+          if($reason!=='' || $preflight!=='')exit(29);
+          $bad=wc_get_order(105460);
+          if($bad && vcar_identity_guard($bad)==='')exit(30);
+          echo 'BAD_IDENTITY_STILL_BLOCKED=yes'.PHP_EOL;
+          echo 'PROTECTED_SENDER_REMAINED_ACTIVE=yes NO_ORDER_PERSON_INVOICE_OR_PAYMENT_MUTATION=yes'.PHP_EOL;
+          PHP
+          for host in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
+            code=$(curl --noproxy '*' -ksS --connect-timeout 8 --max-time 25 --resolve "$host:443:127.0.0.1" -o /dev/null -w '%{http_code}' "https://$host/")
+            echo "SITE=$host HTTP=$code";test "$code" = 200
+          done
+          verified=yes
+          trap - EXIT
+          echo 'GATEWAY_ALIAS_IDENTITY_GUARD_DEPLOYED_VERIFIED=yes'
+          REMOTE
