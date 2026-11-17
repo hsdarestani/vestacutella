@@ -1,0 +1,95 @@
+name: Vesta safely backfill verified empty customer names and keep future profiles complete
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-verified-profile-backfill-and-cron-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 16
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass php-cli
+      - name: Validate and count safe existing candidates (dry run)
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          php -l scripts/vesta-enrich-verified-erp-profiles-20261117.php
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i -e VC_PROFILE_ENRICH_MAX=10 vc-vesta php -d memory_limit=768M -d display_errors=0' < scripts/vesta-enrich-verified-erp-profiles-20261117.php | tee dryrun.log
+          test "$(grep -c '^PROFILE_SAFE_CANDIDATE ' dryrun.log)" -ge 1
+          grep -Fq 'COMMIT=0 NO_MAHAK_INVOICE_PRODUCT_OR_MEDIA_WRITES=yes' dryrun.log
+      - name: Fresh private backup with independently checked integrity
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'SHELL'
+          set -Eeuo pipefail
+          umask 077
+          d=/srv/backups/vesta-verified-profile-backfill-$(date -u +%Y%m%dT%H%M%SZ)
+          mkdir -p -m 0700 "$d"
+          docker exec vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb-dump -uroot --single-transaction --quick "$MARIADB_DATABASE" wp_users wp_usermeta' | gzip -1 > "$d/profile-before.sql.gz"
+          gzip -t "$d/profile-before.sql.gz"
+          sha256sum "$d/profile-before.sql.gz" > "$d/SHA256SUMS"
+          (cd "$d"; sha256sum -c SHA256SUMS)
+          echo 'PROFILE_BACKFILL_BACKUP_VERIFIED=yes'
+          SHELL
+      - name: Process independently verified customers in capped sets of ten
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          touched=0
+          for wave in 1 2 3 4 5 6 7 8; do
+            echo "PROFILE_WAVE=$wave"
+            sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i -e VC_PROFILE_ENRICH_COMMIT=yes -e VC_PROFILE_ENRICH_MAX=10 vc-vesta php -d memory_limit=768M -d display_errors=0' < scripts/vesta-enrich-verified-erp-profiles-20261117.php | tee wave.log
+            grep -Fq 'COMMIT=1 NO_MAHAK_INVOICE_PRODUCT_OR_MEDIA_WRITES=yes' wave.log
+            n=$(grep -c '^PROFILE_VERIFIED_ENRICHED ' wave.log || true)
+            echo "WAVE_ENRICHED=$n"
+            touched=$((touched+n))
+            if test "$n" -eq 0; then break; fi
+          done
+          echo "PROFILE_BACKFILL_TOTAL_ENRICHED=$touched"
+          test "$touched" -ge 1
+      - name: Install future verified-profile reconciliation job with source integrity and guarded cron
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/vesta-enrich-verified-erp-profiles-20261117.php "root@$HOST:/tmp/vesta-enrich-verified-erp-profiles-20261117.php"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'SHELL'
+          set -Eeuo pipefail
+          dst=/srv/vestacutella/repo/scripts/vesta-enrich-verified-erp-profiles-20261117.php
+          docker exec -i vc-vesta php -l < /tmp/vesta-enrich-verified-erp-profiles-20261117.php
+          install -m 0644 /tmp/vesta-enrich-verified-erp-profiles-20261117.php "$dst"
+          cat >/etc/cron.d/vesta-verified-profiles <<'CRON'
+          SHELL=/bin/bash
+          PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+          */10 * * * * root flock -n /run/lock/vesta-verified-profiles.lock timeout 240 bash -c 'docker exec -u www-data -i -e VC_PROFILE_ENRICH_COMMIT=yes -e VC_PROFILE_ENRICH_MAX=5 vc-vesta php -d memory_limit=768M -d display_errors=0 < /srv/vestacutella/repo/scripts/vesta-enrich-verified-erp-profiles-20261117.php' >> /var/log/vesta-verified-profiles.log 2>&1
+          CRON
+          chmod 0644 /etc/cron.d/vesta-verified-profiles
+          systemctl is-active --quiet cron
+          echo 'VERIFIED_PROFILE_FUTURE_CRON_ENABLED=yes'
+          SHELL
+      - name: Final readback, dry-run backlog, safe Mahak person worker and endpoint availability
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i -e VC_PROFILE_ENRICH_MAX=10 vc-vesta php -d memory_limit=768M -d display_errors=0' < scripts/vesta-enrich-verified-erp-profiles-20261117.php | tee remaining.log
+          grep -Fq 'COMMIT=0 NO_MAHAK_INVOICE_PRODUCT_OR_MEDIA_WRITES=yes' remaining.log
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i -e VC_PERSON_MAX_BATCH=5 vc-vesta php -d memory_limit=1024M -d display_errors=0' < scripts/vesta-safe-person-worker-20261116.php | tee person-next.log
+          grep -Fq 'NO_INVOICE_WRITES=yes' person-next.log
+          for site in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir; do
+            code=$(curl -LsS --connect-timeout 8 --max-time 25 -o /dev/null -w '%{http_code}' "https://$site/")
+            echo "SITE=$site HTTP=$code";test "$code" = 200
+          done
