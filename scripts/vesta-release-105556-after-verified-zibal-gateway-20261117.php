@@ -45,7 +45,7 @@ foreach($m['Orders'] as $remote)if(empty($remote['Deleted'])&&(int)($remote['Ord
 if(count($person)!==1 || $phoneCount!==1 || $existsInvoice!==0 ||
  vcar_identity_normalize_name(($person[0]['FirstName']??'').' '.($person[0]['LastName']??''))!==
  vcar_identity_normalize_name(get_user_by('id',$uid)->first_name.' '.get_user_by('id',$uid)->last_name) ||
- !vcar_checkout_has_gateway_suffix($o,$person[0]['FirstName']??'',$person[0]['LastName']??''){
+ !vcar_checkout_has_gateway_suffix($o,$person[0]['FirstName']??'',$person[0]['LastName']??'')){
  echo "REMOTE_PERSON_OR_ORDER_CONFLICT_NO_WRITES=yes\n";exit(25);
 }
 $t=Vesta_Accounting_Reliability::table();
