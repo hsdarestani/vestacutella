@@ -1,0 +1,62 @@
+name: Vesta read only all-history washbag variation order item identity probe
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-audit-all-history-two-washbag-variation-items-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Query exact 70299 70300 order-item metadata across all years, with no date filter
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=768M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $meta=$wpdb->prefix.'woocommerce_order_itemmeta';
+          $orders=$wpdb->prefix.'woocommerce_order_items';
+          $found=$wpdb->get_results("SELECT oi.order_id, oi.order_item_id,
+            MAX(CASE WHEN m.meta_key='_variation_id' THEN m.meta_value END) variation_id,
+            MAX(CASE WHEN m.meta_key='_product_id' THEN m.meta_value END) product_id,
+            MAX(CASE WHEN m.meta_key='_qty' THEN m.meta_value END) qty,
+            MAX(CASE WHEN m.meta_key='_reduced_stock' THEN m.meta_value END) reduced
+            FROM $orders oi JOIN $meta m ON m.order_item_id=oi.order_item_id
+            WHERE oi.order_item_type='line_item'
+            AND oi.order_item_id IN (SELECT order_item_id FROM $meta WHERE meta_key IN ('_product_id','_variation_id') AND meta_value IN ('70299','70300','70298'))
+            GROUP BY oi.order_id,oi.order_item_id ORDER BY oi.order_id DESC LIMIT 350",ARRAY_A);
+          $out=[];$byvar=[];
+          foreach($found as $r){
+             $var=(int)$r['variation_id'];
+             if(!in_array($var,[70299,70300],true))continue;
+             $id=(int)$r['order_id'];$o=wc_get_order($id);
+             $date=$o && $o->get_date_created()?$o->get_date_created()->date('Y-m-d'):null;
+             $out[]=['order_id'=>$id,'variation_id'=>$var,'parent'=>(int)$r['product_id'],
+                'quantity'=>(float)$r['qty'],'stock_reduced_qty'=>$r['reduced']===null?null:(float)$r['reduced'],
+                'status'=>$o?$o->get_status():'unknown','date'=>$date,
+                'local_ma_hak_invoice_id'=>$o?(int)$o->get_meta('mahak_id'):0];
+             if(!isset($byvar[$var]))$byvar[$var]=['count'=>0,'qty'=>0,'reduced_qty'=>0];
+             $byvar[$var]['count']++;$byvar[$var]['qty']+=(float)$r['qty'];
+             $byvar[$var]['reduced_qty']+=(float)($r['reduced']??0);
+          }
+          echo 'WASHBAG_ALL_HISTORY_ORDER_ITEM_ROWS='.json_encode($out,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'WASHBAG_ALL_HISTORY_TOTALS='.json_encode($byvar,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          $checks=[
+           'wc_hpos_orders_table_exists'=>(bool)$wpdb->get_var($wpdb->prepare("SHOW TABLES LIKE %s",$wpdb->prefix.'wc_orders')),
+           'itemmeta_count_for_variations'=>(int)$wpdb->get_var("SELECT COUNT(*) FROM $meta WHERE meta_key='_variation_id' AND meta_value IN ('70299','70300')"),
+           'itemmeta_count_for_parent'=>(int)$wpdb->get_var("SELECT COUNT(*) FROM $meta WHERE meta_key='_product_id' AND meta_value='70298'"),
+           'wc_manage_stock'=>get_option('woocommerce_manage_stock'),
+          ];
+          echo 'WASHBAG_ORDER_ITEM_STORAGE_DIAGNOSTIC='.json_encode($checks).PHP_EOL;
+          echo 'NO_ORDER_OR_INVENTORY_CHANGES=yes'.PHP_EOL;
+          PHP
