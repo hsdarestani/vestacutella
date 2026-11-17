@@ -1,0 +1,71 @@
+name: Vesta audit Woo stock-reduced orders for corrected washbag sizes versus Mahak cloud
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-audit-two-washbags-stock-order-gap-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Audit stock reductions and Mahak order presence by two exact Woo variation ids; no financial writes
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1024M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);set_time_limit(0);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $target=[70299,70300];
+          $current=[];foreach($target as $vid){$v=wc_get_product($vid);$current[$vid]=['woo_stock'=>$v?$v->get_stock_quantity():null,'sku'=>$v?$v->get_sku():null,'erp_product_id'=>(int)get_post_meta($vid,'mahak_id',true),'erp_detail_id'=>(int)get_post_meta($vid,'mahak_product_detail_id',true)];}
+          echo 'WASHBAG_TWO_VARIANTS_CURRENT='.json_encode($current,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          $q=$wpdb->get_results("SELECT oi.order_id,oi.order_item_id,MAX(CASE WHEN oim.meta_key='_variation_id' THEN oim.meta_value ELSE NULL END) variation_id,MAX(CASE WHEN oim.meta_key='_qty' THEN oim.meta_value ELSE NULL END) qty,MAX(CASE WHEN oim.meta_key='_reduced_stock' THEN oim.meta_value ELSE NULL END) reduced_qty FROM {$wpdb->prefix}woocommerce_order_items oi JOIN {$wpdb->prefix}woocommerce_order_itemmeta oim ON oim.order_item_id=oi.order_item_id WHERE oi.order_item_type='line_item' AND oi.order_id IN (SELECT ID FROM {$wpdb->posts} WHERE post_type='shop_order' AND post_date >= '2026-10-01') GROUP BY oi.order_id,oi.order_item_id HAVING variation_id IN ('70299','70300') ORDER BY oi.order_id DESC",ARRAY_A);
+          $rows=[];$totals=[];$ids=[];
+          foreach($q as $i){
+             $id=(int)$i['order_id'];$vid=(int)$i['variation_id'];
+             $o=wc_get_order($id);
+             if(!$o)continue;
+             $ids[$id]=true;
+             $stockReduced=$i['reduced_qty']===null?null:(float)$i['reduced_qty'];
+             $group=$totals[$vid]??['qty'=>0,'stock_reduced_qty'=>0,'orders_with_stock_reduction'=>0];
+             $group['qty']+=(float)$i['qty'];
+             if($stockReduced!==null){$group['stock_reduced_qty']+=$stockReduced;$group['orders_with_stock_reduction']++;}
+             $totals[$vid]=$group;
+             $rows[]=['order_id'=>$id,'variation_id'=>$vid,'qty'=>(float)$i['qty'],'stock_reduced_qty'=>$stockReduced,
+               'status'=>$o->get_status(),'date'=>$o->get_date_created()?$o->get_date_created()->date('Y-m-d'):null,
+               'local_erp_invoice_id'=>(int)$o->get_meta('mahak_id'),
+               'paid'=>(bool)$o->get_date_paid()];
+          }
+          echo 'WASHBAG_WOO_ORDER_STOCK_REDUCTION_TOTALS='.json_encode($totals,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          $api=new BazaraApi(true);
+          $response=$api->get_all_data('',array('fromOrderVersion'=>0,'fromOrderDetailVersion'=>0));
+          $remote=[];
+          if(is_array($response)&&!empty($response['success'])&&is_array($response['message']['Orders']??null)){
+            foreach($response['message']['Orders'] as $r){
+              $client=(int)($r['OrderClientId']??0);
+              if($client>0 && isset($ids[$client]) && empty($r['Deleted']))$remote[$client][]=['erp_invoice_id'=>(int)$r['OrderId'],'erp_person_id'=>(int)($r['PersonId']??0)];
+            }
+          }
+          $missingTotals=[];$stockReducedCloudAbsent=[];
+          foreach($rows as &$row){
+             $id=$row['order_id'];$row['cloud_invoice_matches']=$remote[$id]??[];
+             if($row['stock_reduced_qty']>0 && empty($row['cloud_invoice_matches'])){
+                $vid=$row['variation_id'];
+                $missingTotals[$vid]=($missingTotals[$vid]??0)+$row['stock_reduced_qty'];
+                if(count($stockReducedCloudAbsent)<45)$stockReducedCloudAbsent[]=$row;
+             }
+          }
+          unset($row);
+          echo 'WASHBAG_STOCK_REDUCED_NO_CLOUD_ORDER_QTY='.json_encode($missingTotals,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'WASHBAG_STOCK_REDUCED_NO_CLOUD_ORDER_SAMPLE='.json_encode($stockReducedCloudAbsent,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'WASHBAG_ALL_RELEVANT_WOO_ORDERS='.json_encode(array_slice($rows,0,65),JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'DESKTOP_INVOICE_AND_WAREHOUSE_MOVEMENT_NOT_ACCESSIBLE_FROM_THIS_AUDIT=yes'.PHP_EOL;
+          echo 'READ_ONLY_NO_ORDERS_PRODUCTS_OR_STOCK_MODIFIED=yes'.PHP_EOL;
+          PHP
