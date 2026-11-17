@@ -38,7 +38,7 @@ foreach($ids as $id){
   $emailOwner=$email?get_user_by('email',$email):false;
   if($target===1 || !$user || !Vesta_Channel_Customers::customer($target) || $name==='' ||
      $targetName!==$name || $storedPhone!==$phone || ($email!==''&&!is_email($email)) ||
-     ($emailOwner && (int)$emailOwner->ID!==$target)){
+     ($emailOwner && (int)$emailOwner->ID!==$target && (int)$emailOwner->ID!==1)){
      $stats['blocked']++;echo "IDENTITY_CONFLICT=$id\n";continue;
   }
   if($old===$target){
@@ -62,6 +62,7 @@ foreach($ids as $id){
   $o->update_meta_data('_vesta_identity_repaired_at',gmdate('c'));
   $o->update_meta_data('_vesta_identity_repair_reason','legacy_admin_customer_assignment');
   $o->update_meta_data('_vesta_accounting_erp_customer_reconciliation','required');
+  if($emailOwner && (int)$emailOwner->ID===1)$o->update_meta_data('_vesta_customer_billing_email_review','legacy_admin_email_in_order');
   $o->delete_meta_data('_vesta_account_issue');
   $o->save();
   $after=wc_get_order($id);
