@@ -1,0 +1,77 @@
+name: Vesta guarded verified customer profile and Mahak person canary
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-profile-and-mahak-person-safe-canary-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq php-cli sshpass
+      - name: Validate live source and preview three distinct verified new customer profiles
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          php -l scripts/vesta-enrich-verified-erp-profiles-20261117.php
+          php -l scripts/vesta-safe-person-worker-20261116.php
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i -e VC_PROFILE_ENRICH_MAX=3 vc-vesta php -d memory_limit=1024M -d display_errors=0' < scripts/vesta-enrich-verified-erp-profiles-20261117.php | tee preflight.log
+          test "$(grep -c '^PROFILE_SAFE_CANDIDATE ' preflight.log)" -eq 3
+          grep -Fq 'COMMIT=0 NO_MAHAK_INVOICE_PRODUCT_OR_MEDIA_WRITES=yes' preflight.log
+      - name: Private backup of users, metadata and Mahak person identity cache
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'SHELL'
+          set -Eeuo pipefail
+          umask 077
+          dir=/srv/backups/vesta-verified-profile-and-person-$(date -u +%Y%m%dT%H%M%SZ)
+          mkdir -p -m 0700 "$dir"
+          docker exec vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb-dump -uroot --single-transaction --quick "$MARIADB_DATABASE" wp_users wp_usermeta wp_bazara_persons' | gzip -1 > "$dir/customer-person-before.sql.gz"
+          gzip -t "$dir/customer-person-before.sql.gz"
+          sha256sum "$dir/customer-person-before.sql.gz" > "$dir/SHA256SUMS"
+          (cd "$dir";sha256sum -c SHA256SUMS)
+          echo 'CUSTOMER_PERSON_BACKUP_SHA256_VERIFIED=yes'
+          SHELL
+      - name: Complete three uniquely verified profiles without financial changes
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i -e VC_PROFILE_ENRICH_COMMIT=yes -e VC_PROFILE_ENRICH_MAX=3 vc-vesta php -d memory_limit=1024M -d display_errors=0' < scripts/vesta-enrich-verified-erp-profiles-20261117.php | tee profile-result.log
+          test "$(grep -c '^PROFILE_VERIFIED_ENRICHED ' profile-result.log)" -eq 3
+          grep -Fq '"updated":3' profile-result.log
+      - name: Inspect cloud person write candidates after validated name-profile repair (read only)
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i -e VC_PERSON_MAX_BATCH=3 vc-vesta php -d memory_limit=1024M -d display_errors=0' < scripts/vesta-safe-person-worker-20261116.php | tee person-plan.log
+          grep -Fq 'NO_INVOICE_WRITES=yes' person-plan.log
+          test "$(grep -c '^PERSON_WORKER_ELIGIBLE ' person-plan.log)" -ge 1
+      - name: One unique, readback-verified Mahak person canary only, no invoice writes
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i -e VC_PERSON_WORKER_COMMIT=yes -e VC_PERSON_MAX_BATCH=1 vc-vesta php -d memory_limit=1024M -d display_errors=0' < scripts/vesta-safe-person-worker-20261116.php | tee person-canary.log
+          test "$(grep -c '^PERSON_WORKER_CLOUD_VERIFIED ' person-canary.log)" -eq 1
+          grep -Fq 'NO_INVOICE_WRITES=yes' person-canary.log
+      - name: Three production endpoints still respond
+        run: |
+          set -Eeuo pipefail
+          for host in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir; do
+            code=$(curl -LsS --connect-timeout 8 --max-time 25 -o /dev/null -w '%{http_code}' "https://$host/")
+            echo "SITE=$host HTTP=$code";test "$code" = 200
+          done
