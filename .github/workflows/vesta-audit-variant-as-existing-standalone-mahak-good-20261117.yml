@@ -1,0 +1,86 @@
+name: Vesta discover Woo variations represented as existing independent Mahak goods (read only)
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-audit-variant-as-existing-standalone-mahak-good-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 13
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Unique variation ID/SKU goods-code match, canonical name and exact single detail, no writes
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1024M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);set_time_limit(0);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          function vgc($s){
+            $s=rawurldecode((string)$s);
+            $s=strtr($s,['ي'=>'ی','ك'=>'ک','آ'=>'ا','‌'=>' ','٠'=>'0','١'=>'1','٢'=>'2','٣'=>'3','٤'=>'4','٥'=>'5','٦'=>'6','٧'=>'7','٨'=>'8','٩'=>'9','۰'=>'0','۱'=>'1','۲'=>'2','۳'=>'3','۴'=>'4','۵'=>'5','۶'=>'6','۷'=>'7','۸'=>'8','۹'=>'9']);
+            $s=mb_strtolower($s,'UTF-8');return preg_replace('/[^\p{L}\p{N}]+/u','',$s);
+          }
+          $bycode=[];$details=[];$used=[];
+          foreach($wpdb->get_results("SELECT ProductId,ProductCode,ProductName,Deleted FROM {$wpdb->prefix}bazara_products",ARRAY_A) as $p)
+              if((int)$p['Deleted']===0)$bycode[(string)$p['ProductCode']][]=$p;
+          foreach($wpdb->get_results("SELECT ProductId,ProductDetailId,Properties,Deleted FROM {$wpdb->prefix}bazara_product_details",ARRAY_A) as $d)
+              if((int)$d['Deleted']===0)$details[(int)$d['ProductId']][]=$d;
+          foreach($wpdb->get_results("SELECT m.meta_value,m.post_id FROM {$wpdb->postmeta} m JOIN {$wpdb->posts} p ON p.ID=m.post_id WHERE m.meta_key='mahak_product_detail_id' AND p.post_status='publish' AND CAST(m.meta_value AS UNSIGNED)>0",ARRAY_A) as $m)
+              $used[(int)$m['meta_value']][]=(int)$m['post_id'];
+          $rows=$wpdb->get_results("SELECT v.ID,v.post_parent FROM {$wpdb->posts} v JOIN {$wpdb->posts} p ON p.ID=v.post_parent WHERE v.post_type='product_variation' AND v.post_status='publish' AND p.post_status='publish'",ARRAY_A);
+          $out=['unmapped_variations'=>0,'matched_unique_variant_code'=>0,'erp_name_matches_variation_name'=>0,
+             'erp_name_matches_parent'=>0,'unique_single_detail'=>0,'safe_existing_independent_good_candidate'=>0,
+             'name_conflict'=>0,'detail_conflict'=>0,'sample'=>[]];
+          $plan=[];
+          foreach($rows as $r){
+             $id=(int)$r['ID'];$pid=(int)$r['post_parent'];
+             if(metadata_exists('post',$id,'mahak_id')||metadata_exists('post',$id,'mahak_product_detail_id'))continue;
+             $out['unmapped_variations']++;
+             $v=wc_get_product($id);$parent=wc_get_product($pid);
+             if(!$v||!$parent)continue;
+             $matches=[];
+             foreach(array_unique(array_filter([(string)$id,(string)$v->get_sku()])) as $code)
+                foreach($bycode[$code]??[] as $item)$matches[(int)$item['ProductId']]=$item;
+             if(count($matches)!==1)continue;
+             $out['matched_unique_variant_code']++;
+             $product=reset($matches);$erpPid=(int)$product['ProductId'];
+             $erpName=vgc($product['ProductName']);
+             $variantName=vgc($v->get_name());$parentName=vgc($parent->get_name());
+             $matchVariant=$erpName!=='' && $erpName===$variantName;
+             $matchParent=$erpName!=='' && $erpName===$parentName;
+             if($matchVariant)$out['erp_name_matches_variation_name']++;
+             if($matchParent)$out['erp_name_matches_parent']++;
+             if(!$matchVariant&&!$matchParent){$out['name_conflict']++;continue;}
+             $ds=$details[$erpPid]??[];
+             if(count($ds)!==1){$out['detail_conflict']++;continue;}
+             $out['unique_single_detail']++;
+             $d=$ds[0];$did=(int)$d['ProductDetailId'];
+             if(!empty($used[$did]))continue;
+             $props=json_decode((string)$d['Properties'],true);
+             $propVals=[];foreach(is_array($props)?$props:[] as $p)if(is_array($p)&&!empty($p['V']))$propVals[]=vgc($p['V']);
+             // When the ERP treats a Woo variant as standalone goods, its one
+             // sellable ProductDetail must have no competing attributes.
+             if(count($propVals)>0)continue;
+             if($matchParent && $id!==$pid){
+               // Same name as parent cannot prove which color/size was sold.
+               // Only exact FULL variant name is an acceptable match.
+               continue;
+             }
+             $plan[$id]=['woo_variant_id'=>$id,'erp_product_id'=>$erpPid,'erp_detail_id'=>$did];
+          }
+          $taken=[];foreach($plan as $id=>$p)$taken[$p['erp_detail_id']][]=$id;
+          foreach($plan as $id=>$p)if(count($taken[$p['erp_detail_id']])===1){
+             $out['safe_existing_independent_good_candidate']++;
+             if(count($out['sample'])<30)$out['sample'][]=$p;
+          }
+          echo 'EXACT_STANDALONE_GOOD_MATCH_AUDIT='.json_encode($out,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'NO_ERP_OR_WOO_PRODUCT_OR_IMAGE_WRITES=yes'.PHP_EOL;
+          PHP
