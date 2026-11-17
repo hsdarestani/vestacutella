@@ -1,0 +1,64 @@
+name: Vesta verify cloud identity after desktop person save (read-only)
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-post-desktop-save-person-preflight-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Compare order buyer, ERP person and cloud records safely
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=768M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          global $wpdb;
+          $order=wc_get_order(105554); $buyer=get_user_by('id',2918);
+          if(!$order||!$buyer)exit(22);
+          $api=new BazaraApi(true);
+          $r=$api->get_all_data('',array('fromPersonVersion'=>0,'fromOrderVersion'=>0));
+          if(empty($r['success'])||!is_array($r['message']['People']??null))exit(23);
+          $person=[]; $phoneCount=0; $clientCount=0;
+          $phone=vesta_otp_phone((string)$order->get_billing_phone());
+          foreach($r['message']['People'] as $p){
+             if(!empty($p['Deleted']))continue;
+             if((int)($p['PersonId']??0)===12706969)$person=$p;
+             if(vesta_otp_phone((string)($p['Mobile']??''))===$phone)$phoneCount++;
+             if((int)($p['PersonClientID']??$p['PersonClientId']??0)===2918)$clientCount++;
+          }
+          if(!$person)exit(24);
+          $billing=vcar_identity_normalize_name($order->get_billing_first_name().' '.$order->get_billing_last_name());
+          $cloudName=vcar_identity_normalize_name(($person['FirstName']??'').' '.($person['LastName']??''));
+          $local=$wpdb->get_row($wpdb->prepare("SELECT * FROM {$wpdb->prefix}bazara_persons WHERE PersonId=%d AND Deleted=0 LIMIT 1",12706969),ARRAY_A);
+          $localName=$local?vcar_identity_normalize_name(($local['FirstName']??'').' '.($local['LastName']??'')):'';
+          $invoices=array_values(array_filter($r['message']['Orders']??[],fn($x)=>empty($x['Deleted'])&&(int)($x['OrderClientId']??0)===105554));
+          $personInvoices=array_values(array_filter($r['message']['Orders']??[],fn($x)=>empty($x['Deleted'])&&(int)($x['PersonId']??0)===12706969));
+          echo 'AFTER_SAVED_DESKTOP_CLOUD='.json_encode([
+            'personId'=>12706969,
+            'person_field_names'=>array_keys($person),
+            'local_person_field_names'=>$local?array_keys($local):[],
+            'cloud_name_correct'=>$cloudName===$billing,
+            'local_name_correct'=>$localName===$billing,
+            'person_client_id'=>(int)($person['PersonClientID']??$person['PersonClientId']??0),
+            'exact_phone_erp_person_count'=>$phoneCount,
+            'target_client_person_count'=>$clientCount,
+            'person_previous_invoice_count'=>count($personInvoices),
+            'new_order_cloud_invoice_count'=>count($invoices),
+            'wordpress_buyer_id'=>(int)$order->get_customer_id(),
+            'erp_id_on_admin'=>(int)get_user_meta(1,'mahak_id',true),
+            'erp_id_on_buyer'=>(int)get_user_meta(2918,'mahak_id',true),
+            'sender_enabled'=>(int)get_option('vcar_sender_enabled',false)
+          ],JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo "NO_PERSON_OR_INVOICE_WRITES=yes\n";
+          PHP
