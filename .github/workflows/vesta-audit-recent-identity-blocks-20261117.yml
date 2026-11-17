@@ -1,4 +1,4 @@
-name: Vesta live audit of all recent stuck customer identity and invoice cases read-only
+name: Vesta live audit all historic identity blocks and unique person links read-only
 on:
   push:
     branches: [main]
@@ -46,7 +46,7 @@ jobs:
              'customer_erp_name_mismatch','customer_phone_owner_mismatch','customer_contact_unverified',
              'customer_person_cache_unavailable','customer_account_privileged'];
           $quoted="'".implode("','",array_map('esc_sql',$reasons))."'";
-          $rows=$wpdb->get_results("SELECT order_id,state,reason,attempts,submitted_at,remote_id FROM $table WHERE state='blocked' AND reason IN ($quoted) AND order_id>=104500 ORDER BY order_id DESC LIMIT 400",ARRAY_A);
+          $rows=$wpdb->get_results("SELECT order_id,state,reason,attempts,submitted_at,remote_id FROM $table WHERE state='blocked' AND reason IN ($quoted) ORDER BY order_id DESC LIMIT 400",ARRAY_A);
           $stats=[];$samples=[];$auto=[];
           foreach($rows as $q){
             $id=(int)$q['order_id'];$o=wc_get_order($id);
