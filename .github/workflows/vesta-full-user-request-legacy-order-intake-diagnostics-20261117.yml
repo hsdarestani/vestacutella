@@ -1,0 +1,81 @@
+name: Vesta classify every user supplied 103xxx legacy exception with identity and catalog evidence read only
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-full-user-request-legacy-order-intake-diagnostics-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read-only ledger safety and exact OTP person and variation checks, no names phones or emails in output
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1536M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);set_time_limit(0);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $ids=[
+          103303,103302,103301,103300,103299,103298,103297,103296,103295,103294,103292,103289,
+          103287,103286,103284,103283,103281,103280,103279,103278,103277,103276,103274,
+          103273,103272,103270,103268,103267,103266,103264,103252,103250,103246,103244,
+          103237,103236,103235,103234,103233,103230,103229,103227,103226,103222,103221,
+          103220,103219,103218,103216,103215,103213,103212,103211,103210,103209,103208,
+          103207,103195,103180,103179,103176,103174,103173,103172,103171,103168,103167,
+          103163,103161,103159,103157,103156,103155,103152,103151,103150];
+          $out=[];$groups=[];$api=new BazaraApi(true);$cloud=Vesta_Accounting_Reliability::cloud($api);
+          foreach($ids as $id){
+           $o=wc_get_order($id);
+           if(!$o){$out[]=['order'=>$id,'status'=>'order_missing'];continue;}
+           $r=$wpdb->get_row($wpdb->prepare("SELECT state,reason,attempts,remote_id,submitted_at FROM ".Vesta_Accounting_Reliability::table()." WHERE order_id=%d",$id),ARRAY_A);
+           $reason=(string)($r['reason']??'no_outbox');$groups[$reason]=($groups[$reason]??0)+1;
+           $uid=(int)$o->get_customer_id();$user=$uid?get_user_by('id',$uid):false;
+           $phone=vesta_otp_phone((string)$o->get_billing_phone());
+           $owner=$phone?vesta_otp_existing_user($phone):false;
+           $uniqueOwner=!is_wp_error($owner)&&is_numeric($owner)&&(int)$owner>0;
+           $ownerName='';
+           if($uniqueOwner){
+             $u=get_user_by('id',(int)$owner);
+             $ownerName=$u?vcar_identity_normalize_name($u->first_name.' '.$u->last_name):'';
+           }
+           $bill=vcar_identity_normalize_name($o->get_billing_first_name().' '.$o->get_billing_last_name());
+           $personId=$uid?(int)get_user_meta($uid,'mahak_id',true):0;
+           $missing=[];
+           foreach($o->get_items('line_item') as $it){
+             $vid=$it->get_variation_id()?:$it->get_product_id();
+             $good=(int)get_post_meta($vid,'mahak_id',true);$detail=(int)get_post_meta($vid,'mahak_product_detail_id',true);
+             if($good&&$detail)continue;
+             $p=wc_get_product($vid);$parent=$p&&$p->is_type('variation')?wc_get_product($p->get_parent_id()):null;
+             $sku=$p?(string)$p->get_sku():'';
+             $codes=array_values(array_unique(array_filter([$sku,(string)$vid,$parent?(string)$parent->get_id():'',$parent?(string)$parent->get_sku():''])));
+             $matches=[];
+             foreach($codes as $code){
+               $g=$wpdb->get_results($wpdb->prepare("SELECT ProductId,ProductCode FROM {$wpdb->prefix}bazara_products WHERE ProductCode=%s AND Deleted=0",$code),ARRAY_A);
+               foreach($g as $x)$matches[]=(int)$x['ProductId'];
+             }
+             $missing[]=['woo_item'=>$vid,'sku'=>$sku,'matching_erp_goods_count'=>count(array_unique($matches)),
+                'matching_erp_ids'=>array_values(array_unique($matches))];
+           }
+           $out[]=['order'=>$id,'date'=>$o->get_date_created()?$o->get_date_created()->date('Y-m-d'):null,
+            'state'=>$r['state']??'missing','reason'=>$reason,
+            'attempts'=>(int)($r['attempts']??0),'ever_submitted'=>(int)($r['submitted_at']??0)>0,
+            'local_invoice_present'=>(int)$o->get_meta('mahak_id')>0,
+            'cloud_invoice_count'=>count($cloud['orders'][$id]??[]),
+            'account_assigned'=>$uid>0,'erp_person_assigned'=>$personId>0,
+            'unique_otp_owner'=>$uniqueOwner,'otp_owner_same_as_order_account'=>$uniqueOwner&&(int)$owner===$uid,
+            'billing_name_matches_unique_otp_owner'=>$uniqueOwner && $bill!=='' && $ownerName===$bill,
+            'missing_woo_lines'=>$missing];
+          }
+          echo 'USER_LEGACY_REQUEST_TOTAL_IDS='.count($ids).PHP_EOL;
+          echo 'USER_LEGACY_REQUEST_REASON_COUNTS='.json_encode($groups,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'USER_LEGACY_REQUEST_ITEMIZED_AUDIT='.json_encode($out,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'USER_LEGACY_AUDIT_ZERO_DATABASE_WRITES=yes'.PHP_EOL;
+          PHP
