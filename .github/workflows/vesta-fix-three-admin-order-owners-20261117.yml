@@ -55,7 +55,7 @@ jobs:
           <?php
           \$_SERVER['HTTP_HOST']='vesta-cosmetics.ir';\$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';\$_SERVER['HTTPS']='on';\$_SERVER['SERVER_PORT']='443';\$_SERVER['REQUEST_URI']='/';
           require '/var/www/html/wp-load.php';
-          update_option('vcar_sender_enabled',${old}==='1',false);
+          update_option('vcar_sender_enabled','${old}'==='1',false);
           echo 'SENDER_FLAG_RESTORED='. (int)get_option('vcar_sender_enabled',false).PHP_EOL;
           PHP
           }
