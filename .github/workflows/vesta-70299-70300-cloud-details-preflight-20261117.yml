@@ -1,0 +1,49 @@
+name: Vesta 70299 70300 exact Mahak detail and Woo SKU update safety preflight
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-70299-70300-cloud-details-preflight-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read-only check cloud ProductId and details, duplicate SKUs and live Woo product identities
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=512M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $products=[];$details=[];$suspected=[70299,70300];
+          foreach($wpdb->get_results("SELECT ProductId,ProductCode,ProductName,Deleted FROM {$wpdb->prefix}bazara_products WHERE ProductCode IN ('70299','70300')",ARRAY_A) as $p)
+            $products[]=$p;
+          foreach($wpdb->get_results("SELECT ProductId,ProductDetailId,Properties,Deleted FROM {$wpdb->prefix}bazara_product_details WHERE ProductId IN (10755489,10755490)",ARRAY_A) as $d)
+            $details[]=$d;
+          $ids=$wpdb->get_results("SELECT p.ID,p.post_type,p.post_status,m.meta_value sku FROM {$wpdb->postmeta} m JOIN {$wpdb->posts} p ON p.ID=m.post_id WHERE m.meta_key='_sku' AND m.meta_value IN ('70299','70300')",ARRAY_A);
+          $mapping=$wpdb->get_results("SELECT p.ID,p.post_type,p.post_status,m.meta_key,m.meta_value FROM {$wpdb->postmeta} m JOIN {$wpdb->posts} p ON p.ID=m.post_id WHERE (m.meta_key='mahak_id' AND m.meta_value IN ('10755489','10755490')) OR (m.meta_key='mahak_product_detail_id' AND CAST(m.meta_value AS UNSIGNED) IN (SELECT ProductDetailId FROM {$wpdb->prefix}bazara_product_details WHERE ProductId IN (10755489,10755490)))",ARRAY_A);
+          $safe=[];
+          foreach($suspected as $id){
+            $v=wc_get_product($id);$safe[]=[
+              'id'=>$id,'name'=>$v?$v->get_name():null,'stock'=>$v?$v->get_stock_quantity():null,
+              'price'=>$v?$v->get_price():null,'sku'=>$v?$v->get_sku():null,
+              'explicit_product_mapping'=>get_post_meta($id,'mahak_id',true),
+              'explicit_detail_mapping'=>get_post_meta($id,'mahak_product_detail_id',true),
+              'parent_id'=>$v?$v->get_parent_id():null
+            ];
+          }
+          echo 'REMOTE_PRODUCT_TWO_GOODS='.json_encode($products,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'REMOTE_PRODUCT_DETAILS='.json_encode($details,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'WOO_DUPLICATE_SKU_AUDIT='.json_encode($ids,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'EXISTING_CLOUD_PRODUCT_DETAIL_MAPPING_USERS='.json_encode($mapping,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'BEFORE_MODIFICATION_VARIANTS='.json_encode($safe,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo "READ_ONLY_NO_SKU_OR_MAPPING_CHANGES=yes\n";
+          PHP
