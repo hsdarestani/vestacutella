@@ -15,7 +15,7 @@ require '/var/www/html/wp-load.php';
 if(!class_exists('Vesta_Channel_Customers')||!function_exists('vesta_otp_phone')||
  !function_exists('vesta_otp_existing_user')||!function_exists('vcar_identity_normalize_name'))exit(20);
 global $wpdb;
-if(get_option('vcar_sender_enabled',false)){echo "SENDER_NOT_PAUSED_NO_WRITES=yes\n";exit(21);}
+if(getenv('VC_PRIV_OWNER_COMMIT')==='yes' && get_option('vcar_sender_enabled',false)){echo "SENDER_NOT_PAUSED_NO_WRITES=yes\n";exit(21);}
 $commit=getenv('VC_PRIV_OWNER_COMMIT')==='yes';
 if($commit && getenv('VC_PRIV_BACKUP_VERIFIED')!=='yes'){echo "BACKUP_REQUIRED_NO_WRITES=yes\n";exit(22);}
 $ids=[105208,105203,105052];
