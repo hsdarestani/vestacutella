@@ -1,0 +1,53 @@
+name: Read-only Vesta 105556 Zibal payment, discounts and order total acceptance
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-105556-payment-reconciliation-readonly-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Check Woo payment and merchandise math without sensitive data or mutation
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=768M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          $o=wc_get_order(105556);
+          if(!$o)exit(31);
+          $items=[];$subtotal=0;$total=0;
+          foreach($o->get_items('line_item') as $it){
+           $subtotal+=(float)$it->get_subtotal();$total+=(float)$it->get_total();
+           $items[]=['qty'=>(float)$it->get_quantity(),'subtotal'=>(float)$it->get_subtotal(),
+             'net'=>(float)$it->get_total(),'discount'=>(float)$it->get_subtotal()-(float)$it->get_total()];
+          }
+          $coupons=[];foreach($o->get_items('coupon') as $c)$coupons[]=[
+            'discount'=>(float)$c->get_discount(),'discount_tax'=>(float)$c->get_discount_tax()];
+          $fees=[];foreach($o->get_items('fee') as $f)$fees[]=(float)$f->get_total();
+          $paymentMetaKeys=[];foreach($o->get_meta_data() as $m){
+            $k=(string)$m->key;
+            if(preg_match('/zibal|payment|gateway|paid|verify|reference|authority|transaction/i',$k))$paymentMetaKeys[]=$k;
+          }
+          echo 'PAYMENT_105556_SUMMARY='.json_encode([
+            'order_id'=>$o->get_id(),'status'=>$o->get_status(),'paid_date_exists'=>(bool)$o->get_date_paid(),
+            'payment_method'=>$o->get_payment_method(),'transaction_id_present'=>$o->get_transaction_id()!=='',
+            'currency'=>$o->get_currency(),
+            'order_subtotal_items'=>$subtotal,'order_line_net'=>$total,
+            'order_discount_total'=>(float)$o->get_discount_total(),
+            'order_shipping'=>(float)$o->get_shipping_total(),'order_tax'=>(float)$o->get_total_tax(),
+            'order_total'=>(float)$o->get_total(),'coupons'=>$coupons,'items'=>$items,'fees'=>$fees,
+            'payment_metadata_key_names'=>$paymentMetaKeys,
+            'payments_reconcile_with_items'=>abs($total+(float)$o->get_shipping_total()+(float)$o->get_total_tax()+array_sum($fees)-(float)$o->get_total())<0.51
+          ],JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'NO_FINANCIAL_DATA_CHANGED=yes'.PHP_EOL;
+          PHP
