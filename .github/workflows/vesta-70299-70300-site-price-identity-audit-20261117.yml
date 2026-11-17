@@ -1,0 +1,51 @@
+name: Vesta read-only cross-check Woo variation 70299 70300 prices sizes and Mahak cloud codes
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-70299-70300-site-price-identity-audit-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read exact two public catalog variations and cached Mahak codes, without modifying anything
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=512M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          global $wpdb;
+          $out=[];
+          foreach([70299,70300] as $id){
+            $v=wc_get_product($id);
+            if(!$v||$v->get_type()!=='variation')exit(21);
+            $parent=wc_get_product($v->get_parent_id());
+            $out[]=[
+              'woo_variation_id'=>$id,
+              'parent_id'=>$v->get_parent_id(),
+              'sku'=>$v->get_sku(),
+              'name'=>$v->get_name(),
+              'attributes'=>$v->get_variation_attributes(),
+              'price'=>$v->get_price(),
+              'regular_price'=>$v->get_regular_price(),
+              'stock_quantity'=>$v->get_stock_quantity(),
+              'stock_status'=>$v->get_stock_status(),
+              'parent_name'=>$parent?$parent->get_name():null,
+              'mahak_product_id'=>get_post_meta($id,'mahak_id',true),
+              'mahak_detail_id'=>get_post_meta($id,'mahak_product_detail_id',true),
+            ];
+          }
+          echo 'SITE_TWO_VARIATIONS='.json_encode($out,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          $goods=$wpdb->get_results("SELECT ProductId,ProductCode,ProductName FROM {$wpdb->prefix}bazara_products WHERE ProductCode IN ('70299','70300') AND Deleted=0",ARRAY_A);
+          echo 'MAHAK_CLOUD_CACHED_GOODS_BY_CODE='.json_encode($goods,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'NO_WOO_OR_MAHAK_WRITES=yes'.PHP_EOL;
+          PHP
