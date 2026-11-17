@@ -1,0 +1,51 @@
+name: Vesta reconstruct historical October washbag stock snapshots and Bazara quantity sync read only
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-washbag-october-backup-stock-and-bazara-quantity-path-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 13
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Find relevant SQL dump files and print stock-change code context without exposing URL or secrets
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'python3 -' <<'PY'
+          from pathlib import Path
+          import re, json, datetime
+          root=Path('/srv/backups')
+          names=['pre-vesta-live','vesta-first-row-reserve-20261019T132516Z',
+             'vesta-full-db-verify-20261024','vesta-stability-20261024T155737Z',
+             'vesta-mahak-sku-20261031T134818Z','vesta-active-sku-20261102-20261102T091816Z']
+          for name in names:
+            d=root/name
+            if not d.is_dir():continue
+            items=[]
+            for f in d.rglob('*'):
+              if not f.is_file():continue
+              if len(items)>=75:break
+              try:
+                relative=str(f.relative_to(d))
+                sz=f.stat().st_size
+                items.append([relative,sz])
+              except OSError:continue
+            print('OCTOBER_BACKUP_CONTENTS_'+name+'='+json.dumps(items,ensure_ascii=False))
+          base=Path('/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara')
+          for filename in ('classes/class.bazara.api.php','classes/functions.php','classes/class.products.table.php'):
+            f=base/filename
+            if not f.is_file():continue
+            lines=f.read_text(encoding='utf8',errors='replace').splitlines()
+            for i,l in enumerate(lines):
+              if not re.search(r'chkQuantity|sync_quantity|update_stock|stock_quantity|_stock\b|stock_status|wc_update_product_stock|sync_existence|Existance',l,re.I):continue
+              if re.search(r'https?://|secret|password|token|api.?key',l,re.I):continue
+              out=re.sub(r"""(["'])(?:\\.|(?!\1).)*?\1""","'<string>'",l)
+              print('QUANTITY_VENDOR_CODE '+filename+':'+str(i+1)+' '+out.strip()[:230])
+          PY
