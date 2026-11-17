@@ -36,11 +36,32 @@ jobs:
           $name=basename((string)$picture['Url']);$ext=strtolower(pathinfo($name,PATHINFO_EXTENSION));
           if(!$name||!in_array($ext,['jpg','jpeg','png','webp'],true))exit(23);
           echo 'PHOTO_PREFLIGHT_STAGE=FILENAME_OK'.PHP_EOL;
-          $api=new BazaraApi(true);$ref=new ReflectionClass($api);
-          if(!$ref->hasProperty('img_url'))exit(24);
-          $prop=$ref->getProperty('img_url');$prefix=(string)$prop->getValue($api);
-          echo 'PHOTO_PREFLIGHT_STAGE=REMOTE_BASE_OK'.PHP_EOL;
-          $url=$prefix.$name;
+          $rawUrl=(string)$picture['Url'];
+          $rawParts=wp_parse_url($rawUrl);
+          echo 'PHOTO_SOURCE_FORMAT='.json_encode([
+            'absolute_https'=>strtolower((string)($rawParts['scheme']??''))==='https',
+            'has_http_scheme'=>in_array(strtolower((string)($rawParts['scheme']??'')),['http','https'],true),
+            'has_hostname'=>!empty($rawParts['host']),
+            'filename_ext'=>$ext
+          ]).PHP_EOL;
+          $url=null;
+          try {
+            echo 'PHOTO_PREFLIGHT_STAGE=API_CONSTRUCTION_BEGIN'.PHP_EOL;
+            $api=new BazaraApi(true);
+            echo 'PHOTO_PREFLIGHT_STAGE=API_CONSTRUCTION_OK'.PHP_EOL;
+            $ref=new ReflectionClass($api);
+            echo 'PHOTO_API_IMG_URL_DECLARED='.($ref->hasProperty('img_url')?'yes':'no').PHP_EOL;
+            $prefix=(string)$api->img_url;
+            if($prefix!=='')$url=$prefix.$name;
+            echo 'PHOTO_PREFLIGHT_STAGE=REMOTE_BASE_OK'.PHP_EOL;
+          } catch(Throwable $e) {
+            echo 'PHOTO_API_SOURCE_ERROR_CLASS='.get_class($e).PHP_EOL;
+          }
+          if($url===null && strtolower((string)($rawParts['scheme']??''))==='https'){
+            $url=$rawUrl;
+            echo 'PHOTO_PREFLIGHT_STAGE=RAW_CLOUD_URL_FALLBACK'.PHP_EOL;
+          }
+          if($url===null){echo 'PHOTO_SRC_NOT_VERIFIED_NO_WRITES=yes'.PHP_EOL;exit(24);}
           $parts=wp_parse_url($url);
           if(!$parts||strtolower($parts['scheme']??'')!=='https' || empty($parts['host']))exit(25);
           echo 'PHOTO_PREFLIGHT_STAGE=HTTPS_URL_OK'.PHP_EOL;
