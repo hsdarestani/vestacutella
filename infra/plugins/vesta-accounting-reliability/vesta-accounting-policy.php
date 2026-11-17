@@ -48,7 +48,7 @@ function vcar_verify($order, $row, $lines, $receipts, $bank, $transfers=array(),
         // Some legitimate Woo coupon invoices leave ERP line amounts gross
         // and book the entire coupon against the invoice header instead.
         $expectedGross[$k][0] += (float)$item->get_quantity();
-        $expectedGross[$k][1] += (float)$item->get_subtotal() * $multiplier;
+        $expectedGross[$k][1] += (float)(method_exists($item,'get_subtotal') ? $item->get_subtotal() : $item->get_total()) * $multiplier;
     }
     $actual = array(); $sum = 0;
     foreach ($lines as $line) {
