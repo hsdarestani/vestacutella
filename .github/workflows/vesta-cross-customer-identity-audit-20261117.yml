@@ -1,0 +1,109 @@
+name: Vesta customer identity collision audit - all cloud invoices and paid Woo orders
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/vesta-cross-customer-identity-audit-20261117.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Audit privileged accounts, active customer mappings, legacy cloud invoices and blocked orders read-only
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d memory_limit=1024M -d display_errors=0' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);set_time_limit(0);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          if(!class_exists('BazaraApi')||!class_exists('Vesta_Accounting_Reliability')||!function_exists('vesta_otp_phone'))exit(12);
+          function vcia_inc(&$counts,$key,$id=0,&$examples=null){$counts[$key]=($counts[$key]??0)+1;if(is_array($examples)&&$id>0&&count($examples[$key]??[])<12)$examples[$key][]=(int)$id;}
+          function vcia_name($a,$b){return vcar_identity_normalize_name((string)$a.' '.(string)$b);}
+          $api=new BazaraApi(true);
+          $r=$api->get_all_data('',array('fromPersonVersion'=>0,'fromOrderVersion'=>0,'fromOrderDetailVersion'=>0,'fromReceiptVersion'=>0,'fromChequeVersion'=>0));
+          $m=$r['message']??[];
+          if(empty($r['success']) || !is_array($m['People']??null)||!is_array($m['Orders']??null)){echo "READONLY_CLOUD_DATA_INCOMPLETE=yes\n";exit(21);}
+          $priv=get_users(['role__in'=>['administrator','shop_manager','editor','author'],'fields'=>'ID','number'=>3000]);
+          $privIds=array_fill_keys(array_map('intval',$priv),true);
+          $byPerson=[];$byClient=[];$byMobile=[];$cloudPeopleCounts=[];
+          foreach($m['People'] as $p){
+            if(!empty($p['Deleted']))continue;
+            $pid=(int)($p['PersonId']??0);$uid=(int)($p['PersonClientID']??$p['PersonClientId']??0);
+            if($pid<=0)continue;
+            $byPerson[$pid]=$p;
+            if($uid>0)$byClient[$uid][]=$pid;
+            $ph=vesta_otp_phone((string)($p['Mobile']??''));
+            if($ph)$byMobile[$ph][]=$pid;
+            if($uid>0&&isset($privIds[$uid]))vcia_inc($cloudPeopleCounts,'privileged_person_link', $pid,$cloudPersonExamples);
+          }
+          foreach($byMobile as $ph=>$ids)if(count($ids)>1)vcia_inc($cloudPeopleCounts,'duplicate_cloud_mobile',0,$nope);
+          $activeOrders=[];$cloudInvoiceCounts=[];$cloudExamples=[];$cloudTotal=0;
+          foreach($m['Orders'] as $row){
+            if(!empty($row['Deleted']))continue;
+            $cloudTotal++;$id=(int)($row['OrderClientId']??0);$pid=(int)($row['PersonId']??0);
+            if($id<=0){vcia_inc($cloudInvoiceCounts,'no_woo_order_id',0,$cloudExamples);continue;}
+            $activeOrders[$id]=($activeOrders[$id]??0)+1;
+            if($activeOrders[$id]>1){vcia_inc($cloudInvoiceCounts,'duplicate_cloud_order_client_id',$id,$cloudExamples);continue;}
+            $o=wc_get_order($id);
+            if(!$o){vcia_inc($cloudInvoiceCounts,'woo_order_not_found',$id,$cloudExamples);continue;}
+            $uid=(int)$o->get_customer_id();$p=$byPerson[$pid]??null;
+            if(!$p){vcia_inc($cloudInvoiceCounts,'cloud_person_missing',$id,$cloudExamples);continue;}
+            $erpName=vcia_name($p['FirstName']??'',$p['LastName']??'');
+            $wooName=vcia_name($o->get_billing_first_name(),$o->get_billing_last_name());
+            $erpPhone=vesta_otp_phone((string)($p['Mobile']??''));
+            $wooPhone=vesta_otp_phone((string)$o->get_billing_phone());
+            $client=(int)($p['PersonClientID']??$p['PersonClientId']??0);
+            $isPriv=isset($privIds[$uid])||($client>0 && isset($privIds[$client]));
+            if($isPriv)vcia_inc($cloudInvoiceCounts,'invoice_links_privileged_account',$id,$cloudExamples);
+            if($erpName!==''&&$wooName!==''&&$erpName!==$wooName)vcia_inc($cloudInvoiceCounts,'cloud_invoice_billing_name_mismatch',$id,$cloudExamples);
+            if($wooPhone && $erpPhone && $wooPhone!==$erpPhone)vcia_inc($cloudInvoiceCounts,'cloud_invoice_billing_phone_mismatch',$id,$cloudExamples);
+            if($uid>0&&$client>0&&$client!==$uid)vcia_inc($cloudInvoiceCounts,'cloud_invoice_woo_customer_id_mismatch',$id,$cloudExamples);
+            if($uid>0 && $client===$uid && $erpName===$wooName && $wooPhone && $wooPhone===$erpPhone && !$isPriv)
+               vcia_inc($cloudInvoiceCounts,'cloud_invoice_identity_triple_match',$id,$cloudExamples);
+          }
+          $privIdsList=array_keys($privIds);
+          $privCount=['total_privileged_users'=>count($privIdsList)];
+          $privExamples=[];$privOrderLimit=12000;
+          $in=implode(',',array_map('intval',$privIdsList?:[0]));
+          $privOrderIds=$wpdb->get_col("SELECT DISTINCT p.ID FROM {$wpdb->posts} p JOIN {$wpdb->postmeta} pm ON pm.post_id=p.ID AND pm.meta_key='_customer_user' WHERE p.post_type='shop_order' AND CAST(pm.meta_value AS UNSIGNED) IN ($in) ORDER BY p.ID DESC LIMIT $privOrderLimit");
+          foreach($privOrderIds as $id){
+            $o=wc_get_order((int)$id);if(!$o)continue;
+            vcia_inc($privCount,'orders_assigned_to_privileged_account',(int)$id,$privExamples);
+            if(!vcar_eligible($o))continue;
+            vcia_inc($privCount,'paid_privileged_orders',(int)$id,$privExamples);
+            $uid=(int)$o->get_customer_id();$u=get_user_by('id',$uid);
+            $billing=vcia_name($o->get_billing_first_name(),$o->get_billing_last_name());
+            $account=$u?vcia_name($u->first_name,$u->last_name):'';
+            if($billing!==''&&$account!==$billing)vcia_inc($privCount,'paid_privileged_orders_name_disagrees',(int)$id,$privExamples);
+            $ph=vesta_otp_phone((string)$o->get_billing_phone());
+            if($ph){
+              $owner=vesta_otp_existing_user($ph);
+              if(!is_wp_error($owner)&&is_numeric($owner)&&(int)$owner>0&&(int)$owner!==$uid){
+                vcia_inc($privCount,'paid_privileged_orders_phone_owned_by_other_user',(int)$id,$privExamples);
+                $actual=get_user_by('id',(int)$owner);
+                if($actual && $billing===vcia_name($actual->first_name,$actual->last_name) &&
+                    !array_intersect((array)$actual->roles,['administrator','shop_manager','editor','author']))
+                   vcia_inc($privCount,'paid_privileged_orders_with_verified_replacement_candidate',(int)$id,$privExamples);
+              }
+            }
+          }
+          $privCount['privileged_order_scan_truncated']=(count($privOrderIds)===$privOrderLimit);
+          $outboxCounts=[];$outboxExamples=[];
+          $table=Vesta_Accounting_Reliability::table();
+          $rows=$wpdb->get_results("SELECT order_id,state,reason FROM $table WHERE state<>'verified' AND order_id>=100000 ORDER BY order_id DESC LIMIT 7000",ARRAY_A);
+          foreach($rows as $q){
+            $key=($q['state']??'unknown').'|'.($q['reason']??'unknown');
+            if(preg_match('/customer|identity|person|unmapped|missing_product_mapping|remote_invoice|uncertain/i',$key))vcia_inc($outboxCounts,$key,(int)$q['order_id'],$outboxExamples);
+          }
+          echo 'CROSS_IDENTITY_GLOBAL='.json_encode(['cloud_people'=>count($byPerson),'cloud_invoices_scanned'=>$cloudTotal,'cloud_person_anomalies'=>$cloudPeopleCounts,'cloud_invoice_anomalies'=>$cloudInvoiceCounts,'privileged_orders'=>$privCount,'recent_outbox'=>$outboxCounts],JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'CROSS_IDENTITY_EXAMPLE_ORDER_IDS='.json_encode(['cloud'=>$cloudExamples,'privileged'=>$privExamples,'outbox'=>$outboxExamples],JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'NO_PERSON_OR_ORDER_OR_FINANCIAL_WRITES=yes'.PHP_EOL;
+          PHP
