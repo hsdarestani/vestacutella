@@ -1,0 +1,88 @@
+name: Vesta four-issue live identity, freight, catalog and photo preflight
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-four-issues-live-preflight-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass php-cli
+      - name: Read-only recent customer / Mahak identity candidates and image readiness
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d memory_limit=1024M -d display_errors=0' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          if(!function_exists('vcar_identity_guard')||!class_exists('BazaraApi')||!class_exists('Vesta_Accounting_Reliability'))exit(12);
+          $a=new BazaraApi(true);$data=$a->get_all_data('',array('fromPersonVersion'=>0));
+          $people=$data['message']['People']??null;
+          if(empty($data['success'])||!is_array($people)){echo "CLOUD_PEOPLE_NOT_READABLE=yes\n";exit(13);}
+          $byClient=[];$byPhone=[];$erpIds=[];
+          foreach($people as $p) {
+            if(!empty($p['Deleted']))continue;
+            $pid=(int)($p['PersonId']??0);if($pid>0)$erpIds[$pid]=$p;
+            $cl=(int)($p['PersonClientID']??$p['PersonClientId']??0);
+            if($cl>0)$byClient[$cl][]=$p;
+            $ph=function_exists('vesta_otp_phone')?vesta_otp_phone((string)($p['Mobile']??'')):false;
+            if($ph)$byPhone[$ph][]=$p;
+          }
+          $stats=['eligible'=>0,'safe_identity'=>0,'needs'=>[],'person_cloud_client_exact'=>0,'person_cloud_phone_exact'=>0,'provision_attempt'=>0];
+          $ids=$wpdb->get_col("SELECT ID FROM {$wpdb->posts} WHERE post_type='shop_order' AND post_date_gmt>='2026-11-12 00:00:00' ORDER BY ID DESC LIMIT 400");
+          foreach($ids as $id){
+            $o=wc_get_order((int)$id);if(!vcar_eligible($o))continue;$stats['eligible']++;
+            $reason=vcar_identity_guard($o);if(!$reason){$stats['safe_identity']++;continue;}
+            $stats['needs'][$reason]=($stats['needs'][$reason]??0)+1;
+            $uid=(int)$o->get_customer_id();$client=$byClient[$uid]??[];
+            $ph=function_exists('vesta_otp_phone')?vesta_otp_phone((string)$o->get_billing_phone()):false;
+            $mobile=$ph?($byPhone[$ph]??[]):[];
+            $name=vcar_identity_normalize_name($o->get_billing_first_name().' '.$o->get_billing_last_name());
+            $matches=function($arr)use($name){$n=0;foreach($arr as $p){$pn=vcar_identity_normalize_name(($p['FirstName']??'').' '.($p['LastName']??''));if($pn===$name)$n++;}return $n;};
+            if($matches($client)===1)$stats['person_cloud_client_exact']++;
+            if($matches($mobile)===1)$stats['person_cloud_phone_exact']++;
+            $attempt=(bool)get_user_meta($uid,'_vesta_person_provision_attempt',true);
+            if($attempt)$stats['provision_attempt']++;
+            echo 'ORDER_IDENTITY ORDER='.(int)$id.' UID='.$uid.' REASON='.$reason.' USER_MAHAK='.(int)get_user_meta($uid,'mahak_id',true).
+              ' CLIENT_MATCH='.count($client).' CLIENT_NAME_MATCH='.$matches($client).
+              ' PHONE_MATCH='.count($mobile).' PHONE_NAME_MATCH='.$matches($mobile).
+              ' PREVIOUS_PROVISION_ATTEMPT='.(int)$attempt.PHP_EOL;
+          }
+          echo 'RECENT_IDENTITY_AUDIT='.json_encode($stats).PHP_EOL;
+          $settings=get_option('bazara_visitor_settings',[]);
+          echo 'IMAGE_SAFETY_INSTALLED='.(int)(function_exists('vesta_bazara_image_patch_verified')&&vesta_bazara_image_patch_verified()).PHP_EOL;
+          echo 'IMAGE_SYNC_ENABLED='.(int)!empty($settings['chkPicture']).PHP_EOL;
+          echo 'CLOUD_PERSON_TOTAL='.count($erpIds).PHP_EOL;
+          echo 'READ_ONLY_NO_ORDER_INVOICE_PRODUCT_MEDIA_WRITES=yes'.PHP_EOL;
+          PHP
+      - name: Read-only safe person worker plan and recent cron summaries
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          php -l scripts/vesta-safe-person-worker-20261116.php
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i -e VC_PERSON_MAX_BATCH=5 vc-vesta php -d memory_limit=1024M -d display_errors=0' < scripts/vesta-safe-person-worker-20261116.php
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'SHELL'
+          set -Eeuo pipefail
+          echo PERSON_CRON=$(test -s /etc/cron.d/vesta-safe-person-worker && echo present || echo missing)
+          echo PERSON_LOG_COUNT=$(test -f /var/log/vesta-safe-person-worker.log && wc -l </var/log/vesta-safe-person-worker.log || echo 0)
+          if test -f /var/log/vesta-safe-person-worker.log; then grep -E '^PERSON_WORKER_SUMMARY=|^PERSON_WORKER_EXCEPTION_CLASS=|^PERSON_WRITE_|^LOGIN_ERROR_RESERVED' /var/log/vesta-safe-person-worker.log | tail -n 8 || true; fi
+          SHELL
+      - name: Read-only external availability
+        run: |
+          set -Eeuo pipefail
+          for host in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir; do
+            x=$(curl -LsS --connect-timeout 10 --max-time 30 -o /dev/null -w '%{http_code}' "https://$host/")
+            echo "SITE=$host HTTP=$x"
+            test "$x" = 200
+          done
