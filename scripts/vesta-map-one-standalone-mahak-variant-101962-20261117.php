@@ -28,11 +28,11 @@ if(!in_array((string)$rp[0]['ProductCode'],$codes,true)||
  vesta_101962_norm($v->get_name())!==vesta_101962_norm($rp[0]['ProductName'])||
  vesta_101962_norm($v->get_name())===''||
  vesta_101962_norm($v->get_name())===vesta_101962_norm(wc_get_product($post->post_parent)->get_name()))exit(26);
-$ds=$wpdb->get_results($wpdb->prepare("SELECT ProductId,ProductDetailId,Properties,Properties2 FROM {$wpdb->prefix}bazara_product_details WHERE ProductId=%d AND Deleted=0",$erpPid),ARRAY_A);
+$ds=$wpdb->get_results($wpdb->prepare("SELECT ProductId,ProductDetailId,Properties FROM {$wpdb->prefix}bazara_product_details WHERE ProductId=%d AND Deleted=0",$erpPid),ARRAY_A);
 if(count($ds)!==1||(int)$ds[0]['ProductDetailId']!==$erpDid)exit(27);
 $props=json_decode((string)($ds[0]['Properties']??''),true);$vals=[];
 foreach(is_array($props)?$props:[] as $p)if(is_array($p)&&!empty($p['V']))$vals[]=trim((string)$p['V']);
-if($vals||!in_array(trim((string)($ds[0]['Properties2']??'')),['','[]','null'],true))exit(28);
+if($vals)exit(28);
 $before=['sku'=>$v->get_sku(),'name'=>$v->get_name(),'price'=>$v->get_price(),
  'stock'=>$v->get_stock_quantity(),'thumbnail'=>get_post_thumbnail_id($id),
  'gallery'=>(string)get_post_meta($id,'_product_image_gallery',true),'parent'=>(int)$post->post_parent];
