@@ -1,0 +1,59 @@
+name: Vesta compare Oct 11 Oct 24 historical variation stock in multiline SQL dump
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-compare-washbag-stock-multiline-oct-backups-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Stream only exact postmeta row of three washbag product IDs from multiline SQL backup
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'python3 -' <<'PY'
+          from pathlib import Path
+          import gzip,re,json,time
+          paths=[
+            ('2026-10-11','/srv/backups/pre-vesta-live/vesta-before-live-20261011T224826Z.sql.gz'),
+            ('2026-10-24','/srv/backups/vesta-full-db-verify-20261024/vestacos_m-full.sql.gz')
+          ]
+          ids=('70298','70299','70300')
+          keys=('_stock','_manage_stock','_stock_status','_sku','total_sales','_price','_regular_price')
+          # SQL dump has an INSERT header on one line, then data tuple rows
+          # across subsequent separate lines. Do not require postmeta token
+          # on every tuple line.
+          pattern=re.compile(r"\(\s*(\d+),\s*(70298|70299|70300),\s*'([^']+)',\s*(NULL|'((?:\\.|[^'\\])*)')\s*\)")
+          for date,path in paths:
+            t=time.monotonic()
+            found={id:{} for id in ids}
+            active=False;tableStatements=0;stockMatches=0;maxLines=0
+            with gzip.open(path,'rt',encoding='utf8',errors='replace') as f:
+              for line in f:
+                lineStart=line[:110].lstrip()
+                if lineStart.startswith('INSERT INTO '):
+                  active=('postmeta' in lineStart)
+                  if active:tableStatements+=1
+                if not active:continue
+                if any((','+id+',') in line for id in ids):
+                  for m in pattern.finditer(line):
+                    metaId,post,key,raw,val=m.groups()
+                    if key in keys:
+                      found[post][key]=None if raw=='NULL' else val
+                      stockMatches+=1
+                if line.rstrip().endswith(';'):active=False
+            print('HISTORICAL_WOO_STOCK_'+date+'='+json.dumps({
+              'fields':found,
+              'postmeta_statements':tableStatements,
+              'matched_fields':stockMatches,
+              'seconds':round(time.monotonic()-t,2),
+            },ensure_ascii=False))
+          print('HISTORICAL_BACKUPS_READ_ONLY_RECONSTRUCTION_DONE=yes')
+          PY
