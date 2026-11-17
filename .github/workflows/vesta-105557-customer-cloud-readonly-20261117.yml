@@ -1,0 +1,61 @@
+name: Vesta read only 105557 customer cloud mapping diagnosis
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-105557-customer-cloud-readonly-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Inspect buyer person map and duplicates without personal details
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=768M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $id=105557;$o=wc_get_order($id);
+          if(!$o)exit(20);
+          $uid=(int)$o->get_customer_id();$u=get_user_by('id',$uid);
+          $phone=vesta_otp_phone((string)$o->get_billing_phone());$owner=$phone?vesta_otp_existing_user($phone):false;
+          $profile=$u?vcar_identity_normalize_name($u->first_name.' '.$u->last_name):'';
+          $billing=vcar_identity_normalize_name($o->get_billing_first_name().' '.$o->get_billing_last_name());
+          $api=new BazaraApi(true);$all=$api->get_all_data('',array('fromPersonVersion'=>0,'fromOrderVersion'=>0));
+          if(empty($all['success'])||!is_array($all['message']['People']??null))exit(21);
+          $byPhone=[];$byName=[];$byClient=[];
+          foreach($all['message']['People'] as $p){
+            if(!empty($p['Deleted']))continue;
+            $name=vcar_identity_normalize_name(($p['FirstName']??'').' '.($p['LastName']??''));
+            $pPhone=vesta_otp_phone((string)($p['Mobile']??''));
+            $info=['person_id'=>(int)$p['PersonId'],'client_uid'=>(int)($p['PersonClientID']??$p['PersonClientId']??0),
+             'name_exact'=>$name!==''&&($name===$profile||$name===$billing),'phone_exact'=>$phone&&$pPhone===$phone];
+            if($info['phone_exact'])$byPhone[]=$info;
+            if($name!==''&&($name===$profile||$name===$billing))$byName[]=$info;
+            if($uid>0&&$info['client_uid']===$uid)$byClient[]=$info;
+          }
+          $invoices=[];foreach($all['message']['Orders']??[] as $r)if(empty($r['Deleted'])&&(int)($r['OrderClientId']??0)===$id)$invoices[]=(int)$r['OrderId'];
+          $bank=vcar_bank(get_option('bazara_visitor_settings',[]),$o->get_payment_method());
+          $q=$wpdb->get_row($wpdb->prepare('SELECT state,reason,attempts,submitted_at,remote_id FROM '.Vesta_Accounting_Reliability::table().' WHERE order_id=%d',$id),ARRAY_A);
+          echo 'ORDER_105557_MAPPING='.json_encode([
+            'uid'=>$uid,'has_account'=>(bool)$u,'privileged'=>($u&&(bool)array_intersect((array)$u->roles,['administrator','shop_manager'])),
+            'otp_owner_matches'=>is_numeric($owner)&&(int)$owner===$uid,
+            'billing_equals_profile'=>$billing!==''&&$billing===$profile,
+            'profile_phone_matches'=>$phone&&$u&&$phone===vesta_otp_phone((string)get_user_meta($uid,'billing_phone',true)),
+            'person_meta'=>(int)get_user_meta($uid,'mahak_id',true),
+            'cloud_phone'=>$byPhone,'cloud_name'=>$byName,'cloud_client'=>$byClient,
+            'cloud_invoice_ids'=>$invoices,'reason'=>vcar_identity_guard($o),
+            'preflight'=>Vesta_Accounting_Reliability::preflight($o,$bank),
+            'outbox'=>$q,'total_toman'=>(float)$o->get_total(),
+            'shipping_toman'=>(float)$o->get_shipping_total()
+          ],JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo "READ_ONLY_NO_CHANGES=yes\n";
+          PHP
