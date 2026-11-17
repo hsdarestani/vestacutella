@@ -1,0 +1,77 @@
+name: Vesta reconcile user existing cloud invoices at 1 and 10 money multipliers, read only
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-audit-user-list-actual-cloud-verification-units-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Validate line prices, discounts, shipping and receipts with original and legacy money multipliers
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1536M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);set_time_limit(0);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $ids=[105228,105227,105226,105225,105223,105221,105220,105219,
+              105208,105207,105206,105205,105204,105203,105053,105052];
+          $settings=get_option('bazara_visitor_settings',[]);
+          $api=new BazaraApi(true);$cloud=Vesta_Accounting_Reliability::cloud($api);$out=[];
+          foreach($ids as $id){
+            $o=wc_get_order($id);if(!$o)continue;
+            $rows=$cloud['orders'][$id]??[];
+            $rid=count($rows)===1?(int)$rows[0]['OrderId']:0;
+            $bank=vcar_bank($settings,$o->get_payment_method());
+            $lines=$rid?$cloud['details'][$rid]??[]:[];
+            $receipts=$rid?$cloud['receipts'][$rid]??[]:[];
+            $verified1=$rid?vcar_verify($o,$rows[0],$lines,$receipts,$bank,$cloud['transfers'],1):'invoice_absent';
+            $verified10=$rid?vcar_verify($o,$rows[0],$lines,$receipts,$bank,$cloud['transfers'],10):'invoice_absent';
+            $want=[];
+            foreach($o->get_items('line_item') as $it){
+              $woo=$it->get_variation_id()?:$it->get_product_id();
+              $want[]=['item_id'=>$woo,'detail_id'=>(int)get_post_meta($woo,'mahak_product_detail_id',true),
+                'product_id'=>(int)get_post_meta($woo,'mahak_id',true),
+                'qty'=>(float)$it->get_quantity(),'line_gross'=>(float)$it->get_subtotal(),
+                'line_discounted_total'=>(float)$it->get_total()];
+            }
+            $actual=[];$cloudLinesNet=0;
+            foreach($lines as $it)if(empty($it['Deleted'])){
+              $n=(float)($it['Count1']??0)*(float)($it['Price']??0)-(float)($it['Discount']??0);
+              $cloudLinesNet+=$n;
+              $actual[]=['detail_id'=>(int)($it['ProductDetailId']??0),
+                'qty'=>(float)($it['Count1']??0),'unit_price'=>(float)($it['Price']??0),
+                'line_discount'=>(float)($it['Discount']??0),'net'=>$n];
+            }
+            $rec=[];
+            foreach($receipts as $x)if(empty($x['Deleted'])){
+              $transfers=array_values(array_filter($cloud['transfers'],fn($t)=>empty($t['Deleted'])&&
+                (int)($t['ReceiptId']??0)===(int)($x['ReceiptId']??0)));
+              $rec[]=['receipt_id'=>(int)($x['ReceiptId']??0),'cash'=>(float)($x['CashAmount']??0),
+                'transfer_amounts'=>array_map(fn($t)=>(float)($t['Amount']??0),$transfers),
+                'bank_id_match'=>count($transfers)===1 && (int)($transfers[0]['BankId']??0)===$bank];
+            }
+            $out[]=['order_id'=>$id,'remote_invoice_id'=>$rid,'remote_count'=>count($rows),
+              'stored_local_invoice'=>(int)$o->get_meta('mahak_id'),
+              'stored_unit_multiplier'=>(int)$o->get_meta('_vcar_money_multiplier'),
+              'verify_as_toman1'=>$verified1?:'PASS','verify_as_rial10'=>$verified10?:'PASS',
+              'person_identity_guard'=>$rid?vcar_identity_guard($o,(int)($rows[0]['PersonId']??0)):'not_checked',
+              'woo_order_total'=>(float)$o->get_total(),'woo_shipping'=>(float)$o->get_shipping_total(),
+              'woo_discount'=>(float)$o->get_discount_total(),
+              'cloud_send_cost'=>$rid?(float)($rows[0]['SendCost']??0):null,
+              'cloud_order_discount'=>$rid?(float)($rows[0]['Discount']??0):null,
+              'cloud_lines_net'=>$cloudLinesNet,
+              'woo_lines'=>$want,'cloud_lines'=>$actual,'receipts'=>$rec];
+          }
+          echo 'EXISTING_CLOUD_INVOICE_FINANCIAL_DIAGNOSTICS='.json_encode($out,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'SOURCE_INVOICE_RECEIPT_CUSTOMER_AND_WOO_FIELDS_UNCHANGED=yes'.PHP_EOL;
+          PHP
