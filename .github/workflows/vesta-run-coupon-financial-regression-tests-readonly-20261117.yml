@@ -1,0 +1,22 @@
+name: Vesta test accounting coupon and protected outbox policies without deploying
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-run-coupon-financial-regression-tests-readonly-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run all finance and outbox isolated regression cases without writing to live server
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq php-cli
+          php -l infra/plugins/vesta-accounting-reliability/vesta-accounting-policy.php
+          php tests/accounting-policy-test.php infra/plugins/vesta-accounting-reliability/vesta-accounting-policy.php
+          php tests/accounting-outbox-test.php infra/plugins/vesta-accounting-reliability/vesta-accounting-reliability.php
+          echo 'COUPON_CORRECTION_TESTS_PASS_AND_NO_PRODUCTION_DEPLOYMENT=yes'
