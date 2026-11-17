@@ -1,0 +1,67 @@
+name: Vesta independent card-owner and invoice shipping readback after customer fixes
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-card-owner-and-freight-final-audit-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Cross-check seven repaired Woo orders and current card-transfer invoice identity, shipping and amounts
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d memory_limit=1024M -d display_errors=0' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $api=new BazaraApi(true);$cloud=Vesta_Accounting_Reliability::cloud($api);
+          $s=get_option('bazara_visitor_settings',[]);
+          $targets=array_fill_keys([105460,105458,105456,105454,105452,105450,105361],true);
+          $sum=['card_paid'=>0,'card_cloud_present'=>0,'card_cloud_missing'=>0,'card_shipping_ok'=>0,'card_shipping_mismatch'=>0,'card_total_ok'=>0,'card_total_mismatch'=>0,'repaired7_woo_correct'=>0,'repaired7_cloud_wrong_person'=>0,'repaired7_cloud_unknown_person'=>0,'repaired7_no_cloud'=>0];
+          $ids=$wpdb->get_col("SELECT ID FROM {$wpdb->posts} WHERE post_type='shop_order' AND post_date_gmt>='2026-11-12 00:00:00' ORDER BY ID DESC LIMIT 700");
+          foreach($ids as $id) {
+             $o=wc_get_order((int)$id);
+             if(!vcar_eligible($o)||$o->get_payment_method()!=='pcs_smart_cardpay')continue;
+             $sum['card_paid']++;
+             $target=isset($targets[(int)$id]);$uid=(int)$o->get_customer_id();
+             if($target){
+               $valid=$uid!==3055 && $uid>0 && (int)$o->get_meta('_vesta_identity_previous_customer_id')===3055;
+               if($valid)$sum['repaired7_woo_correct']++;
+               echo 'CARD_REPAIRED_ORDER='.(int)$id.' WOO_UID='.$uid.' WOO_REPAIRED='.(int)$valid.PHP_EOL;
+             }
+             $rows=$cloud['orders'][(int)$id]??[];
+             if(count($rows)!==1){
+               $sum['card_cloud_missing']++;
+               if($target)$sum['repaired7_no_cloud']++;
+               echo 'CARD_REMOTE_MISSING ORDER='.(int)$id.' REMOTE_MATCHES='.count($rows).PHP_EOL;
+               continue;
+             }
+             $sum['card_cloud_present']++;
+             $r=$rows[0];$remotePersonId=(int)($r['PersonId']??0);
+             $mult=(int)($o->get_meta('_vcar_money_multiplier')?:10);
+             $sameShipping=in_array($mult,[1,10],true)&&abs((float)$o->get_shipping_total()*$mult-(float)($r['SendCost']??0))<0.51;
+             $sum[$sameShipping?'card_shipping_ok':'card_shipping_mismatch']++;
+             $bank=vcar_bank($s,$o->get_payment_method());
+             $erp=(int)($r['OrderId']??0);
+             $fin=vcar_verify($o,$r,$cloud['details'][$erp]??[],$cloud['receipts'][$erp]??[],$bank,$cloud['transfers'],$mult);
+             $totalCheck=$fin!== 'invoice_total_or_shipping';
+             $sum[$totalCheck?'card_total_ok':'card_total_mismatch']++;
+             if($target){
+               $person=(int)get_user_meta($uid,'mahak_id',true);
+               $idCorrect=($person>0 && $person===$remotePersonId && vcar_identity_guard($o,$remotePersonId)==='');
+               if(!$idCorrect)$sum[$person>0?'repaired7_cloud_wrong_person':'repaired7_cloud_unknown_person']++;
+               echo 'CARD_REMOTE_IDENTITY ORDER='.(int)$id.' WOO_PERSON='.$person.' CLOUD_PERSON='.$remotePersonId.' VERIFIED_SAME='.(int)$idCorrect.' SHIP_MATCH='.(int)$sameShipping.' FINANCE_REASON='.($fin?:'pass').PHP_EOL;
+             }
+          }
+          echo 'CARD_OWNER_FREIGHT_FINAL='.json_encode($sum).PHP_EOL;
+          echo 'NO_REMOTE_OR_WOO_MUTATIONS=yes'.PHP_EOL;
+          PHP
