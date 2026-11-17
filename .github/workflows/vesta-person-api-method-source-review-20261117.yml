@@ -1,0 +1,34 @@
+name: Vesta review Bazara vendor person update code without running update
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-person-api-method-source-review-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Print only selected plugin method bodies and argument signatures, never credentials or customer data
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=768M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          $rc=new ReflectionClass('BazaraApi');$lines=file($rc->getFileName());
+          foreach(['save_update_person','register_person','send_persons','register_user_in_order','convert_user_to_people','sync_combined_persons','set_all_data'] as $name){
+            $ref=$rc->getMethod($name);$n=$ref->getEndLine()-$ref->getStartLine()+1;
+            $src=implode('',array_slice($lines,$ref->getStartLine()-1,min($n,100)));
+            $src=preg_replace('/(password|secret|api[_-]?key|authorization|cookie|token)\s*[=:>]\s*[^,;\r\n]+/i','$1=[REDACTED]',$src);
+            echo 'METHOD_SOURCE_START='.$name.' LINES='.$n.PHP_EOL.$src.PHP_EOL.'METHOD_SOURCE_END='.$name.PHP_EOL;
+          }
+          echo 'READ_ONLY_NO_API_PERSON_WRITE=yes'.PHP_EOL;
+          PHP
