@@ -33,6 +33,14 @@ class Vesta_Accounting_Reliability {
         if ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s',$t)) !== $t) throw new RuntimeException('outbox_schema_failed');
         update_option('vcar_schema','1',false);
     }
+    // Newly created buyers may appear in cloud after their first order is queued.
+    // Recheck only stale, unsubmitted ERP-person identity blocks more quickly;
+    // the existing protected sender still requires full preflight, remote
+    // absence verification and durable reservation before any invoice write.
+    static function blocked_retry_seconds($reason) {
+        return in_array((string)$reason,array('customer_erp_person_unmapped','customer_erp_person_not_found'),true)
+            ? 120 : 600;
+    }
     static function enqueue($id) {
         global $wpdb;
         if (get_option('vcar_schema')!=='1') return;
@@ -148,7 +156,7 @@ class Vesta_Accounting_Reliability {
                 $cached=(int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$wpdb->prefix}bazara_orders WHERE OrderClientId=%d",$id));
                 if($local||$cached){self::set($id,'conflict','local_ack_without_remote_invoice',array('next_attempt'=>$now+3600));continue;}
                 $reason=self::preflight($o,$bank);
-                if($reason){self::set($id,'blocked',$reason,array('next_attempt'=>$now+600));continue;}
+                if($reason){self::set($id,'blocked',$reason,array('next_attempt'=>$now+self::blocked_retry_seconds($reason)));continue;}
                 // Archived fiscal years cannot be proven absent from today's cloud export.
                 // Historical records stay in the durable queue pending a complete Mahak ledger comparison.
                 $created=$o->get_date_created();
