@@ -1,0 +1,57 @@
+name: Vesta single mapped Mahak photo into Woo gallery (non-destructive canary)
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-one-photo-1887347-safe-gallery-canary-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-one-photo-1887347
+  cancel-in-progress: false
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate script and stage
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass php-cli
+          php -l scripts/vesta-add-one-mahak-photo-to-woo-103201-canary-20261117.php
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/vesta-add-one-mahak-photo-to-woo-103201-canary-20261117.php "root@$HOST:/tmp/vesta-photo-canary-1887347.php"
+      - name: Dry run then checksum backup and import just one safe picture
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          umask 077
+          exec 9>/run/lock/vesta-single-picture-1887347.lock
+          flock -n 9
+          backup=/srv/backups/vesta-1887347-photo-canary-$(date -u +%Y%m%dT%H%M%SZ)
+          mkdir -m 0700 -p "$backup"
+          docker exec -i -e VC_IMAGE_ONE_COMMIT=no vc-vesta php -d display_errors=0 -d memory_limit=512M < /tmp/vesta-photo-canary-1887347.php | tee "$backup/preflight.log"
+          grep -Fq 'ONE_MAHAK_PHOTO_CANARY_DRYRUN_NO_WRITES=yes' "$backup/preflight.log"
+          docker exec vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb-dump -uroot --single-transaction --quick "$MARIADB_DATABASE" wp_posts wp_postmeta wp_options' | gzip -1 > "$backup/before.sql.gz"
+          gzip -t "$backup/before.sql.gz"
+          (cd "$backup";sha256sum before.sql.gz > SHA256SUMS;sha256sum -c SHA256SUMS)
+          echo 'ONE_PHOTO_PRE_WRITE_BACKUP_VERIFIED=yes'
+          docker exec -i -e VC_IMAGE_ONE_COMMIT=yes -e VC_IMAGE_ONE_BACKUP_VERIFIED=yes vc-vesta php -d display_errors=0 -d memory_limit=1024M < /tmp/vesta-photo-canary-1887347.php | tee "$backup/commit.log"
+          grep -Fq 'MAHAK_ONE_PICTURE_1887347_IMPORTED_TO_WOO_103201_GALLERY_ATTACHMENT=' "$backup/commit.log"
+          grep -Fq 'FEATURED_AND_ALL_EXISTING_GALLERY_PRICE_STOCK_FIELDS_UNCHANGED=yes' "$backup/commit.log"
+          echo 'ONE_MAHAK_PICTURE_GALLERY_CANARY_SUCCESS=yes'
+          REMOTE
+      - name: Web smoke test
+        run: |
+          set -Eeuo pipefail
+          for host in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
+            code=$(curl -LsS --connect-timeout 8 --max-time 25 -o /dev/null -w '%{http_code}' "https://$host/")
+            echo "SITE=$host HTTP=$code";test "$code" = 200
+          done
