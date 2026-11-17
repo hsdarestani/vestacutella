@@ -2,7 +2,7 @@ name: Vesta safe mapping of standalone Woo variation 101962 to existing Mahak pr
 on:
   push:
     branches: [main]
-    paths: [.github/workflows/vesta-map-exact-standalone-101962-safe-20261117.yml]
+    paths: [.github/workflows/vesta-map-exact-standalone-101962-safe-20261117.yml, scripts/vesta-map-one-standalone-mahak-variant-101962-20261117.php]
   workflow_dispatch:
 permissions:
   contents: read
