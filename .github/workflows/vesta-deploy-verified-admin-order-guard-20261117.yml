@@ -1,0 +1,110 @@
+name: Vesta deploy verified new-order admin-account collision prevention
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-deploy-verified-admin-order-guard-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-new-orders-verified-admin-owner-guard
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq php-cli sshpass
+      - name: Verify new guard PHP syntax and stage isolated code
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          php -l infra/plugins/vesta-accounting-reliability/vesta-verified-admin-owner-guard.php
+          sshpass -e scp -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null infra/plugins/vesta-accounting-reliability/vesta-verified-admin-owner-guard.php "root@$HOST:/tmp/vesta-verified-admin-owner-guard-20261117.php"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" "docker cp /tmp/vesta-verified-admin-owner-guard-20261117.php vc-vesta:/tmp/vesta-verified-admin-owner-guard-20261117.php && docker exec vc-vesta php -l /tmp/vesta-verified-admin-owner-guard-20261117.php"
+      - name: Evaluate guard against real paid order and negative identity cases without writes
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=512M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          require '/tmp/vesta-verified-admin-owner-guard-20261117.php';
+          class Vesta_Guard_Readonly_Order_Proxy {
+            private $o;private $uid;private $testId;private $lastOverride;
+            function __construct($o,$uid,$id,$lastOverride=null){$this->o=$o;$this->uid=$uid;$this->testId=$id;$this->lastOverride=$lastOverride;}
+            function get_type(){return $this->o->get_type();}
+            function get_date_created(){return $this->o->get_date_created();}
+            function get_customer_id(){return $this->uid;}
+            function get_id(){return $this->testId;}
+            function get_billing_last_name(){return $this->lastOverride===null?$this->o->get_billing_last_name():$this->lastOverride;}
+            function __call($name,$args){return $this->o->$name(...$args);}
+          }
+          $o=wc_get_order(105554);if(!$o || !vcar_eligible($o))exit(21);
+          $tests=[
+             ['test'=>'valid_admin_inherited_order','order'=>new Vesta_Guard_Readonly_Order_Proxy($o,1,999000101),'expected'=>'verified'],
+             ['test'=>'already_customer_order','order'=>new Vesta_Guard_Readonly_Order_Proxy($o,2918,999000102),'expected'=>'not_legacy_admin_owner'],
+             ['test'=>'buyer_name_conflict','order'=>new Vesta_Guard_Readonly_Order_Proxy($o,1,999000103,'NOT-SAME-NAME'),'expected'=>'buyer_name_not_verified']
+          ];
+          foreach($tests as $t){
+             $result=Vesta_Verified_Admin_Owner_Guard::plan($t['order']);
+             echo 'OWNER_GUARD_TEST='.$t['test'].' REASON='.$result['reason'].PHP_EOL;
+             if($result['reason']!==$t['expected'])exit(22);
+          }
+          echo 'GUARD_THREE_READONLY_TESTS_PASSED=yes NO_ORDER_WRITES=yes'.PHP_EOL;
+          PHP
+      - name: Back up and atomically activate isolated future-order guard
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'SHELL'
+          set -Eeuo pipefail
+          umask 077
+          exec 9>/run/lock/vesta-new-order-guard-deploy.lock
+          flock -n 9
+          base=/srv/vestacutella/runtime/vesta/wp-content/mu-plugins
+          target="$base/vesta-verified-admin-owner-guard.php"
+          test -d "$base"
+          if test -e "$target"; then echo 'GUARD_ALREADY_INSTALLED_REQUIRE_REVIEW=yes';exit 25;fi
+          backup=/srv/backups/vesta-new-order-owner-guard-$(date -u +%Y%m%dT%H%M%SZ)
+          mkdir -m 0700 -p "$backup"
+          docker exec vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb-dump -uroot --single-transaction --quick "$MARIADB_DATABASE" wp_options wp_users wp_usermeta wp_posts wp_postmeta' | gzip -1 > "$backup/account-state.sql.gz"
+          gzip -t "$backup/account-state.sql.gz"
+          (cd "$backup"; sha256sum account-state.sql.gz > SHA256SUMS; sha256sum -c SHA256SUMS)
+          cp -p /tmp/vesta-verified-admin-owner-guard-20261117.php "$backup/guard-candidate.php"
+          echo 'NEW_ORDER_OWNER_GUARD_BACKUP_VERIFIED=yes'
+          changed=no;done=no
+          rollback(){
+            if [[ "$changed" = yes && "$done" != yes ]];then
+              rm -f "$target"
+              echo 'GUARD_CODE_ROLLED_BACK=yes'
+            fi
+          }
+          trap rollback EXIT
+          install -m 0644 /tmp/vesta-verified-admin-owner-guard-20261117.php "$target.tmp"
+          mv "$target.tmp" "$target";changed=yes
+          docker exec -i vc-vesta php -d display_errors=0 <<'PHP'
+          <?php
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          if(!class_exists('Vesta_Verified_Admin_Owner_Guard'))exit(30);
+          if(has_action('woocommerce_payment_complete',array('Vesta_Verified_Admin_Owner_Guard','apply'))!==8)exit(31);
+          if(!get_option('vcar_sender_enabled',false))exit(32);
+          echo 'NEW_ORDER_ADMIN_GUARD_LIVE=yes ACCOUNTING_SENDER_STILL_ENABLED=yes NO_INVOICE_WRITES=yes'.PHP_EOL;
+          PHP
+          for path in / /my-account/;do
+            code=$(curl --noproxy '*' -ksS --connect-timeout 8 --max-time 30 --resolve 'vesta-cosmetics.ir:443:127.0.0.1' -o /dev/null -w '%{http_code}' "https://vesta-cosmetics.ir$path")
+            echo "GUARD_LOCAL_SITE=$path HTTP=$code";test "$code" = 200
+          done
+          done=yes
+          trap - EXIT
+          SHELL
