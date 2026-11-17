@@ -78,6 +78,45 @@ jobs:
           echo PERSON_LOG_COUNT=$(test -f /var/log/vesta-safe-person-worker.log && wc -l </var/log/vesta-safe-person-worker.log || echo 0)
           if test -f /var/log/vesta-safe-person-worker.log; then grep -E '^PERSON_WORKER_SUMMARY=|^PERSON_WORKER_EXCEPTION_CLASS=|^PERSON_WRITE_|^LOGIN_ERROR_RESERVED' /var/log/vesta-safe-person-worker.log | tail -n 8 || true; fi
           SHELL
+      - name: Diagnose safe person worker skipped accounts without exposing names or contact data
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d memory_limit=768M -d display_errors=0' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $ids=$wpdb->get_col("SELECT ID FROM {$wpdb->posts} WHERE post_type='shop_order' AND post_date_gmt>='2026-11-01 00:00:00' ORDER BY ID DESC LIMIT 700");
+          $stats=[];$examples=[];$seen=[];
+          foreach($ids as $id){
+            $o=wc_get_order((int)$id);if(!vcar_eligible($o))continue;
+            $uid=(int)$o->get_customer_id();
+            if(!$uid||isset($seen[$uid]))continue;$seen[$uid]=1;
+            if((int)get_user_meta($uid,'mahak_id',true)>0 || get_user_meta($uid,'_vesta_person_provision_attempt',true))continue;
+            $u=get_user_by('id',$uid);if(!$u||!Vesta_Channel_Customers::customer($uid))continue;
+            $bill=vcar_identity_normalize_name($o->get_billing_first_name().' '.$o->get_billing_last_name());
+            $pname=vcar_identity_normalize_name($u->first_name.' '.$u->last_name);
+            $phone=vesta_otp_phone((string)$o->get_billing_phone());
+            $profile=vesta_otp_phone((string)get_user_meta($uid,'billing_phone',true));
+            $owner=$phone?vesta_otp_existing_user($phone):false;
+            $reason='eligible';
+            if($bill==='')$reason='billing_name_empty';
+            elseif($pname!==$bill)$reason=$pname===''?'user_profile_name_empty':'user_profile_name_conflict';
+            elseif(!$phone)$reason='billing_phone_invalid';
+            elseif($profile!==$phone)$reason=$profile?'profile_phone_conflict':'profile_phone_empty';
+            elseif(is_wp_error($owner)||(int)$owner!==$uid)$reason='otp_phone_owner_conflict';
+            elseif(($e=(string)$o->get_billing_email())!=='' && !is_email($e))$reason='invalid_email';
+            elseif($e!=='' && ($eu=get_user_by('email',$e)) && (int)$eu->ID!==$uid)$reason='email_owner_conflict';
+            $stats[$reason]=($stats[$reason]??0)+1;
+            if(count($examples[$reason]??[])<5)$examples[$reason][]=array('order'=>(int)$id,'uid'=>$uid);
+          }
+          echo 'PERSON_WORKER_BLOCK_REASON_COUNTS='.json_encode($stats).PHP_EOL;
+          echo 'NONPII_EXAMPLE_ORDER_IDS='.json_encode($examples).PHP_EOL;
+          echo 'NO_PERSON_OR_FINANCIAL_WRITES=yes'.PHP_EOL;
+          PHP
       - name: Read-only external availability
         run: |
           set -Eeuo pipefail
