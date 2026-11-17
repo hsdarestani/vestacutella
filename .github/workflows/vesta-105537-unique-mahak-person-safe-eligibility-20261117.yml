@@ -1,0 +1,58 @@
+name: Vesta read-only check exact paid order 105537 for verified Mahak customer provisioning
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-105537-unique-mahak-person-safe-eligibility-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Test identity evidence without displaying buyer name phone or email
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=768M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $id=105537;$o=wc_get_order($id);
+          if(!$o)exit(31);$uid=(int)$o->get_customer_id();$u=get_user_by('id',$uid);
+          $bill=vcar_identity_normalize_name($o->get_billing_first_name().' '.$o->get_billing_last_name());
+          $name=$u?vcar_identity_normalize_name($u->first_name.' '.$u->last_name):'';
+          $phone=vesta_otp_phone((string)$o->get_billing_phone());
+          $profilePhone=vesta_otp_phone((string)get_user_meta($uid,'billing_phone',true));
+          $owner=$phone?vesta_otp_existing_user($phone):false;
+          $api=new BazaraApi(true);$r=$api->get_all_data('',array('fromPersonVersion'=>0));
+          $people=$r['message']['People']??null;if(!is_array($people))exit(32);
+          $byClient=[];$byPhone=[];
+          foreach($people as $p){
+            if(!empty($p['Deleted']))continue;
+            if((int)($p['PersonClientID']??$p['PersonClientId']??0)===$uid)$byClient[]=$p;
+            if($phone && vesta_otp_phone((string)($p['Mobile']??''))===$phone)$byPhone[]=$p;
+          }
+          $res=[
+            'order_id'=>$id,'woo_user_id'=>$uid,
+            'paid_and_eligible'=>vcar_eligible($o),
+            'real_customer_account'=>$u && Vesta_Channel_Customers::customer($uid),
+            'billing_and_profile_names_match'=>$bill!=='' && $bill===$name,
+            'billing_and_profile_phones_match'=>$phone!=='' && $profilePhone===$phone,
+            'single_otp_owner'=>!is_wp_error($owner) && (int)$owner===$uid,
+            'existing_erp_person_id'=>(int)get_user_meta($uid,'mahak_id',true),
+            'prior_person_create_attempt'=>get_user_meta($uid,'_vesta_person_provision_attempt',true)!=='',
+            'erp_people_matching_client_id'=>count($byClient),
+            'erp_people_matching_phone'=>count($byPhone),
+            'billing_email_known_owner'=>($o->get_billing_email()!=='' && is_email($o->get_billing_email()) &&
+               (($e=get_user_by('email',$o->get_billing_email()))===false || (int)$e->ID===$uid)),
+            'outbox_reason'=>$wpdb->get_var($wpdb->prepare("SELECT reason FROM ".Vesta_Accounting_Reliability::table()." WHERE order_id=%d",$id))
+          ];
+          echo 'EXACT_105537_SAFE_PERSON_PROVISION_ELIGIBILITY='.json_encode($res,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'NO_PERSON_ORDER_OR_STOCK_MUTATIONS=yes'.PHP_EOL;
+          PHP
