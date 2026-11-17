@@ -2,7 +2,7 @@ name: Vesta recover existing 105556 Zibal order after verified gateway-suffix id
 on:
   push:
     branches: [main]
-    paths: [.github/workflows/vesta-105556-zibal-identity-acceptance-20261117.yml]
+    paths: [.github/workflows/vesta-105556-zibal-identity-acceptance-20261117.yml, scripts/vesta-release-105556-after-verified-zibal-gateway-20261117.php]
   workflow_dispatch:
 permissions:
   contents: read
