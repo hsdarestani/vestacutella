@@ -1,0 +1,55 @@
+name: Vesta recover old washbag Woo stock quantities from Oct 11 and Oct 24 SQL backups
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-recover-washbag-stock-from-oct11-oct24-backups-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Stream only product inventory metadata for 70298-70300 out of two gzipped historical database backups
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'python3 -' <<'PY'
+          from pathlib import Path
+          import gzip,re,json,time
+          backups=[
+            ('2026-10-11',Path('/srv/backups/pre-vesta-live/vesta-before-live-20261011T224826Z.sql.gz')),
+            ('2026-10-24',Path('/srv/backups/vesta-full-db-verify-20261024/vestacos_m-full.sql.gz'))
+          ]
+          products=(70298,70299,70300)
+          allowed={'_stock','_manage_stock','_stock_status','_sku','total_sales','_price','_regular_price'}
+          row=re.compile(r"\((\d+),\s*(70298|70299|70300),\s*'([^']+)',\s*(NULL|'((?:\\.|[^'\\])*)')\)")
+          for date,path in backups:
+            if not path.is_file():
+              print('BACKUP_STOCK_SNAPSHOT_'+date+'=NOT_FOUND')
+              continue
+            start=time.time()
+            data={str(i):{} for i in products}
+            hits=0;lines=0
+            with gzip.open(path,'rt',encoding='utf-8',errors='replace') as f:
+              for line in f:
+                lines+=1
+                if 'INSERT INTO' not in line[:50] or 'postmeta' not in line[:160]:
+                  continue
+                if not any(','+str(i)+',' in line for i in products):
+                  continue
+                for m in row.finditer(line):
+                  metaId,post,field,val,unquoted=m.groups()
+                  if field in allowed:
+                    data[post][field]=unquoted if val!='NULL' else None
+                    hits+=1
+            print('BACKUP_STOCK_SNAPSHOT_'+date+'='+json.dumps({
+              'product_meta':data,'matched_meta_fields':hits,
+              'decompression_sec':round(time.time()-start,1),'lines_checked':lines
+            },ensure_ascii=False))
+          print('BACKUP_SQL_STREAMING_READONLY_NO_IMPORT_OR_WRITES=yes')
+          PY
