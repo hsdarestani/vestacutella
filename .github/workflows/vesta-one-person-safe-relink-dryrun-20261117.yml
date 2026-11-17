@@ -1,0 +1,25 @@
+name: Vesta one-person verified link preflight for existing Mahak customer after desktop correction
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-one-person-safe-relink-dryrun-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq php-cli sshpass
+      - name: PHP source guard and read-only cloud/client name comparison
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          php -l scripts/vesta-link-verified-existing-mahak-person-20261117.php
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i -e VC_RELINK_COMMIT=no vc-vesta php -d display_errors=0 -d memory_limit=768M' < scripts/vesta-link-verified-existing-mahak-person-20261117.php | tee preflight.log
+          grep -Fq 'NO_ERP_FINANCIAL_WRITES=yes' preflight.log
+          echo 'EXISTING_PERSON_PREFLIGHT_RUN_WITH_NO_CHANGES=yes'
