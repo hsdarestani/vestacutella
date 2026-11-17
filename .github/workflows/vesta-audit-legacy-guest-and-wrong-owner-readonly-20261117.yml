@@ -1,0 +1,65 @@
+name: Vesta audit whether legacy guest and wrong owner orders can be safely reattributed
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-audit-legacy-guest-and-wrong-owner-readonly-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 11
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Inspect only exact OTP owner plus buyer name and order immutability without writes
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1024M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $t=Vesta_Accounting_Reliability::table();
+          $rows=$wpdb->get_results("SELECT order_id,state,reason,attempts,submitted_at,remote_id FROM $t WHERE state='blocked' AND reason IN ('customer_account_unassigned','customer_phone_owner_mismatch') ORDER BY order_id DESC LIMIT 250",ARRAY_A);
+          $api=new BazaraApi(true);$r=$api->get_all_data('',array('fromOrderVersion'=>0));
+          if(empty($r['success'])||!is_array($r['message']['Orders']??null))exit(22);
+          $cloud=[];foreach($r['message']['Orders'] as $inv)if(empty($inv['Deleted']) && (int)($inv['OrderClientId']??0)>0)$cloud[(int)$inv['OrderClientId']][]=$inv;
+          $counts=[];$eligible=[];$examples=[];
+          foreach($rows as $q){
+            $id=(int)$q['order_id'];$o=wc_get_order($id);
+            if(!$o){$cl='woo_order_missing';}
+            else{
+              $uid=(int)$o->get_customer_id();$name=vcar_identity_normalize_name($o->get_billing_first_name().' '.$o->get_billing_last_name());
+              $phone=vesta_otp_phone((string)$o->get_billing_phone());$owner=$phone?vesta_otp_existing_user($phone):false;
+              $canOwner=!is_wp_error($owner) && is_numeric($owner) && (int)$owner>0;
+              $ownerUid=$canOwner?(int)$owner:0;$u=$ownerUid?get_user_by('id',$ownerUid):false;
+              $profile=$u?vcar_identity_normalize_name($u->first_name.' '.$u->last_name):'';
+              $profilePhone=$u?vesta_otp_phone((string)get_user_meta($ownerUid,'billing_phone',true)):'';
+              $safePerson=$u && $profile!=='' && $name===$profile && $phone && $profilePhone===$phone &&
+                !array_intersect((array)$u->roles,['administrator','shop_manager','editor','author']) &&
+                in_array('customer',(array)$u->roles,true);
+              $noPriorSend=(int)$q['attempts']===0 && (int)$q['submitted_at']===0 && (int)$q['remote_id']===0 &&
+                (int)$o->get_meta('mahak_id')===0 && empty($cloud[$id]);
+              if(!$canOwner)$cl='no_existing_unique_otp_user';
+              elseif(!$safePerson)$cl='phone_owner_name_or_profile_not_matching';
+              elseif(!$noPriorSend)$cl='prior_financial_record_cannot_change';
+              elseif($ownerUid===$uid)$cl='already_assigned_correctly';
+              else $cl='exact_otp_and_profile_account_relink_candidate';
+              if($cl==='exact_otp_and_profile_account_relink_candidate')$eligible[]=[
+                'order_id'=>$id,'old_woo_uid'=>$uid,'verified_owner_uid'=>$ownerUid,
+                'erp_person_meta_exists'=>(int)get_user_meta($ownerUid,'mahak_id',true)>0,
+                'cloud_existing_invoice_count'=>count($cloud[$id]??[])
+              ];
+              if(count($examples)<25)$examples[]=['order'=>$id,'class'=>$cl];
+            }
+            $counts[$cl]=($counts[$cl]??0)+1;
+          }
+          echo 'LEGACY_ACCOUNT_REPAIR_CLASSES='.json_encode($counts,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'SAFE_UNIQUE_OTP_ACCOUNT_RELINK_CANDIDATES='.json_encode($eligible,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'GUEST_OWNER_EXAMPLES='.json_encode($examples,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'LEGACY_ACCOUNT_AUDIT_COUNT='.count($rows).' READ_ONLY_NO_CHANGES=yes'.PHP_EOL;
+          PHP
