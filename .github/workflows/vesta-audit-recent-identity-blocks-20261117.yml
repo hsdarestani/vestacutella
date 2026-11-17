@@ -1,0 +1,109 @@
+name: Vesta live audit of all recent stuck customer identity and invoice cases read-only
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-audit-recent-identity-blocks-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 14
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Report current queue, eligible modern order root cause and unique ERP person candidates without private details
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1536M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php'; global $wpdb;
+          $table=Vesta_Accounting_Reliability::table();
+          $groups=$wpdb->get_results("SELECT state,reason,COUNT(*) n FROM $table GROUP BY state,reason ORDER BY n DESC",ARRAY_A);
+          echo 'CURRENT_QUEUE_GROUPS='.json_encode($groups,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          $api=new BazaraApi(true);
+          $raw=$api->get_all_data('',array('fromPersonVersion'=>0,'fromOrderVersion'=>0));
+          if(empty($raw['success'])||!is_array($raw['message']['People']??null)||!is_array($raw['message']['Orders']??null))exit(33);
+          $byPhone=[];$byClient=[];$byID=[];$existingInvoices=[];
+          foreach($raw['message']['People'] as $p){
+             if(!empty($p['Deleted']))continue;
+             $id=(int)($p['PersonId']??0);if(!$id)continue;
+             $mobile=vesta_otp_phone((string)($p['Mobile']??''));
+             $name=vcar_identity_normalize_name(($p['FirstName']??'').' '.($p['LastName']??''));
+             $client=(int)($p['PersonClientID']??$p['PersonClientId']??0);
+             $entry=['pid'=>$id,'client_uid'=>$client,'name'=>$name,'phone'=>$mobile];
+             $byID[$id]=$entry;if($mobile)$byPhone[$mobile][]=$entry;if($client)$byClient[$client][]=$entry;
+          }
+          foreach($raw['message']['Orders'] as $r)if(empty($r['Deleted'])){
+             $orderId=(int)($r['OrderClientId']??0);if($orderId)$existingInvoices[$orderId][]=(int)($r['OrderId']??0);
+          }
+          $reasons=['customer_account_unassigned','customer_erp_person_unmapped','customer_erp_person_not_found',
+             'customer_erp_name_mismatch','customer_phone_owner_mismatch','customer_contact_unverified',
+             'customer_person_cache_unavailable','customer_account_privileged'];
+          $quoted="'".implode("','",array_map('esc_sql',$reasons))."'";
+          $rows=$wpdb->get_results("SELECT order_id,state,reason,attempts,submitted_at,remote_id FROM $table WHERE state='blocked' AND reason IN ($quoted) AND order_id>=104500 ORDER BY order_id DESC LIMIT 400",ARRAY_A);
+          $stats=[];$samples=[];$auto=[];
+          foreach($rows as $q){
+            $id=(int)$q['order_id'];$o=wc_get_order($id);
+            if(!$o){$stats['missing_woo_order']=($stats['missing_woo_order']??0)+1;continue;}
+            if(!vcar_eligible($o)){$stats['ineligible']=($stats['ineligible']??0)+1;continue;}
+            $uid=(int)$o->get_customer_id();$u=$uid?get_user_by('id',$uid):false;
+            $personID=$uid?(int)get_user_meta($uid,'mahak_id',true):0;
+            $bn=vcar_identity_normalize_name($o->get_billing_first_name().' '.$o->get_billing_last_name());
+            $profile=$u?vcar_identity_normalize_name($u->first_name.' '.$u->last_name):'';
+            $phone=vesta_otp_phone((string)$o->get_billing_phone());
+            $owner=$phone?vesta_otp_existing_user($phone):false;
+            $phoneOwned=$u && !is_wp_error($owner)&&is_numeric($owner)&&(int)$owner===$uid;
+            $profilePhone=$u?vesta_otp_phone((string)get_user_meta($uid,'billing_phone',true)):'';
+            $personByMobile=$phone?($byPhone[$phone]??[]):[];
+            $personByClient=$uid?($byClient[$uid]??[]):[];
+            $exact=[];
+            foreach($personByMobile as $p)
+              if($uid>0 && (int)$p['client_uid']===$uid && $p['name']===$profile &&
+                  $p['name']===$bn && $p['name']!=='')$exact[]=$p;
+            $bank=vcar_bank(get_option('bazara_visitor_settings',[]),$o->get_payment_method());
+            $pre=Vesta_Accounting_Reliability::preflight($o,$bank);
+            $erpName=$personID && isset($byID[$personID])?$byID[$personID]['name']:'';
+            $existing=$existingInvoices[$id]??[];
+            $zeroSubmission=(int)$q['attempts']===0 && (int)$q['submitted_at']===0 && (int)$q['remote_id']===0 &&
+               (int)$o->get_meta('mahak_id')===0 && (int)$o->get_meta('_vcar_cloud_invoice_id')===0 && !$existing;
+            $uniqueCloudMatch=count($exact)===1 && count($personByMobile)===1 && count($personByClient)===1;
+            $localOK=false;
+            if($uniqueCloudMatch){
+              $p=$exact[0];$cache=$wpdb->get_row($wpdb->prepare(
+                "SELECT FirstName,LastName,Mobile,PersonClientID FROM {$wpdb->prefix}bazara_persons WHERE PersonId=%d AND Deleted=0 LIMIT 1",$p['pid']),ARRAY_A);
+              $localOK=$cache && (int)$cache['PersonClientID']===$uid &&
+                vcar_identity_normalize_name($cache['FirstName'].' '.$cache['LastName'])===$profile &&
+                vesta_otp_phone((string)$cache['Mobile'])===$phone;
+            }
+            $canMap=$zeroSubmission && $u && $uid>0 && $phoneOwned && $phone===$profilePhone && $localOK &&
+              $uniqueCloudMatch && $personID===0 && $bn===$profile &&
+              !array_intersect((array)$u->roles,['administrator','shop_manager','editor','author']);
+            $canRefresh=$zeroSubmission && $personID>0 && $pre==='' && $phoneOwned && $bn===$profile;
+            if($canMap)$class='safe_unique_person_link_candidate';
+            elseif($canRefresh)$class='stale_block_fully_preflight_clear';
+            elseif(!$zeroSubmission)$class='prior_send_or_cloud_invoice_reconcile_only';
+            elseif($pre==='missing_product_mapping' || $pre==='invalid_product_mapping')$class='product_mapping_block';
+            elseif(!$phoneOwned)$class='phone_owner_unverified';
+            elseif(!$u)$class='unassigned_woo_account';
+            elseif(!$uniqueCloudMatch)$class='cloud_person_not_unique_or_missing';
+            else $class='other_requires_review';
+            $key=$q['reason'].'__'.$class;$stats[$key]=($stats[$key]??0)+1;
+            $out=['order'=>$id,'uid'=>$uid,'reason'=>$q['reason'],'current_preflight'=>$pre?:'verified',
+              'class'=>$class,'person_meta'=>$personID,'cloud_match_person_id'=>$uniqueCloudMatch?$exact[0]['pid']:0,
+              'cloud_phone_person_count'=>count($personByMobile),'cloud_client_person_count'=>count($personByClient),
+              'order_total'=>(float)$o->get_total(),'local_cache_match'=>$localOK,
+              'existing_cloud_invoice_count'=>count($existing),'attempts'=>(int)$q['attempts']];
+            if($canMap||$canRefresh)$auto[]=$out;
+            if(count($samples)<35)$samples[]=$out;
+          }
+          echo 'IDENTITY_BACKLOG_CLASS_COUNTS='.json_encode($stats,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'SAFE_AUTO_ACTION_CANDIDATES='.json_encode($auto,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'LATEST_CASE_SAMPLES='.json_encode($samples,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'IDENTITY_AUDIT_INSPECTED='.count($rows).' NO_CUSTOMER_ORDER_INVOICE_OR_ERP_WRITES=yes'.PHP_EOL;
+          PHP
