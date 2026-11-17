@@ -1,0 +1,84 @@
+name: Diagnose Vesta order 105556 buyer mismatch against corrected Mona ERP person (read-only)
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-order-105556-identity-and-cloud-diagnostic-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 11
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Inspect paid order ownership, exact billed name, ERP cache, verified cloud people, outbox and invoices with no writes
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1024M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $id=105556;$o=wc_get_order($id);
+          if(!$o || !class_exists('BazaraApi') || !class_exists('Vesta_Accounting_Reliability'))exit(17);
+          $uid=(int)$o->get_customer_id();$user=get_user_by('id',$uid);
+          $profile=vcar_identity_normalize_name($user?$user->first_name.' '.$user->last_name:'');
+          $billing=vcar_identity_normalize_name($o->get_billing_first_name().' '.$o->get_billing_last_name());
+          $phone=vesta_otp_phone((string)$o->get_billing_phone());
+          $otpOwner=$phone?vesta_otp_existing_user($phone):false;
+          $profilePhone=$uid?vesta_otp_phone((string)get_user_meta($uid,'billing_phone',true)):false;
+          $pid=(int)get_user_meta($uid,'mahak_id',true);
+          $cache=$pid?$wpdb->get_row($wpdb->prepare("SELECT FirstName,LastName,PersonClientID,Mobile,Deleted FROM {$wpdb->prefix}bazara_persons WHERE PersonId=%d",$pid),ARRAY_A):null;
+          $cacheName=$cache?vcar_identity_normalize_name(($cache['FirstName']??'').' '.($cache['LastName']??'')):'';
+          $settings=get_option('bazara_visitor_settings',[]);
+          $bank=vcar_bank($settings,$o->get_payment_method());
+          $queue=$wpdb->get_row($wpdb->prepare("SELECT state,reason,attempts,submitted_at,remote_id,next_attempt FROM ".Vesta_Accounting_Reliability::table()." WHERE order_id=%d",$id),ARRAY_A);
+          $localCount=(int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$wpdb->prefix}bazara_orders WHERE OrderClientId=%d",$id));
+          $items=[];foreach($o->get_items('line_item') as $it){
+            $productId=(int)($it->get_variation_id()?:$it->get_product_id());
+            $p=(int)get_post_meta($productId,'mahak_id',true);$d=(int)get_post_meta($productId,'mahak_product_detail_id',true);
+            $valid=$p&&$d?(bool)$wpdb->get_var($wpdb->prepare("SELECT ProductDetailId FROM {$wpdb->prefix}bazara_product_details WHERE ProductDetailId=%d AND ProductId=%d AND Deleted=0",$d,$p)):false;
+            $items[]=['woo_product_id'=>$productId,'qty'=>(float)$it->get_quantity(),'toman'=>(float)$it->get_total(),'erp_product_pointer_valid'=>$valid];
+          }
+          $api=new BazaraApi(true);
+          $res=$api->get_all_data('',array('fromPersonVersion'=>0,'fromOrderVersion'=>0));
+          if(empty($res['success']) || !is_array($res['message']['People']??null)||!is_array($res['message']['Orders']??null))exit(18);
+          $people=[];$mobileCount=0;$cloudInvoiceIds=[];$cloudName='';
+          foreach($res['message']['People'] as $p) {
+            if(!empty($p['Deleted']))continue;
+            if($phone&&vesta_otp_phone((string)($p['Mobile']??''))===$phone)$mobileCount++;
+            if((int)($p['PersonId']??0)===$pid){$cloudName=vcar_identity_normalize_name(($p['FirstName']??'').' '.($p['LastName']??''));$people[]=(int)($p['PersonClientId']??$p['PersonClientID']??0);}
+          }
+          foreach($res['message']['Orders'] as $inv)if(empty($inv['Deleted'])&&(int)($inv['OrderClientId']??0)===$id)$cloudInvoiceIds[]=(int)($inv['OrderId']??0);
+          $summary=[
+            'order_id'=>$id,'status'=>$o->get_status(),'paid'=>(bool)$o->get_date_paid(),
+            'woo_customer_id'=>$uid,'user_exists'=>(bool)$user,
+            'billing_first_name_equals_profile_first'=>$user && vcar_identity_normalize_name($o->get_billing_first_name())===vcar_identity_normalize_name($user->first_name),
+            'billing_last_name_equals_profile_last'=>$user && vcar_identity_normalize_name($o->get_billing_last_name())===vcar_identity_normalize_name($user->last_name),
+            'billing_name_equals_profile'=>$billing!==''&&$billing===$profile,
+            'billing_name_equals_erp_cache'=>$billing!==''&&$billing===$cacheName,
+            'billing_name_equals_erp_cloud'=>$billing!==''&&$billing===$cloudName,
+            'erp_cache_name_equals_cloud'=>$cacheName!==''&&$cacheName===$cloudName,
+            'profile_name_equals_erp_cloud'=>$profile!==''&&$profile===$cloudName,
+            'billing_has_parentheses'=>(bool)preg_match('/[()（）]/u',$billing),
+            'billing_name_matches_profile_after_parenthesis_removal'=>$profile!==''&&vcar_identity_normalize_name(preg_replace('/\\s*\\([^)]*\\)\\s*/u',' ',$billing))===$profile,
+            'phone_unique_owner_correct'=>!is_wp_error($otpOwner)&&is_numeric($otpOwner)&&(int)$otpOwner===$uid,
+            'billing_and_profile_phone_match'=>$phone&&$phone===$profilePhone,
+            'cloud_unique_mobile_count'=>$mobileCount,
+            'erp_person_id'=>$pid,'person_client_id'=>$people[0]??null,
+            'erp_person_exists_in_cache'=>(bool)$cache,
+            'erp_name_guard'=>vcar_identity_guard($o),
+            'order_preflight'=>Vesta_Accounting_Reliability::preflight($o,$bank),
+            'payment_method'=>$o->get_payment_method(),
+            'total_toman'=>(float)$o->get_total(),'shipping_toman'=>(float)$o->get_shipping_total(),
+            'items'=>$items,'outbox'=>$queue,'vendor_local_order_rows'=>$localCount,
+            'cloud_invoice_count'=>count($cloudInvoiceIds),'cloud_invoice_ids'=>$cloudInvoiceIds,
+            'sender_enabled'=>(bool)get_option('vcar_sender_enabled',false)
+          ];
+          echo 'ORDER_105556_READONLY_DIAGNOSIS='.json_encode($summary,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'NO_ORDER_CUSTOMER_PERSON_OR_FINANCIAL_MUTATIONS=yes'.PHP_EOL;
+          PHP
