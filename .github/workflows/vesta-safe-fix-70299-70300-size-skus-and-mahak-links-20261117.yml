@@ -1,0 +1,87 @@
+name: Vesta repair two swapped size SKUs 70299 70300 and attach exact existing Mahak goods
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-safe-fix-70299-70300-size-skus-and-mahak-links-20261117.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-size-swap-70299-70300-exact
+  cancel-in-progress: false
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: PHP syntax and stage exact two-product scoped script
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq php-cli sshpass
+          php -l scripts/vesta-fix-70299-70300-exact-size-sku-mahak-links-20261117.php
+          sshpass -e scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/vesta-fix-70299-70300-exact-size-sku-mahak-links-20261117.php "root@$HOST:/tmp/vesta-safe-70299-70300-size-swap-20261117.php"
+      - name: Dry run then snapshot two Woo products SKU lookup and Mahak ID metadata before atomic correction
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          umask 077
+          exec 9>/run/lock/vesta-70299-70300-exact-size.lock
+          flock -n 9
+          backup=/srv/backups/vesta-size-70299-70300-before-$(date -u +%Y%m%dT%H%M%SZ)
+          mkdir -m 0700 -p "$backup"
+          docker exec -i -e VC_SIZE_SWAP_COMMIT=no vc-vesta php -d display_errors=0 -d memory_limit=512M < /tmp/vesta-safe-70299-70300-size-swap-20261117.php | tee "$backup/preflight.log"
+          grep -Fq 'EXACT_TWO_SIZES_DRYRUN_NO_WRITES=yes' "$backup/preflight.log"
+          docker exec vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw' > "$backup/before-two-skus-and-erp-meta.tsv" <<'SQL'
+          SELECT meta_id,post_id,meta_key,meta_value FROM wp_postmeta WHERE post_id IN (70299,70300) ORDER BY meta_id;
+          SELECT * FROM wp_wc_product_meta_lookup WHERE product_id IN (70299,70300) ORDER BY product_id;
+          SQL
+          docker exec vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw' > "$backup/erp-two-goods-details.tsv" <<'SQL'
+          SELECT ProductId,ProductCode,ProductName,Deleted FROM wp_bazara_products WHERE ProductId IN (10755489,10755490);
+          SELECT ProductId,ProductDetailId,Properties,Deleted FROM wp_bazara_product_details WHERE ProductId IN (10755489,10755490);
+          SQL
+          (cd "$backup";sha256sum before-two-skus-and-erp-meta.tsv erp-two-goods-details.tsv > SHA256SUMS;sha256sum -c SHA256SUMS)
+          echo 'EXACT_TWO_SKUS_BACKUP_CHECKSUM_VERIFIED=yes'
+          docker exec -i -e VC_SIZE_SWAP_COMMIT=yes -e VC_SIZE_SWAP_BACKUP_VERIFIED=yes vc-vesta php -d display_errors=0 -d memory_limit=512M < /tmp/vesta-safe-70299-70300-size-swap-20261117.php | tee "$backup/commit.log"
+          grep -Fq 'EXACT_SIZE_SKU_AND_MAHAK_MAPPING_READBACK_VERIFIED=yes' "$backup/commit.log"
+          grep -Fq 'ALL_WOO_PRICES_STOCK_NAMES_ATTRIBUTES_AND_IMAGES_UNCHANGED=yes' "$backup/commit.log"
+          grep -Fq 'NO_FINANCIAL_DOCUMENTS_OR_CUSTOMERS_MODIFIED=yes' "$backup/commit.log"
+          echo 'BOTH_SIZES_MAPPED_AND_SKUS_CORRECTED_WITH_NO_OTHER_WRITES=yes'
+          REMOTE
+      - name: Independent production readback for exact Woo SKU and Mahak mapping and live store health
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=512M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $expected=[70299=>['sku'=>'70300','erp'=>10755489,'detail'=>12269302,'size'=>'سایز بزرگ'],
+                     70300=>['sku'=>'70299','erp'=>10755490,'detail'=>12269303,'size'=>'سایز کوچک']];
+          foreach($expected as $id=>$ex){
+            $p=wc_get_product($id);
+            $lookup=(string)$wpdb->get_var($wpdb->prepare("SELECT sku FROM {$wpdb->prefix}wc_product_meta_lookup WHERE product_id=%d",$id));
+            if(!$p || $p->get_sku()!==$ex['sku'] || $lookup!==$ex['sku'] ||
+               strpos($p->get_name(),$ex['size'])===false||
+               (int)get_post_meta($id,'mahak_id',true)!==$ex['erp']||
+               (int)get_post_meta($id,'mahak_product_detail_id',true)!==$ex['detail'])exit(21);
+            echo 'VERIFIED_TWO_SIZES_WOO_VARIANT='.$id.' CORRECT_SKU='.$p->get_sku().
+              ' ERP_PRODUCT='.$ex['erp'].' ERP_DETAIL='.$ex['detail'].PHP_EOL;
+          }
+          echo "BOTH_SKU_MAPPING_READBACK_VERIFIED=yes\n";
+          PHP
+          for host in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
+            code=$(curl -LsS --connect-timeout 8 --max-time 25 -o /dev/null -w '%{http_code}' "https://$host/")
+            echo "SITE=$host HTTP=$code";test "$code" = 200
+          done
