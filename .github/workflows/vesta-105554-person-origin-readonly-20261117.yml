@@ -1,0 +1,81 @@
+name: Read-only origin analysis of order 105554 historical Mahak customer identity
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/vesta-105554-person-origin-readonly-20261117.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  trace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Trace historical customer association across Woo orders and Mahak cloud without mutation or PII logs
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d memory_limit=768M -d display_errors=0' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          global $wpdb;
+          $order=wc_get_order(105554);if(!$order)exit(11);
+          $uid=(int)$order->get_customer_id();$user=get_user_by('id',$uid);
+          $phone=vesta_otp_phone((string)$order->get_billing_phone());
+          $billing=vcar_identity_normalize_name($order->get_billing_first_name().' '.$order->get_billing_last_name());
+          $api=new BazaraApi(true);
+          $data=$api->get_all_data('',array('fromPersonVersion'=>0,'fromOrderVersion'=>0));
+          if(empty($data['success']) || !is_array($data['message']['People']??null)){echo "ERP_CLOUD_READ_UNAVAILABLE=yes\n";exit(12);}
+          $people=$data['message']['People'];
+          $matches=[];
+          foreach($people as $p){
+            if(!empty($p['Deleted']) || vesta_otp_phone((string)($p['Mobile']??''))!==$phone)continue;
+            $cloudName=vcar_identity_normalize_name(($p['FirstName']??'').' '.($p['LastName']??''));
+            $client=(int)($p['PersonClientID']??$p['PersonClientId']??0);
+            $pid=(int)($p['PersonId']??0);
+            $matches[]=['mahak_person_id'=>$pid,'client_uid'=>$client,'cloud_name_matches_current_order'=>$cloudName===$billing,
+              'cloud_first_name_differs'=>$cloudName!==$billing,'local_cache_has_same_id'=>(bool)$wpdb->get_var($wpdb->prepare("SELECT PersonId FROM {$wpdb->prefix}bazara_persons WHERE PersonId=%d AND Deleted=0",$pid)),
+              'cloud_row_fields'=>array_values(array_filter(array_keys($p),function($k){return preg_match('/Date|Time|Version|Created|Modified|Change/i',(string)$k);})),
+              'cloud_record_age_fields'=>array_intersect_key($p,array_fill_keys(['PersonVersion','CreatedDate','CreationDate','DateCreated','CreatedAt','ModifiedDate','UpdateDate','UpdateTime','PersonDate'],true))
+            ];
+          }
+          $ids=$wpdb->get_col("SELECT ID FROM {$wpdb->posts} WHERE post_type='shop_order' ORDER BY ID DESC LIMIT 10000");
+          $orders=[];$samePhone=0;
+          foreach($ids as $id){
+             $o=wc_get_order((int)$id);if(!$o)continue;
+             if(vesta_otp_phone((string)$o->get_billing_phone())!==$phone)continue;
+             $samePhone++;
+             if(count($orders)<25)$orders[]=[
+                'order_id'=>(int)$id,'created_gmt'=>$o->get_date_created()?$o->get_date_created()->date('Y-m-d H:i:s'):null,
+                'account_uid'=>(int)$o->get_customer_id(),'name_matches_order_105554'=>vcar_identity_normalize_name($o->get_billing_first_name().' '.$o->get_billing_last_name())===$billing,
+                'erp_person_meta'=>(int)$o->get_meta('mahak_id')
+             ];
+          }
+          $accountInfo=['uid'=>$uid,'registered_gmt'=>$user?$user->user_registered:null,
+            'profile_matches_current_order'=>$user?vcar_identity_normalize_name($user->first_name.' '.$user->last_name)===$billing:false,
+            'has_profile_verified_provenance'=>(bool)get_user_meta($uid,'_vesta_profile_verified_order_id',true),
+            'person_registration_attempt'=>(bool)get_user_meta($uid,'_vesta_person_provision_attempt',true),
+            'erp_person_meta'=>(int)get_user_meta($uid,'mahak_id',true),
+            'order_count_with_same_phone'=>$samePhone
+          ];
+          $erpOrders=$data['message']['Orders']??[];$erpUses=[];
+          foreach($matches as $match){
+            $pid=$match['mahak_person_id'];$count=0;$recent=[];
+            foreach((array)$erpOrders as $eo){
+              if(!empty($eo['Deleted'])||(int)($eo['PersonId']??0)!==$pid)continue;
+              $count++;if(count($recent)<12)$recent[]=(int)($eo['OrderClientId']??0);
+            }
+            $erpUses[]=['mahak_person_id'=>$pid,'remote_invoice_count'=>$count,'remote_woo_order_ids_sample'=>$recent];
+          }
+          echo 'PERSON_ORIGIN_ACCOUNT='.json_encode($accountInfo,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'PERSON_ORIGIN_CLOUD='.json_encode($matches,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'PERSON_ORIGIN_WOO_ORDERS='.json_encode($orders,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'PERSON_ORIGIN_CLOUD_INVOICE_USAGE='.json_encode($erpUses,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'READ_ONLY_NO_CUSTOMER_PERSON_ORDER_INVOICE_OR_CLOUD_WRITES=yes'.PHP_EOL;
+          PHP
