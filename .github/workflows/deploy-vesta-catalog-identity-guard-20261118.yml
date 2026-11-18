@@ -1,0 +1,115 @@
+name: Deploy safe Bazara catalog identity matcher and disable destructive ID clearing
+on:
+  push:
+    branches: [main]
+    paths:
+      - infra/plugins/vesta-accounting-reliability/vesta-catalog-identity-guard.php
+      - scripts/patch-vesta-bazara-catalog-identity-20261118.py
+      - .github/workflows/deploy-vesta-catalog-identity-guard-20261118.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-catalog-identity-and-vendor-sync
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate patch and mu-plugin
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq python3 php-cli sshpass
+          php -l infra/plugins/vesta-accounting-reliability/vesta-catalog-identity-guard.php
+          python3 -m py_compile scripts/patch-vesta-bazara-catalog-identity-20261118.py
+      - name: Protected atomic server deploy, backups and identity simulations
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e scp -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            infra/plugins/vesta-accounting-reliability/vesta-catalog-identity-guard.php \
+            "root@$HOST:/tmp/vesta-catalog-identity-guard-20261118.php"
+          sshpass -e scp -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            scripts/patch-vesta-bazara-catalog-identity-20261118.py \
+            "root@$HOST:/tmp/patch-vesta-bazara-catalog-identity-20261118.py"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          umask 077
+          exec 9>/run/lock/vesta-catalog-identity-patch-20261118.lock
+          flock -n 9
+          BASE=/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara
+          MU=/srv/vestacutella/runtime/vesta/wp-content/mu-plugins
+          GUARD="$MU/vesta-catalog-identity-guard.php"
+          VENDOR="$BASE/classes/functions.php"
+          BACKUP=/srv/backups/vesta-catalog-identity-$(date -u +%Y%m%dT%H%M%SZ)
+          mkdir -m 0700 -p "$BACKUP"
+          test -s "$VENDOR";test -s "$MU/vesta-mahak-site-import.php"
+          cp -p "$VENDOR" "$BACKUP/vendor-functions.php"
+          had=no
+          if test -f "$GUARD";then cp -p "$GUARD" "$BACKUP/original-mu-guard.php";had=yes;fi
+          (cd "$BACKUP";sha256sum vendor-functions.php > SHA256SUMS;sha256sum -c SHA256SUMS)
+          echo 'CATALOG_GUARD_VENDOR_BACKUP_VERIFIED=yes'
+          python3 /tmp/patch-vesta-bazara-catalog-identity-20261118.py --plugin-root "$BASE"
+          docker exec -i vc-vesta php -l < /tmp/vesta-catalog-identity-guard-20261118.php
+          cp /tmp/vesta-catalog-identity-guard-20261118.php "$MU/.vesta-catalog-identity-guard.next"
+          chmod 0644 "$MU/.vesta-catalog-identity-guard.next"
+          chown --reference="$MU/vesta-mahak-site-import.php" "$MU/.vesta-catalog-identity-guard.next"
+          mv "$MU/.vesta-catalog-identity-guard.next" "$GUARD"
+          patched=no
+          rollback(){
+            code=$?
+            trap - ERR
+            cp -p "$BACKUP/vendor-functions.php" "$VENDOR"
+            if [ "$had" = yes ];then cp -p "$BACKUP/original-mu-guard.php" "$GUARD";else rm -f "$GUARD";fi
+            echo 'CATALOG_IDENTITY_PATCH_ROLLED_BACK=yes'
+            exit "$code"
+          }
+          trap rollback ERR
+          python3 /tmp/patch-vesta-bazara-catalog-identity-20261118.py --plugin-root "$BASE" --apply
+          docker exec vc-vesta php -l /var/www/html/wp-content/plugins/bazara/classes/functions.php
+          docker exec vc-vesta php -l /var/www/html/wp-content/mu-plugins/vesta-catalog-identity-guard.php
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1400M <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);set_time_limit(0);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          if(!function_exists('vesta_catalog_bazara_policy'))exit(50);
+          $source=file_get_contents(WP_PLUGIN_DIR.'/bazara/classes/functions.php');
+          if(strpos($source,'VESTA_CATALOG_IDENTITY_GUARD_20261118')===false||
+             strpos($source,"update_post_meta(\$pp->get_id(), 'mahak_id', '')")!==false)exit(51);
+          $catalog=vmb_catalog(vmb_api());$products=[];
+          foreach($catalog['Products']??[] as $g)
+             if(empty($g['Deleted']))$products[(string)($g['ProductCode']??'')]=$g;
+          foreach(['103201','103200'] as $code){
+             if(!isset($products[$code]))exit(52);
+             $g=$products[$code];
+             $test=vesta_catalog_bazara_policy(['ProductCode'=>$code,'ProductId'=>(int)$g['ProductId'],'name'=>(string)$g['Name'],'type'=>'variable','vars'=>[1]]);
+             echo 'CATALOG_POLICY_PROTECTED_'.$code.'='.json_encode($test).PHP_EOL;
+             if(!empty($test['allow']))exit(53);
+          }
+          $allowed=0;$blocked=0;$sample=[];
+          foreach(array_slice($catalog['Products']??[],0,160) as $g){
+             if(!empty($g['Deleted']))continue;
+             $a=['ProductCode'=>$g['ProductCode'],'ProductId'=>$g['ProductId'],'name'=>$g['Name'],
+                 'type'=>'simple','vars'=>[]];
+             $v=vesta_catalog_bazara_policy($a);
+             if(!empty($v['allow']))$allowed++;else $blocked++;
+             if(count($sample)<8)$sample[]=['code'=>$g['ProductCode'],'allow'=>$v['allow'],'reason'=>$v['reason']];
+          }
+          echo 'CATALOG_POLICY_SAMPLE='.json_encode(['allowed'=>$allowed,'blocked'=>$blocked,'first'=>$sample]).PHP_EOL;
+          if($allowed===0)exit(54);
+          if(!empty(get_option('bazara_visitor_settings',[])['chkPicture']))exit(55);
+          echo 'CATALOG_IDENTITY_POLICY_LIVE_BOOT_PASSED=yes'.PHP_EOL;
+          echo 'NO_PRODUCT_INVOICE_STOCK_MEDIA_MUTATIONS_IN_SMOKE=yes'.PHP_EOL;
+          PHP
+          for host in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
+            status=$(curl --noproxy '*' -ksS --connect-timeout 8 --max-time 25 --resolve "$host:443:127.0.0.1" -o /dev/null -w '%{http_code}' "https://$host/")
+            echo "SITE=$host HTTP=$status";test "$status" = 200
+          done
+          trap - ERR
+          echo 'PRODUCTION_BAZARA_CATALOG_IDENTITY_GUARD_DEPLOYED=yes'
+          REMOTE
