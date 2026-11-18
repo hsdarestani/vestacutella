@@ -1,0 +1,55 @@
+name: Vesta correct only safely unpurchased Mehrona variation Mahak IDs
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/vesta-safe-repair-mehrona-mismapped-variations-20261118.php
+      - .github/workflows/vesta-repair-mehrona-variation-links-20261118.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-mehrona-exact-link-repair
+  cancel-in-progress: false
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate repair source
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq php-cli sshpass
+          php -l scripts/vesta-safe-repair-mehrona-mismapped-variations-20261118.php
+      - name: Only update provably safe existing postmeta links with backup
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e scp -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            scripts/vesta-safe-repair-mehrona-mismapped-variations-20261118.php \
+            "root@$HOST:/tmp/vesta-safe-mehrona-20261118.php"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          umask 077
+          exec 8>/run/lock/vesta-mehrona-safe-repair-20261118.lock
+          flock -n 8
+          backup=/srv/backups/vesta-mehrona-ids-$(date -u +%Y%m%dT%H%M%SZ)
+          mkdir -p -m 0700 "$backup"
+          docker exec -i -e VESTA_MEHRONA_COMMIT=no vc-vesta php -d display_errors=0 -d memory_limit=1024M < /tmp/vesta-safe-mehrona-20261118.php | tee "$backup/preflight.log"
+          grep -Fq 'MEHRONA_DRY_RUN_NO_MUTATIONS=yes' "$backup/preflight.log"
+          docker exec vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb-dump -uroot --single-transaction --quick "$MARIADB_DATABASE" wp_postmeta --where="post_id IN (103201,103203)"' | gzip -1 > "$backup/original-two-variation-postmeta.sql.gz"
+          gzip -t "$backup/original-two-variation-postmeta.sql.gz"
+          (cd "$backup";sha256sum original-two-variation-postmeta.sql.gz > SHA256SUMS;sha256sum -c SHA256SUMS)
+          echo 'MEHRONA_MAPPINGS_PREWRITE_BACKUP_VERIFIED=yes'
+          docker exec -i -e VESTA_MEHRONA_COMMIT=yes -e VESTA_MEHRONA_BACKUP_VERIFIED=yes vc-vesta php -d display_errors=0 -d memory_limit=1024M < /tmp/vesta-safe-mehrona-20261118.php | tee "$backup/commit.log"
+          grep -Eq 'MEHRONA_REPAIR_COUNT=|NO_ELIGIBLE_MAPPINGS_NO_WRITES=yes' "$backup/commit.log"
+          if grep -q 'MEHRONA_REPAIR_ROLLED_BACK=' "$backup/commit.log";then exit 31;fi
+          echo 'MEHRONA_CORRECTION_FINISHED_SAFE_GUARDS_ONLY=yes'
+          for host in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
+            status=$(curl --noproxy '*' -ksS --connect-timeout 8 --max-time 25 --resolve "$host:443:127.0.0.1" -o /dev/null -w '%{http_code}' "https://$host/")
+            echo "SITE=$host HTTP=$status"
+            test "$status" = 200
+          done
+          REMOTE
