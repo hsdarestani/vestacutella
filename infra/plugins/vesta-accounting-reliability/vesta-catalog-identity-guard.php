@@ -87,6 +87,9 @@ function vesta_catalog_bazara_policy(array $args) {
           return $blocked('erp_fallback_conflicting_sku');
        return ['allow'=>true,'reason'=>'verified_erp_fallback'];
     }
-    // Brand-new goods may be created as non-purchasable drafts by the vendor.
-    return ['allow'=>true,'reason'=>'new_good_no_existing_woo_identity'];
+    // New catalog products are never auto-published before merchandising review.
+    $cfg=function_exists('get_bazara_visitor_settings')?get_bazara_visitor_settings():[];
+    $publishStatus=is_array($cfg)?($cfg['publishStatus']??'draft'):'draft';
+    if($publishStatus!=='draft')return $blocked('new_good_requires_draft_publish_policy');
+    return ['allow'=>true,'reason'=>'new_draft_good_no_existing_woo_identity'];
 }
