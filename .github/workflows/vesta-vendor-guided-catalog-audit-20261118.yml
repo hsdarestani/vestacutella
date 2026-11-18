@@ -1,0 +1,118 @@
+name: Vesta full vendor-guided catalog identity and sync source audit
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-vendor-guided-catalog-audit-20261118.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 17
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read exact Bazara product writer/matcher source safely
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          root=Path('/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara/classes')
+          pat=re.compile(r'(function\s+(sync_products|sync_product|sync_product_details|sync_pictures)|wc_get_product_id_by_sku|ProductCode|ProductDetailId|mahak_product_detail_id|mahak_id|get_sku\(|set_sku\(|update_post_meta\(|get_post_meta\(|chkProducts|chkPicture|bazara_run_product_sync)',re.I)
+          for fn in ('class.bazara.api.php','class.products.table.php','functions.php'):
+            p=root/fn
+            if not p.exists():continue
+            lines=p.read_text('utf-8',errors='replace').splitlines()
+            hits=0
+            for i,line in enumerate(lines):
+              if not pat.search(line):continue
+              s=line.strip()
+              if re.search('https?://|token|secret|password|authorization|api.?key',s,re.I):continue
+              print('MATCH_SOURCE',fn,i+1,s[:210])
+              hits+=1
+              if hits>=100:break
+          PY
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1400M <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);set_time_limit(0);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $config=get_option('bazara_visitor_settings',[]);
+          $opt=[];foreach($config as $k=>$v)
+            if(preg_match('/product|picture|stock|sync|price/i',(string)$k)&&is_scalar($v))
+               $opt[$k]=preg_replace('/[^a-zA-Z0-9_:-]/','',substr((string)$v,0,30));
+          echo 'SAFE_PRODUCT_SYNC_SETTINGS='.json_encode($opt).PHP_EOL;
+          $catalog=vmb_catalog(vmb_api());
+          $goods=[];$bycode=[];$detailByGood=[];$detailOwner=[];$duplicateCodes=[];
+          foreach($catalog['Products']??[] as $p){
+            if(!empty($p['Deleted']))continue;
+            $pid=(int)($p['ProductId']??0);$code=trim((string)($p['ProductCode']??''));
+            if(!$pid||$code==='')continue;
+            $goods[$pid]=$p;$bycode[$code][]=$pid;
+          }
+          foreach($bycode as $code=>$ids)if(count($ids)>1)$duplicateCodes[$code]=count($ids);
+          foreach($catalog['ProductDetails']??[] as $d){
+            if(!empty($d['Deleted']))continue;
+            $id=(int)($d['ProductDetailId']??0);$parent=(int)($d['ProductId']??0);
+            if(!$id||!$parent)continue;
+            $detailOwner[$id]=$parent;$detailByGood[$parent][]=$d;
+          }
+          $stats=['active_goods'=>count($goods),'active_details'=>count($detailOwner),
+                  'cloud_codes_duplicated'=>count($duplicateCodes),'cloud_goods_single_detail'=>0,'cloud_goods_multiple_detail'=>0,
+                  'woo_product_count'=>0,'woo_variation_count'=>0,'published_product_count'=>0,
+                  'cloud_code_missing_in_woo_sku'=>0,'cloud_code_single_woo_sku'=>0,'cloud_code_multiple_woo_sku'=>0,
+                  'sku_to_cloud_unique_same_title'=>0,'sku_to_cloud_unique_different_title'=>0,
+                  'sku_to_cloud_unique_variation_parent_title'=>0,'sku_to_cloud_unique_no_parent_match'=>0,
+                  'existing_meta_parent_wrong'=>0,'existing_meta_detail_wrong_parent'=>0,
+                  'existing_meta_wrong_name'=>0,'all_woo_linked_to_active_cloud_good'=>0,
+                  'sku_equal_to_other_erp_good_while_parent_erp_diff'=>0,
+                  'woo_importer_draft_count'=>0,'likely_conflicts'=>[]];
+          foreach($goods as $id=>$g){count($detailByGood[$id]??[])===1?$stats['cloud_goods_single_detail']++:$stats['cloud_goods_multiple_detail']++;}
+          $rowset=$wpdb->get_results("SELECT ID,post_type,post_status,post_parent,post_title FROM {$wpdb->posts}
+            WHERE post_type IN ('product','product_variation') AND post_status NOT IN ('trash','auto-draft')",ARRAY_A);
+          $ids=array_map(fn($r)=>(int)$r['ID'],$rowset);
+          $bySku=[];$woo=[];
+          foreach($rowset as $row){
+            $id=(int)$row['ID'];$type=$row['post_type'];$status=$row['post_status'];
+            $obj=wc_get_product($id);if(!$obj)continue;
+            $sku=trim((string)$obj->get_sku());$erp=(int)$obj->get_meta('mahak_id',true);
+            $did=(int)$obj->get_meta('mahak_product_detail_id',true);
+            $woo[$id]=['id'=>$id,'type'=>$type,'status'=>$status,'parent'=>(int)$row['post_parent'],
+              'name'=>$obj->get_name(),'sku'=>$sku,'erp'=>$erp,'detail'=>$did];
+            if($sku!=='')$bySku[$sku][]=$id;
+            $stats[$type==='product'?'woo_product_count':'woo_variation_count']++;
+            if($type==='product'&&$status==='publish')$stats['published_product_count']++;
+            if((string)$obj->get_meta('_vesta_mahak_import_source',true)==='bazara_existing_product' && $status==='draft')$stats['woo_importer_draft_count']++;
+            if($erp&&isset($goods[$erp])){
+              $stats['all_woo_linked_to_active_cloud_good']++;
+              if($did && ($detailOwner[$did]??null)!==$erp)$stats['existing_meta_detail_wrong_parent']++;
+              $compare=$type==='product'?$obj->get_name():($row['post_parent'] ? ($wpdb->get_var($wpdb->prepare("SELECT post_title FROM {$wpdb->posts} WHERE ID=%d",$row['post_parent']))??'') : '');
+              if($compare && function_exists('vesta_mhi_name_compatible')&&!vesta_mhi_name_compatible($compare,(string)($goods[$erp]['Name']??'')))$stats['existing_meta_wrong_name']++;
+            }
+            if($erp&&!isset($goods[$erp]))$stats['existing_meta_parent_wrong']++;
+            if($type==='product_variation'&&$sku!==''&&count($bycode[$sku]??[])===1&&$erp&&$bycode[$sku][0]!==$erp){
+              $stats['sku_equal_to_other_erp_good_while_parent_erp_diff']++;
+              if(count($stats['likely_conflicts'])<14)$stats['likely_conflicts'][]=['woo_id'=>$id,'sku'=>$sku,'woo_title'=>$obj->get_name(),'current_erp'=>$erp,'sku_cloud_erp'=>$bycode[$sku][0]];
+            }
+          }
+          foreach($bycode as $code=>$matchingIds){
+            $count=count($bySku[$code]??[]);
+            $stats[$count===0?'cloud_code_missing_in_woo_sku':($count===1?'cloud_code_single_woo_sku':'cloud_code_multiple_woo_sku')]++;
+            if($count!==1||count($matchingIds)!==1)continue;
+            $item=$woo[$bySku[$code][0]];$g=$goods[$matchingIds[0]];
+            $norm=function($s){$s=strtr((string)$s,['ي'=>'ی','ك'=>'ک','‌'=>' ','آ'=>'ا']);return preg_replace('/[^\p{L}\p{N}]+/u','',mb_strtolower($s,'UTF-8'));};
+            if($norm($item['name'])===$norm($g['Name']))$stats['sku_to_cloud_unique_same_title']++;
+            else if($item['type']==='product_variation' && isset($woo[$item['parent']]) && $norm($woo[$item['parent']]['name'])===$norm($g['Name']))$stats['sku_to_cloud_unique_variation_parent_title']++;
+            else if($item['type']==='product_variation')$stats['sku_to_cloud_unique_no_parent_match']++;
+            else $stats['sku_to_cloud_unique_different_title']++;
+          }
+          echo 'FULL_VENDOR_CATALOG_AUDIT='.json_encode($stats,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'READ_ONLY_NO_PRODUCT_STOCK_MEDIA_ACCOUNTING_WRITES=yes'.PHP_EOL;
+          PHP
+          REMOTE
