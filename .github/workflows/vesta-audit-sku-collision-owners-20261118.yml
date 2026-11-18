@@ -1,0 +1,60 @@
+name: Vesta classify all duplicate Woo SKU holders before repair
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-audit-sku-collision-owners-20261118.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  classify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read-only count published-vs-draft duplicate SKU collisions
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1024M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);set_time_limit(0);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $cloud=vmb_catalog(vmb_api());$goods=[];
+          foreach($cloud['Products']??[] as $g)if(empty($g['Deleted']))$goods[(string)($g['ProductCode']??'')]=$g;
+          $rows=$wpdb->get_results("SELECT p.ID,p.post_status,p.post_type,p.post_parent,p.post_title,m.meta_value AS sku
+            FROM {$wpdb->posts} p JOIN {$wpdb->postmeta} m ON m.post_id=p.ID AND m.meta_key='_sku'
+            WHERE p.post_type IN ('product','product_variation') AND p.post_status IN ('publish','private','draft','pending','future') AND m.meta_value<>''",ARRAY_A);
+          $by=[];foreach($rows as $r)if(isset($goods[(string)$r['sku']]))$by[(string)$r['sku']][]=$r;
+          $stats=['codes'=>count($by),'duplicated_codes'=>0,'all_published'=>0,'one_published_one_or_more_draft'=>0,
+          'multiple_published'=>0,'draft_only_duplicates'=>0,'hidden_variations_under_draft_parents'=>0,
+          'ambiguous_examples'=>[],'safe_draft_duplicates'=>0,'duplicate_draft_sample'=>[]];
+          foreach($by as $code=>$owners){
+            if(count($owners)<2)continue;
+            $stats['duplicated_codes']++;
+            $visible=[];$draft=[];$others=[];
+            foreach($owners as $owner){
+              $p=$owner['post_type']==='product_variation'?get_post((int)$owner['post_parent']):null;
+              $effective=($p&&$p->post_status!=='publish')?$p->post_status:$owner['post_status'];
+              if($effective==='publish')$visible[]=$owner;
+              elseif(in_array($effective,['draft','pending','private','future'],true))$draft[]=$owner;
+              else $others[]=$owner;
+              if($p&&$p->post_status==='draft')$stats['hidden_variations_under_draft_parents']++;
+            }
+            if(count($visible)>1)$stats['multiple_published']++;
+            elseif(count($visible)===1&&count($draft)>0)$stats['one_published_one_or_more_draft']++;
+            elseif(!count($visible))$stats['draft_only_duplicates']++;
+            else $stats['all_published']++;
+            if(count($visible)===1&&count($draft)>0)$stats['safe_draft_duplicates']++;
+            if(count($stats['ambiguous_examples'])<12)$stats['ambiguous_examples'][]=[
+              'code'=>$code,'cloud_name'=>(string)($goods[$code]['Name']??''),'visible'=>array_map(fn($r)=>(int)$r['ID'],$visible),
+              'draft'=>array_map(fn($r)=>(int)$r['ID'],$draft)];
+            if(count($visible)===1&&count($draft)>0&&count($stats['duplicate_draft_sample'])<10)
+                $stats['duplicate_draft_sample'][]=['code'=>$code,'visible_woo'=>(int)$visible[0]['ID'],
+                  'draft_woo'=>array_map(fn($r)=>(int)$r['ID'],$draft)];
+          }
+          echo 'DUPLICATE_SKU_SITEWIDE_STATS='.json_encode($stats,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'NO_PRODUCT_MAPPING_OR_FINANCIAL_WRITES=yes'.PHP_EOL;
+          PHP
