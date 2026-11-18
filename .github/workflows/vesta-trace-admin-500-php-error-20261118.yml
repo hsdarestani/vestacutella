@@ -1,0 +1,43 @@
+name: Vesta trace wp-login HTTP500 from PHP Apache error and WordPress runtime read-only
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-trace-admin-500-php-error-20261118.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  trace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Inspect PHP error_log destinations and run isolated command-line login bootstrap
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set +e
+          echo 'PHP_CONFIG_AND_LOG_TARGETS'
+          docker exec vc-vesta sh -c 'php -i | grep -Ei "error_log =>|log_errors =>|display_errors =>|Loaded Configuration File|Server API" | head -n 14; ps aux | grep -E "[a]pache|[p]hp-fpm" | head -n 10; find /var/log -maxdepth 3 -type f \( -iname "*error*" -o -iname "*php*" \) -printf "%p %s bytes\n" 2>/dev/null | head -n 25' | sed -E 's/([a-zA-Z0-9._%+-]+)@([a-zA-Z0-9.-]+)\.([a-zA-Z]{2,})/<email>/g'
+          echo 'APACHE_PHP_ERROR_LOG_TAIL'
+          docker exec vc-vesta sh -c 'for f in /var/log/apache2/error.log /var/log/php_errors.log /usr/local/etc/php-fpm.d/error.log; do if test -f "$f";then tail -n 85 "$f";fi;done' 2>&1 | grep -Eai 'PHP|Fatal|Uncaught|error|failed|denied|stack|warning|notice|trace' | tail -55 | sed -E 's/(password|token|secret|key)=([^[:space:]]+)/\1=<redacted>/Ig;s/([a-zA-Z0-9._%+-]+)@([a-zA-Z0-9.-]+)\.([a-zA-Z]{2,})/<email>/g' | cut -c 1-450
+          echo 'WORDPRESS_LOGIN_CLI_REPRO_START'
+          docker exec -i vc-vesta php -d display_errors=1 -d log_errors=0 -d memory_limit=512M <<'PHP' 2>&1 | grep -Eai 'PHP (Fatal|Warning|Parse)|Uncaught|Error|undefined|failed|required|cannot |class |function |login_probe' | tail -40 | sed -E 's/([a-zA-Z0-9._%+-]+)@([a-zA-Z0-9.-]+)\.([a-zA-Z]{2,})/<email>/g' | cut -c 1-420
+          <?php
+          error_reporting(E_ALL);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/wp-login.php';
+          $_SERVER['REQUEST_METHOD']='GET';$_SERVER['SCRIPT_NAME']='/wp-login.php';$_SERVER['PHP_SELF']='/wp-login.php';
+          register_shutdown_function(function(){
+             $e=error_get_last();
+             if($e)error_log('LOGIN_PROBE_SHUTDOWN_ERROR='.json_encode(['type'=>$e['type'],'file'=>$e['file'],'line'=>$e['line'],'message'=>substr($e['message'],0,450)],JSON_UNESCAPED_UNICODE));
+          });
+          require '/var/www/html/wp-login.php';
+          echo 'LOGIN_PROBE_PHP_COMPLETED=yes';
+          PHP
+          echo 'WORDPRESS_LOGIN_CLI_REPRO_END'
+          echo 'WORDPRESS_LOGIN_DIAG_READ_ONLY=yes'
+          REMOTE
