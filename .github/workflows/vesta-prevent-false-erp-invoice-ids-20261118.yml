@@ -1,0 +1,79 @@
+name: Prevent fixed fake ERP invoice IDs in protected accounting sender
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-prevent-false-erp-invoice-ids-20261118.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-protected-vendor-invoice-ack
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate parser and finance outbox regressions
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq php-cli sshpass
+          python3 -m py_compile scripts/patch-vesta-bazara-false-invoice-ack-sentinel-20261117.py
+          php tests/accounting-outbox-test.php infra/plugins/vesta-accounting-reliability/vesta-accounting-reliability.php
+      - name: Apply narrowly-scoped false-ack handling with original vendor file backup
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e scp -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/patch-vesta-bazara-false-invoice-ack-sentinel-20261117.py "root@$HOST:/tmp/vesta-patch-protected-ack.py"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          umask 077
+          exec 9>/run/lock/vesta-protected-ack-patch-20261118.lock
+          flock -n 9
+          vendor=/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara/classes/class.bazara.api.php
+          backup=/srv/backups/vesta-false-invoice-ack-$(date -u +%Y%m%dT%H%M%SZ)
+          mkdir -p -m 0700 "$backup"
+          cp -p "$vendor" "$backup/original.php"
+          (cd "$backup";sha256sum original.php > SHA256SUMS;sha256sum -c SHA256SUMS)
+          echo 'FALSE_ACK_VENDOR_ORIGINAL_BACKUP_VERIFIED=yes'
+          staged=$(mktemp /tmp/vesta-protected-ack-XXXXXX.php)
+          python3 /tmp/vesta-patch-protected-ack.py "$vendor" "$staged"
+          docker exec -i vc-vesta php -l < "$staged"
+          expected=$(sha256sum "$backup/original.php" | cut -d' ' -f1)
+          current=$(sha256sum "$vendor" | cut -d' ' -f1)
+          test "$expected" = "$current"
+          cp -p "$staged" "$vendor.new"
+          mv "$vendor.new" "$vendor"
+          rm -f "$staged"
+          if ! docker exec -i vc-vesta php -l < "$vendor";then
+             cp -p "$backup/original.php" "$vendor"
+             echo 'FALSE_ACK_VENDOR_ROLLBACK=yes'
+             exit 28
+          fi
+          echo 'PROTECTED_OUTBOX_FAKE_INVOICE_SENTINEL_FIXED=yes'
+          REMOTE
+      - name: Live read-back only; do not change any invoices or orders
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          $code=file_get_contents(WP_PLUGIN_DIR.'/bazara/classes/class.bazara.api.php');
+          if(!class_exists('Vesta_Accounting_Reliability')||
+             !get_option('vcar_sender_enabled',false)||
+             substr_count($code,'_vcar_vendor_missing_order_ack')!==2)exit(12);
+          echo 'FAKE_ID_GUARD_VERIFIED_PROTECTED_SENDER_ACTIVE=yes'.PHP_EOL;
+          echo 'NO_EXISTING_INVOICE_PERSON_STOCK_OR_PAYMENT_MUTATIONS=yes'.PHP_EOL;
+          PHP
+          for host in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
+            code=$(curl -LsS --connect-timeout 8 --max-time 25 -o /dev/null -w '%{http_code}' "https://$host/")
+            echo "SITE=$host HTTP=$code";test "$code" = 200
+          done
