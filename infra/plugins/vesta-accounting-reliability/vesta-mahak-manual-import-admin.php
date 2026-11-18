@@ -108,9 +108,10 @@ function vesta_mhi_complete_draft($woo_id,$erp_id) {
     global $wpdb;
     $p=wc_get_product($woo_id);
     if (!$p) throw new RuntimeException('محصول سایت برای تکمیل پیدا نشد.');
-    if ($p->get_status()!=='draft' || !$p->is_type('simple') ||
-        (string)$p->get_meta('_vesta_mahak_import_source',true)!=='bazara_existing_product')
+    if ($p->get_status()!=='draft' || !$p->is_type('simple'))
         return ['price'=>'محصول موجود بدون تغییر','stock'=>'محصول موجود بدون تغییر'];
+    // Also complete Bazaar-native drafts when (and only when) the exact
+    // SKU + ProductId + ProductDetailId + title pass vesta_mhi_identity_guard().
     $source=vesta_mhi_identity_guard($woo_id,$erp_id);
     if ($p->get_sku()!==(string)($source['ProductCode']??''))
         throw new RuntimeException('کد SKU با محصول محک یکسان نیست؛ تکمیل متوقف شد.');
