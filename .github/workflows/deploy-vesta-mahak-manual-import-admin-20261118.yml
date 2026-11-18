@@ -76,9 +76,18 @@ jobs:
             else throw $e;
           }
           if(!$conflictBlocked)throw new RuntimeException('identity_collision_guard_failed_for_103201');
-          $p=wc_get_product(103201);
-          if(!$p || !in_array(105559,$p->get_gallery_image_ids(),true))
-            throw new RuntimeException('old_canary_gallery_unexpected');
+          $p=wc_get_product(103201);$book=wc_get_product(105617);
+          if(!$p || !$book || in_array(105559,$p->get_gallery_image_ids(),true) ||
+             (int)$book->get_image_id()!==105559 || $book->get_regular_price()!=='2599000' ||
+             $book->get_stock_quantity()!==24)
+            throw new RuntimeException('105617_corrected_photo_price_and_warehouse_stock_not_verified');
+          $bookPlan=vesta_mhi_plan(105617,10755477);
+          if($bookPlan['total']!==1||$bookPlan['present']!==1||
+             $bookPlan['missing']||$bookPlan['reuse'])
+            throw new RuntimeException('book_photo_plan_should_be_fully_complete');
+          if(!function_exists('vesta_mhi_complete_draft'))
+            throw new RuntimeException('full_draft_enrichment_function_missing');
+          echo 'SELF_SERVICE_CORRECTED_BOOK_105617_PRICE_STOCK_PHOTO_VERIFIED=yes'.PHP_EOL;
           if(!function_exists('wp_safe_redirect'))throw new RuntimeException('wordpress_admin_http_missing');
           $livePhotos=vesta_mhi_photo_rows(10755477);
           if(count($livePhotos)!==1||(int)$livePhotos[0]['PictureId']!==1887347)
