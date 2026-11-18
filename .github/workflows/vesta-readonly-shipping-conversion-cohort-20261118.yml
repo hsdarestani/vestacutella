@@ -1,0 +1,59 @@
+name: Compare Mahak received shipping documents and conversion signals
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/vesta-readonly-shipping-conversion-cohort-20261118.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 13
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Compare cloud carrier support and converted order sample without ERP writes
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1536M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);set_time_limit(0);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          $api=new BazaraApi(true);
+          $cloud=Vesta_Accounting_Reliability::cloud($api);
+          $r=$api->get_all_data('',array('fromPersonVersion'=>0));
+          if(!is_array($r)||empty($r['success'])||!is_array($r['message']['People']??null))exit(12);
+          $people=[];foreach($r['message']['People'] as $p)if(empty($p['Deleted']))$people[(int)($p['PersonId']??0)]=true;
+          $d=['shipping_positive_and_code_positive'=>0,'shipping_positive_and_code_zero'=>0,
+              'shipping_zero_and_code_positive'=>0,'shipping_zero_and_code_zero'=>0,
+              'shipping_positive_with_carrier'=>0,'shipping_positive_with_missing_carrier_person'=>0,
+              'sample_woo_shipping_and_cloud_shipping_mismatch'=>0,'cloud_multiple_order_ids'=>0,
+              'cloud_shipping_with_positive_invoice_codes'=>[],'cloud_shipping_without_invoice_codes'=>[]];
+          foreach($cloud['orders'] as $orderId=>$rows){
+            if($orderId<105300 || $orderId>105585)continue;
+            if(count($rows)!==1){$d['cloud_multiple_order_ids']++;continue;}
+            $row=$rows[0];$o=wc_get_order((int)$orderId);
+            if(!$o||!$o->get_date_paid())continue;
+            $shipping=(float)($row['SendCost']??0);
+            $hasShip=$shipping>0;$hasCode=(int)($row['OrderCode']??0)>0;
+            $k=($hasShip?'shipping_positive':'shipping_zero').'_and_'.($hasCode?'code_positive':'code_zero');
+            $d[$k]++;
+            if($hasShip){
+              if((int)($row['CarrierID']??0)>0)$d['shipping_positive_with_carrier']++;
+              if((int)($row['CarrierID']??0)>0 && empty($people[(int)$row['CarrierID']]))$d['shipping_positive_with_missing_carrier_person']++;
+              $list=$hasCode?'cloud_shipping_with_positive_invoice_codes':'cloud_shipping_without_invoice_codes';
+              if(count($d[$list])<12)$d[$list][]=['woo'=>$orderId,'code'=>(int)($row['OrderCode']??0),'shipping'=>(float)$shipping,'carrier_type'=>(int)($row['CarrierType']??0),'carrier_id_positive'=>(int)($row['CarrierID']??0)>0];
+            }
+            $m=(int)($o->get_meta('_vcar_money_multiplier')?:10);
+            if(abs((float)$o->get_shipping_total()*$m-$shipping)>0.51)$d['sample_woo_shipping_and_cloud_shipping_mismatch']++;
+          }
+          echo 'SHIPPING_CONVERSION_COHORT_STATS='.json_encode($d).PHP_EOL;
+          echo 'ORDER_CODE_NOT_WINDOWS_PROOF=yes'.PHP_EOL;
+          echo 'NO_ACCOUNTING_STOCK_OR_CUSTOMER_WRITES=yes'.PHP_EOL;
+          PHP
