@@ -46,6 +46,10 @@ jobs:
           current=$(sha256sum "$vendor" | cut -d' ' -f1)
           test "$expected" = "$current"
           cp -p "$staged" "$vendor.new"
+          # mktemp produces mode 0600: PHP's www-data worker must be able to read
+          # the installed vendor class after atomic replacement.
+          chmod --reference="$backup/original.php" "$vendor.new"
+          test "$(stat -c '%a' "$vendor.new")" = "644"
           mv "$vendor.new" "$vendor"
           rm -f "$staged"
           if ! docker exec -i vc-vesta php -l < "$vendor";then
@@ -53,6 +57,9 @@ jobs:
              echo 'FALSE_ACK_VENDOR_ROLLBACK=yes'
              exit 28
           fi
+          docker exec vc-vesta sh -c 'su -s /bin/sh www-data -c "test -r /var/www/html/wp-content/plugins/bazara/classes/class.bazara.api.php"'
+          test "$(stat -c '%a' "$vendor")" = "644"
+          echo 'BAZARA_VENDOR_PHP_MODE_0644_APACHE_READBACK_VERIFIED=yes'
           echo 'PROTECTED_OUTBOX_FAKE_INVOICE_SENTINEL_FIXED=yes'
           REMOTE
       - name: Live read-back only; do not change any invoices or orders
