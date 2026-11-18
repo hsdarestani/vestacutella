@@ -1,0 +1,66 @@
+name: Vesta emergency fix wp-admin 500 by restoring readable Bazara PHP class permissions
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-restore-wp-admin-bazara-file-permission-20261118.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-bazara-class-file-mode-repair
+  cancel-in-progress: false
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Correct only mode 0600 to 0644 on existing PHP file with matching SHA checks
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          umask 077
+          exec 9>/run/lock/vesta-bazara-class-access-repair.lock
+          flock -n 9
+          file=/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara/classes/class.bazara.api.php
+          test -f "$file"
+          current=$(stat -c '%a' "$file")
+          test "$current" = '600'
+          test "$(stat -c '%u:%g' "$file")" = '0:0'
+          test "$(stat -c '%s' "$file")" = 198052
+          before=$(sha256sum "$file" | awk '{print $1}')
+          docker exec -i vc-vesta php -l < "$file"
+          echo 'BAZARA_VENDOR_EXACT_FILE_CHECKSUM_BEFORE='$before
+          chmod 0644 "$file"
+          test "$(stat -c '%a' "$file")" = '644'
+          test "$(sha256sum "$file" | awk '{print $1}')" = "$before"
+          docker exec vc-vesta sh -c 'test -r /var/www/html/wp-content/plugins/bazara/classes/class.bazara.api.php && su -s /bin/sh www-data -c "test -r /var/www/html/wp-content/plugins/bazara/classes/class.bazara.api.php"'
+          echo 'BAZARA_PHP_READABLE_BY_APACHE_WWWDATA=yes'
+          echo 'BAZARA_FILE_CONTENT_UNCHANGED_SHA256_VERIFIED=yes'
+          echo 'CHANGED_ONLY_BAZARA_FILE_PERMISSION_600_TO_644=yes'
+          REMOTE
+      - name: Verify live main store, login, admin redirect and AJAX are no longer HTTP500
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          for host in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
+            for path in / /wp-login.php /wp-admin/;do
+              code=$(curl -ksS --connect-timeout 6 --max-time 15 --resolve "$host:443:127.0.0.1" -o /dev/null -w '%{http_code}' "https://$host$path")
+              echo "WORDPRESS_RECOVERY_ENDPOINT host=$host path=$path http=$code"
+              if [ "$host" = vesta-cosmetics.ir ];then
+                if [ "$path" = /wp-admin/ ];then test "$code" = 302 -o "$code" = 301 -o "$code" = 200;else test "$code" = 200;fi
+              fi
+            done
+          done
+          test "$(curl -ksS --connect-timeout 6 --max-time 15 --resolve vesta-cosmetics.ir:443:127.0.0.1 -o /dev/null -w '%{http_code}' https://vesta-cosmetics.ir/wp-admin/admin-ajax.php)" = 400
+          echo 'WP_ADMIN_LOGIN_AND_AJAX_RECOVERY_CONFIRMED=yes'
+          echo 'NO_ORDERS_INVOICES_CUSTOMERS_OR_INVENTORY_CHANGED=yes'
+          REMOTE
