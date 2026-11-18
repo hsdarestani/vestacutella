@@ -37,6 +37,19 @@ FUNC=r"""function vms_verify_existing_link($woo_id, $code, $erp_product) {
     }
     return true;
 }
+function vms_block_unowned_canonical_code($code, $erp_product) {
+    if (!ctype_digit((string)$code)) return;
+    $original=get_post((int)$code);
+    if (!$original || $original->post_type!=='product' ||
+        $original->post_status!=='publish') return;
+    $norm=function($x){
+        $x=vms_normalize((string)$x);
+        $x=strtr($x,['آ'=>'ا']);
+        return preg_replace('/[^\p{L}\p{N}]+/u','',mb_strtolower($x,'UTF-8'));
+    };
+    if ($norm($original->post_title)===$norm($erp_product['Name']??''))
+        throw new RuntimeException('محصول اصلی در سایت وجود دارد ولی هنوز SKU محک به آن متصل نیست؛ پیش‌نویس دوم ساخته نمی‌شود.');
+}
 """
 def main():
     args=argparse.ArgumentParser()
@@ -60,7 +73,8 @@ def main():
     if ($woo_id) {
         vms_verify_existing_link($woo_id, $code, $p);
         return vms_public_result(array('status' => 'already_on_site', 'woo_id' => $woo_id));
-    }"""
+    }
+    vms_block_unowned_canonical_code($code, $p);"""
     if updated.count(before1)!=1:raise ValueError("initial existing Woo check drift")
     updated=updated.replace(before1,after1)
     before2="""        if ($woo_id) {
@@ -72,7 +86,7 @@ def main():
         } else {"""
     if updated.count(before2)!=1:raise ValueError("reserved Woo check drift")
     updated=updated.replace(before2,after2)
-    if updated.count(MARKER)!=1 or updated.count("vms_verify_existing_link($woo_id, $code, $p);")!=2:
+    if updated.count(MARKER)!=1 or updated.count("vms_verify_existing_link($woo_id, $code, $p);")!=2 or updated.count("vms_block_unowned_canonical_code($code, $p);")!=1:
         raise ValueError("invalid guard output")
     print("SOURCE_IMPORT_MATCH_SAFETY_PATCH_READY=yes")
     if not a.apply:
