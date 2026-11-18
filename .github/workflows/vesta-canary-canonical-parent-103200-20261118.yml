@@ -1,0 +1,79 @@
+name: Vesta one-product canonical SKU plus variant detail migration canary
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/vesta-canonical-catalog-reconcile-20261118.php
+      - .github/workflows/vesta-canary-canonical-parent-103200-20261118.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-reconcile-canonical-catalog
+  cancel-in-progress: false
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 19
+    steps:
+      - uses: actions/checkout@v4
+      - name: PHP linter and SSH helper
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq php-cli sshpass
+          php -l scripts/vesta-canonical-catalog-reconcile-20261118.php
+      - name: Protected single parent migration with backup and readback
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e scp -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            scripts/vesta-canonical-catalog-reconcile-20261118.php "root@$HOST:/tmp/vesta-canonical-catalog-reconcile-20261118.php"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          umask 077
+          exec 9>/run/lock/vesta-bazara-repair-full-catalog.lock
+          flock -n 9
+          backup=/srv/backups/vesta-canonical-103200-$(date -u +%Y%m%dT%H%M%SZ)
+          mkdir -m 0700 -p "$backup"
+          source=/tmp/vesta-canonical-catalog-reconcile-20261118.php
+          docker exec -i vc-vesta php -l < "$source"
+          timeout 240 docker exec -i -e VESTA_CATALOG_TARGET=103200 -e VESTA_CATALOG_BATCH=1 -e VESTA_CATALOG_COMMIT=no vc-vesta php -d display_errors=0 -d memory_limit=1536M < "$source" | tee "$backup/preflight.log"
+          grep -Fq 'CATALOG_CANONICAL_DRY_RUN_NO_CHANGES=yes' "$backup/preflight.log"
+          cat "$backup/preflight.log" >> /dev/null
+          eligible=$(grep -F 'VESTA_CANONICAL_CATALOG_PLAN=' "$backup/preflight.log" | tail -1 | sed 's/^VESTA_CANONICAL_CATALOG_PLAN=//' | python3 -c 'import sys,json; print(json.load(sys.stdin)["eligible"])')
+          echo 'CANARY_ELIGIBLE_COUNT='"$eligible"
+          if test "$eligible" != 1;then
+            echo 'CANARY_NOT_PROVEN_SAFE_NO_PRODUCT_MUTATIONS=yes';exit 0
+          fi
+          docker exec vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb-dump -uroot --single-transaction --quick "$MARIADB_DATABASE" wp_posts wp_postmeta wp_wc_product_meta_lookup' | gzip -1 > "$backup/pre-canonical-103200.sql.gz"
+          gzip -t "$backup/pre-canonical-103200.sql.gz"
+          (cd "$backup";sha256sum pre-canonical-103200.sql.gz > SHA256SUMS;sha256sum -c SHA256SUMS)
+          echo 'CANARY_DB_BACKUP_VERIFIED=yes'
+          timeout 240 docker exec -i -e VESTA_CATALOG_TARGET=103200 -e VESTA_CATALOG_BATCH=1 \
+            -e VESTA_CATALOG_COMMIT=yes -e VESTA_CATALOG_BACKUP_VERIFIED=yes \
+            vc-vesta php -d display_errors=0 -d memory_limit=1536M < "$source" | tee "$backup/commit.log"
+          grep -Fq 'CATALOG_CANONICAL_BATCH_DONE=1 NO_ORDER_PRICE_STOCK_IMAGE_REMOTE_WRITES=yes' "$backup/commit.log"
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1024M <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          $p=wc_get_product(103200);$draft=wc_get_product(103703);
+          if(!$p||!$draft||(string)get_post_meta(103200,'_sku',true)!=='103200' ||
+             (int)get_post_meta(103200,'mahak_id',true)!==10685134 ||
+             (string)get_post_meta(103703,'_sku',true)!=='')exit(61);
+          foreach([103201=>12183947,103202=>12183641,103203=>12183543,103204=>12183542] as $woo=>$detail)
+             if((int)get_post_meta($woo,'mahak_product_detail_id',true)!==$detail)exit(62);
+          $g=vesta_catalog_bazara_policy(['ProductCode'=>'103200','ProductId'=>10685134,
+            'name'=>'رژگونه پودري مهرونا Mehrona مدل Blush On(سري صورتي)','type'=>'variable','vars'=>[1]]);
+          if(empty($g['allow']))exit(63);
+          echo 'CANARY_ONE_MAIN_SKU_AND_ALL_FOUR_VARIATIONS_VERIFIED=yes'.PHP_EOL;
+          PHP
+          for host in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
+            code=$(curl --noproxy '*' -ksS --connect-timeout 8 --max-time 25 --resolve "$host:443:127.0.0.1" -o /dev/null -w '%{http_code}' "https://$host/")
+            echo "SITE=$host HTTP=$code";test "$code" = 200
+          done
+          echo 'CANARY_CORRECTED_103200_WITHOUT_REMOTE_INVOICE_OR_STOCK_WRITES=yes'
+          REMOTE
