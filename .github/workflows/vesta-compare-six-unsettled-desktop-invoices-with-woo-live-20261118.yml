@@ -1,0 +1,55 @@
+name: Vesta read only compare six unsettled desktop invoices 34 42 93 94 95 96 to Woo orders
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-compare-six-unsettled-desktop-invoices-with-woo-live-20261118.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Find candidate Woo orders with same recorded receipt and invoice totals, no writes or personal data
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1536M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);set_time_limit(0);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $targets=['34'=>[1099000,6049000],'42'=>[1546000,2287000],'93'=>[1239000],'94'=>[749000],'95'=>[645000],'96'=>[450000]];
+          $api=new BazaraApi(true);$cloud=Vesta_Accounting_Reliability::cloud($api);
+          $map=[];
+          foreach($targets as $desktopNo=>$numbers){
+            $candidates=[];
+            foreach($numbers as $sum){
+              $ids=$wpdb->get_col($wpdb->prepare("SELECT p.ID FROM {$wpdb->posts} p
+                JOIN {$wpdb->postmeta} m ON m.post_id=p.ID AND m.meta_key='_order_total'
+                WHERE p.post_type='shop_order' AND p.post_date >= '2026-11-01'
+                  AND ABS(CAST(m.meta_value AS DECIMAL(18,2))-%f)<0.01 ORDER BY p.ID DESC LIMIT 80",$sum));
+              foreach($ids as $id){
+                $o=wc_get_order((int)$id);if(!$o)continue;
+                $matches=$cloud['orders'][(int)$id]??[];
+                $q=$wpdb->get_row($wpdb->prepare("SELECT state,reason,remote_id FROM ".Vesta_Accounting_Reliability::table()." WHERE order_id=%d",(int)$id),ARRAY_A);
+                $candidates[]=[
+                  'woo_id'=>(int)$id,'woo_total'=>(float)$o->get_total(),
+                  'created_date'=>$o->get_date_created()?$o->get_date_created()->date('Y-m-d'):null,
+                  'paid'=>!!$o->get_date_paid(),'status'=>$o->get_status(),
+                  'shipping'=>(float)$o->get_shipping_total(),'discount'=>(float)$o->get_discount_total(),
+                  'outbox'=>$q['state']??null,'remote_count'=>count($matches),
+                  'remote_invoice_ids'=>array_map(fn($x)=>(int)$x['OrderId'],$matches),
+                  'customer_id'=>(int)$o->get_customer_id()
+                ];
+              }
+            }
+            $map[$desktopNo]=$candidates;
+          }
+          echo 'SIX_DESKTOP_INVOICE_TO_WOO_AMOUNT_CANDIDATES='.json_encode($map,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'NO_ORDER_CUSTOMER_INVOICE_STOCK_OR_PERSON_MUTATIONS=yes'.PHP_EOL;
+          PHP
