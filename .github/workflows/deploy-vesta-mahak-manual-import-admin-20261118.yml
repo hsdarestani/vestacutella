@@ -1,0 +1,84 @@
+name: Deploy guarded Vesta Mahak self-service product and photo importer
+on:
+  push:
+    branches: [main]
+    paths:
+      - infra/plugins/vesta-accounting-reliability/vesta-mahak-manual-import-admin.php
+      - .github/workflows/deploy-vesta-mahak-manual-import-admin-20261118.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-mahak-self-service-import-production
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate PHP syntax
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq php-cli sshpass
+          php -l infra/plugins/vesta-accounting-reliability/vesta-mahak-manual-import-admin.php
+      - name: Backup and deploy isolated administrator tool (no product or ERP writes)
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e scp -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            infra/plugins/vesta-accounting-reliability/vesta-mahak-manual-import-admin.php \
+            "root@$HOST:/tmp/vesta-mahak-manual-import-admin.php"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          umask 077
+          exec 9>/run/lock/vesta-mhi-admin-deploy.lock
+          flock -n 9
+          dir=/srv/vestacutella/runtime/vesta/wp-content/mu-plugins
+          target="$dir/vesta-mahak-manual-import-admin.php"
+          source=/tmp/vesta-mahak-manual-import-admin.php
+          backup=/srv/backups/vesta-mahak-manual-import-admin-$(date -u +%Y%m%dT%H%M%SZ)
+          mkdir -p -m 0700 "$backup"
+          test -s "$source"
+          test -s "$dir/vesta-mahak-site-import.php"
+          test -s "$dir/vesta-image-sync-safety.php"
+          test -s "$dir/vesta-mahak-product-bridge.php"
+          if test -f "$target";then cp -p "$target" "$backup/previous.php"; fi
+          docker exec -i vc-vesta php -l < "$source"
+          cp "$source" "$dir/.vesta-mahak-manual-import-admin.php.next"
+          chmod 0644 "$dir/.vesta-mahak-manual-import-admin.php.next"
+          chown --reference="$dir/vesta-mahak-site-import.php" "$dir/.vesta-mahak-manual-import-admin.php.next"
+          mv "$dir/.vesta-mahak-manual-import-admin.php.next" "$target"
+          rollback() {
+            echo 'MANUAL_IMPORT_HEALTH_FAILED_ROLLBACK=yes'
+            if test -f "$backup/previous.php";then cp -p "$backup/previous.php" "$target";else rm -f "$target";fi
+          }
+          trap rollback ERR
+          docker exec vc-vesta php -l /var/www/html/wp-content/mu-plugins/vesta-mahak-manual-import-admin.php
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=768M <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          if(!function_exists('vesta_mhi_ready')||!vesta_mhi_ready())throw new RuntimeException('admin_import_prerequisites_not_verified');
+          if(!function_exists('vesta_mhi_plan'))throw new RuntimeException('image_plan_not_loaded');
+          $r=vms_search(['query'=>'103201']);
+          if(!is_array($r)||empty($r['items']))throw new RuntimeException('existing_catalog_search_failed');
+          $plan=vesta_mhi_plan(103201,10755477);
+          if($plan['total']<1||$plan['present']<1)throw new RuntimeException('existing_photo_canary_not_verified');
+          if(!function_exists('wp_safe_redirect'))throw new RuntimeException('wordpress_admin_http_missing');
+          echo 'SELF_SERVICE_SEARCH_READY=yes'.PHP_EOL;
+          echo 'SELF_SERVICE_CANARY_PHOTO_ALREADY_PRESENT=yes'.PHP_EOL;
+          echo 'SELF_SERVICE_PENDING_PHOTOS='.(int)count($plan['missing']).PHP_EOL;
+          echo 'SELF_SERVICE_ADMIN_TOOL_DEPLOY_NO_CATALOG_OR_FINANCIAL_WRITES=yes'.PHP_EOL;
+          PHP
+          for host in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
+            status=$(curl --noproxy '*' -ksS --connect-timeout 8 --max-time 25 --resolve "$host:443:127.0.0.1" -o /dev/null -w '%{http_code}' "https://$host/")
+            echo "SITE=$host HTTP=$status"
+            test "$status" = 200
+          done
+          trap - ERR
+          echo 'MAHAK_SELF_SERVICE_ADMIN_DEPLOY_SUCCESS=yes'
+          REMOTE
