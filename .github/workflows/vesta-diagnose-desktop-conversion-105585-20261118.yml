@@ -1,0 +1,73 @@
+name: Vesta diagnose desktop conversion blockers for paid Woo 105585 read-only
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-diagnose-desktop-conversion-105585-20261118.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnostic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Compare exact Cloud invoice person ERP goods and Woo records without writes
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1536M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);set_time_limit(0);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';
+          $_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $id=105585;$o=wc_get_order($id);
+          if(!$o){echo 'ORDER_MISSING=yes'.PHP_EOL;exit(12);}
+          $api=new BazaraApi(true);$cloud=Vesta_Accounting_Reliability::cloud($api);
+          $rows=$cloud['orders'][$id]??[];
+          $r=count($rows)===1?$rows[0]:null;
+          $erp=$r?(int)$r['OrderId']:0;
+          $lines=$erp?($cloud['details'][$erp]??[]):[];
+          $receipts=$erp?($cloud['receipts'][$erp]??[]):[];
+          $s=get_option('bazara_visitor_settings',[]);
+          $bank=vcar_bank($s,$o->get_payment_method());
+          $identity=$r?vcar_identity_guard($o,(int)($r['PersonId']??0)):'no_remote_invoice';
+          $finance=$r?vcar_verify($o,$r,$lines,$receipts,$bank,$cloud['transfers'],(int)($o->get_meta('_vcar_money_multiplier')?:10)):'no_remote_invoice';
+          $localInvoice=(int)$o->get_meta('mahak_id');
+          $v=['order_id'=>$id,'woo_paid'=>!!$o->get_date_paid(),
+             'cloud_invoice_count'=>count($rows),'woo_local_invoice_id'=>$localInvoice,
+             'cloud_invoice_id'=>$erp,'cloud_order_code'=>$r?(int)($r['OrderCode']??0):null,
+             'cloud_invoice_person_id'=>$r?(int)($r['PersonId']??0):0,
+             'cloud_invoice_detail_count'=>count($lines),'cloud_receipt_count'=>count($receipts),
+             'cloud_financial_check'=>$finance?:'PASS','cloud_customer_identity_check'=>$identity?:'PASS',
+             'order_total_toman'=>(float)$o->get_total(),'shipping_toman'=>(float)$o->get_shipping_total(),
+             'discount_toman'=>(float)$o->get_discount_total(),
+             'outbox'=>$wpdb->get_row($wpdb->prepare('SELECT state,reason,remote_id,attempts FROM '.Vesta_Accounting_Reliability::table().' WHERE order_id=%d',$id),ARRAY_A)];
+          $products=[];$matched=0;
+          foreach($o->get_items('line_item') as $item){
+            $vid=(int)($item->get_variation_id()?:$item->get_product_id());$p=wc_get_product($vid);
+            $pid=(int)get_post_meta($vid,'mahak_id',true);
+            $did=(int)get_post_meta($vid,'mahak_product_detail_id',true);
+            $good=$pid?$wpdb->get_row($wpdb->prepare("SELECT ProductCode,Deleted FROM {$wpdb->prefix}bazara_products WHERE ProductId=%d",$pid),ARRAY_A):null;
+            $detail=$did?$wpdb->get_row($wpdb->prepare("SELECT ProductId,Deleted,Properties FROM {$wpdb->prefix}bazara_product_details WHERE ProductDetailId=%d",$did),ARRAY_A):null;
+            $cloudLineMatch=0;foreach($lines as $line){if((int)($line['ProductDetailId']??0)===$did)$cloudLineMatch++;}
+            $products[]=['woo_product_or_variation'=>$vid,'sku'=>$p?(string)$p->get_sku():'',
+              'quantity'=>(int)$item->get_quantity(),'mahak_product_id'=>$pid,'mahak_detail_id'=>$did,
+              'product_code'=>$good?(string)$good['ProductCode']:'',
+              'erp_product_cache_active'=>$good&&!$good['Deleted'],
+              'erp_detail_cache_active'=>$detail&&!$detail['Deleted'],
+              'erp_detail_belongs_to_product'=>$detail&&(int)$detail['ProductId']===$pid,
+              'matching_cloud_order_detail_lines'=>$cloudLineMatch,
+              'woo_line_net_toman'=>(float)$item->get_total()];
+          }
+          $vendor=$wpdb->get_results($wpdb->prepare("SELECT OrderId,OrderClientId,PersonId,SendCost,Discount FROM {$wpdb->prefix}bazara_orders WHERE OrderClientId=%d OR OrderId=%d LIMIT 5",$id,$erp),ARRAY_A);
+          $v['cached_vendor_invoice_matches']=count($vendor);
+          $v['cached_vendor_invoice_exact_id_match']=count(array_filter((array)$vendor,fn($x)=>(int)$x['OrderId']===$erp && (int)$x['OrderClientId']===$id));
+          $v['product_lines']=$products;
+          echo 'DESKTOP_CONVERSION_PREFLIGHT_105585='.json_encode($v,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'READ_ONLY_CLOUD_CANNOT_CONFIRM_WINDOWS_RECEIPT_OR_F3_STATUS=yes'.PHP_EOL;
+          PHP
