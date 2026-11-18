@@ -1,0 +1,51 @@
+name: Vesta investigate uncertain sent orders and locally acknowledged invoices against entire Mahak Cloud IDs
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-20261118-reconcile-uncertain-against-entire-cloud-id-ledger.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  investigate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 13
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Search exact remote OrderId and source Woo order ID without any re-sending
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1536M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);set_time_limit(0);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $api=new BazaraApi(true);$cloud=Vesta_Accounting_Reliability::cloud($api);
+          $flat=[];$byId=[];foreach($cloud['orders'] as $rows)foreach($rows as $r){$flat[]=$r;$byId[(int)$r['OrderId']]=$r;}
+          $target=[105540,105535,105482,105419,105369,105208,105052];$out=[];
+          foreach($target as $id){
+            $o=wc_get_order($id);if(!$o)continue;
+            $s=$wpdb->get_row($wpdb->prepare("SELECT state,reason,attempts,submitted_at,remote_id FROM ".Vesta_Accounting_Reliability::table()." WHERE order_id=%d",$id),ARRAY_A);
+            $stored=(int)$o->get_meta('mahak_id');
+            $byLocal=$stored>0?$byId[$stored]??null:null;
+            $matches=[];foreach($flat as $r){
+              $cid=(int)($r['OrderClientId']??0);
+              if($cid===$id)$matches[]=$r;
+            }
+            $cached=$wpdb->get_results($wpdb->prepare("SELECT OrderId,OrderClientId,PersonId,SendCost,Discount FROM {$wpdb->prefix}bazara_orders WHERE OrderClientId=%d OR OrderId=%d LIMIT 20",$id,$stored),ARRAY_A);
+            $out[]=['order'=>$id,'local_id'=>$stored,'outbox_remote'=>(int)($s['remote_id']??0),'state'=>$s['state']??'',
+              'ever_submitted'=>(int)($s['submitted_at']??0)>0,'attempts'=>(int)($s['attempts']??0),
+              'exact_remote_id_exists'=>!!$byLocal,
+              'remote_local_id_client_matches'=>(bool)$byLocal && (int)$byLocal['OrderClientId']===$id,
+              'remote_local_id_actual_client'=>$byLocal?(int)$byLocal['OrderClientId']:0,
+              'all_remote_order_client_id_matches'=>count($matches),
+              'remote_client_match_invoice_ids'=>array_map(fn($x)=>(int)$x['OrderId'],$matches),
+              'vendor_cached_orders'=>$cached];
+          }
+          echo 'PENDING_REMOTE_ACK_LEDGER_CORRELATION='.json_encode($out,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'NO_NEW_INVOICE_NO_STOCK_NO_CLIENT_DATA_WRITES=yes'.PHP_EOL;
+          PHP
