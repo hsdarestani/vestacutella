@@ -1,0 +1,112 @@
+name: Vesta preflight whole catalog draft-to-live parent and detail migrations
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-catalog-canonical-migration-readiness-20261118.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 17
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Determine fully verifiable parent/variation migrations without changes
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1536M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);set_time_limit(0);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $cat=vmb_catalog(vmb_api());
+          $goods=[];$details=[];
+          foreach($cat['Products']??[] as $g)if(empty($g['Deleted']))$goods[(string)$g['ProductCode']]=$g;
+          foreach($cat['ProductDetails']??[] as $d)if(empty($d['Deleted']))$details[(int)$d['ProductId']][]=$d;
+          $raw=$wpdb->get_results("SELECT p.ID,p.post_status,p.post_type,m.meta_value AS sku
+                FROM {$wpdb->posts} p JOIN {$wpdb->postmeta} m ON p.ID=m.post_id AND m.meta_key='_sku'
+                WHERE p.post_type IN ('product','product_variation') AND p.post_status IN ('publish','draft','private')
+                AND m.meta_value<>''",ARRAY_A);
+          $owners=[];foreach($raw as $w)$owners[(string)$w['sku']][]=$w;
+          $norm=function($v){$v=rawurldecode((string)$v);$v=strtr($v,['ي'=>'ی','ك'=>'ک','آ'=>'ا','‌'=>' ','۰'=>'0','۱'=>'1','۲'=>'2','۳'=>'3','۴'=>'4','۵'=>'5','۶'=>'6','۷'=>'7','۸'=>'8','۹'=>'9']);return preg_replace('/[^\p{L}\p{N}]+/u','',mb_strtolower($v,'UTF-8'));};
+          $stats=['candidate_canonical_parent_and_draft'=>0,'valid_one_parent_variation_map'=>0,
+            'missing_or_ambiguous_parent_variations'=>0,'duplicate_variation_detail_match'=>0,'missing_draft_child_property_ids'=>0,
+            'draft_sku_owner_conflict'=>0,'draft_historical_order_refs'=>0,'correctable_wrong_variant_links'=>0,
+            'possible_sku_collision_in_live_variants'=>0,'draft_has_unknown_live_metadata'=>0,
+            'fully_matchable_examples'=>[],'ambiguous_examples'=>[]];
+          foreach($goods as $code=>$good){
+            if(!ctype_digit($code)||count($owners[$code]??[])!==1)continue;
+            $draftInfo=$owners[$code][0];
+            if($draftInfo['post_type']!=='product'||$draftInfo['post_status']!=='draft')continue;
+            $pid=(int)$code;$p=get_post($pid);$draftId=(int)$draftInfo['ID'];
+            if(!$p ||$p->post_type!=='product'||$p->post_status!=='publish'||$pid===$draftId ||
+               $norm($p->post_title)!==$norm($good['Name']) ||
+               $norm(get_the_title($draftId))!==$norm($good['Name']))continue;
+            $stats['candidate_canonical_parent_and_draft']++;
+            $live=wc_get_product($pid);$draft=wc_get_product($draftId);
+            if(!$live||!$draft||!$live->is_type('variable')||!$draft->is_type('variable')) {
+               $stats['draft_has_unknown_live_metadata']++;continue;
+            }
+            $e=(int)$good['ProductId'];$ds=$details[$e]??[];
+            $source=[];
+            foreach($ds as $d){
+                $properties=json_decode((string)($d['Properties']??''),true);
+                $vals=[];foreach(is_array($properties)?$properties:[] as $v)if(is_array($v)&&isset($v['V'])&&trim((string)$v['V'])!=='')$vals[]=$norm($v['V']);
+                if(count($vals)!==1||!$vals[0])continue;
+                $source[$vals[0]][]=(int)$d['ProductDetailId'];
+            }
+            $map=[];$issues=[];$collision=0;$wrong=0;
+            foreach($live->get_children() as $cid){
+                $v=wc_get_product((int)$cid);if(!$v)continue;
+                $attrs=$v->get_variation_attributes();
+                if(count($attrs)!==1){$issues[]='multidimensional_variant';continue;}
+                $value=$norm(reset($attrs));
+                $hits=$source[$value]??[];
+                if(count($hits)!==1){$issues[]='variation_detail_not_unique';continue;}
+                $did=$hits[0];$map[$cid]=$did;
+                $old=(int)$v->get_meta('mahak_product_detail_id',true);
+                if($old>0&&$old!==$did)$wrong++;
+                $sku=(string)get_post_meta((int)$cid,'_sku',true);
+                if($sku!=='' && isset($goods[$sku]) && (int)$goods[$sku]['ProductId']!==$e)$collision++;
+            }
+            if(count(array_unique(array_values($map)))!==count($map)){$issues[]='duplicate_detail';$stats['duplicate_variation_detail_match']++;}
+            if(count($map)!==count($live->get_children()))$stats['missing_or_ambiguous_parent_variations']++;
+            $draftChildren=$draft->get_children();$draftDetails=[];$draftProperties=[];
+            foreach($draftChildren as $cid){
+              $v=wc_get_product($cid);if(!$v)continue;
+              $did=(int)$v->get_meta('mahak_product_detail_id',true);
+              $prop=(int)$v->get_meta('prop_id',true);
+              if($did>0)$draftDetails[$did][]=['woo'=>$cid,'prop'=>$prop];
+            }
+            foreach($map as $cid=>$did){
+                if(count($draftDetails[$did]??[])!==1 ||
+                   (int)($draftDetails[$did][0]['prop']??0)<=0){
+                   $stats['missing_draft_child_property_ids']++;$issues[]='draft_prop_link_missing';break;
+                }
+            }
+            // Batch count only for representative small groups, no mutation.
+            $references=0;
+            foreach(array_merge([$draftId],$draftChildren) as $wid){
+               $references+=(int)$wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM {$wpdb->prefix}woocommerce_order_itemmeta
+                   WHERE meta_key IN ('_product_id','_variation_id') AND meta_value=%s",(string)$wid));
+            }
+            if($references>0){$issues[]='draft_historical_orders';$stats['draft_historical_order_refs']++;}
+            if($issues){
+              if(count($stats['ambiguous_examples'])<16)
+                $stats['ambiguous_examples'][]=['code'=>$code,'reason'=>array_values(array_unique($issues)),
+                'published_woo'=>$pid,'draft_woo'=>$draftId,'active_variations'=>count($live->get_children()),'exact_matches'=>count($map),'old_wrong_links'=>$wrong];
+            }else{
+              $stats['valid_one_parent_variation_map']++;$stats['correctable_wrong_variant_links']+=$wrong;
+              if(count($stats['fully_matchable_examples'])<12)
+                 $stats['fully_matchable_examples'][]=['code'=>$code,'published_woo'=>$pid,'draft_woo'=>$draftId,
+                 'details'=>count($ds),'variations'=>count($map),'mismapped'=>$wrong,'sku_collisions'=>$collision];
+            }
+            $stats['possible_sku_collision_in_live_variants']+=$collision;
+          }
+          echo 'VESTA_CATALOG_MIGRATION_READINESS='.json_encode($stats,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'CATALOG_MIGRATION_PREFLIGHT_NO_CHANGES=yes'.PHP_EOL;
+          PHP
