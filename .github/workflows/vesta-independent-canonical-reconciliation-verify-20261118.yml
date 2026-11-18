@@ -1,0 +1,85 @@
+name: Vesta independent production readback of all canonical Mahak catalog reconciliations
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-independent-canonical-reconciliation-verify-20261118.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 14
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read-only verify migrated SKU owner, child detail IDs and draft quarantines
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1536M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);set_time_limit(0);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $cat=vmb_catalog(vmb_api());
+          $byCode=[];$detailOwner=[];
+          foreach($cat['Products']??[] as $p)if(empty($p['Deleted']))
+            $byCode[(string)($p['ProductCode']??'')]=$p;
+          foreach($cat['ProductDetails']??[] as $d)if(empty($d['Deleted']))
+            $detailOwner[(int)($d['ProductDetailId']??0)]=(int)($d['ProductId']??0);
+          $records=$wpdb->get_results("SELECT option_name FROM {$wpdb->options}
+            WHERE option_name LIKE 'vesta_catalog_reconciled_%'",ARRAY_A);
+          $failures=[];$groups=0;$variations=0;$allGood=true;
+          foreach($records as $row){
+            $j=get_option($row['option_name'],null);
+            if(!is_array($j)||empty($j['code'])||empty($j['erp_id'])||empty($j['draft_parent']))continue;
+            $code=(string)$j['code'];$id=(int)$j['erp_id'];$draft=(int)$j['draft_parent'];
+            $p=wc_get_product((int)$code);$d=wc_get_product($draft);
+            $err=[];
+            if(!$p||!$d||$p->get_status()!=='publish'||$d->get_status()!=='draft')$err[]='status';
+            if((string)get_post_meta((int)$code,'_sku',true)!==$code)$err[]='main_sku';
+            if((int)get_post_meta((int)$code,'mahak_id',true)!==$id)$err[]='main_good_id';
+            if((string)get_post_meta($draft,'_sku',true)!=='')$err[]='old_draft_sku';
+            if((int)get_post_meta($draft,'mahak_id',true)!==0)$err[]='old_draft_erp';
+            if(!isset($byCode[$code])||(int)$byCode[$code]['ProductId']!==$id)$err[]='cloud_good';
+            foreach($j['variants']??[] as $vid=>$v){
+              $variations++;
+              $vobj=wc_get_product((int)$vid);
+              if(!$vobj || (int)$vobj->get_parent_id()!==(int)$code){$err[]='variant_parent';continue;}
+              $did=(int)($v['detail']??0);
+              if($did<=0 || ($detailOwner[$did]??0)!==$id ||
+                  (int)get_post_meta((int)$vid,'mahak_product_detail_id',true)!==$did ||
+                  (int)get_post_meta((int)$vid,'mahak_id',true)!==$id ||
+                  (int)get_post_meta((int)$vid,'prop_id',true)!==(int)($v['prop']??0))$err[]='variant_detail';
+            }
+            if($err&&count($failures)<24)$failures[]=['code'=>$code,'issues'=>array_values(array_unique($err))];
+            $groups++;
+          }
+          $wrong=0;$publishedOwner=0;$draftOwner=0;$noOwner=0;
+          $bySku=[];
+          foreach($wpdb->get_results("SELECT p.ID,p.post_status,p.post_type,m.meta_value code FROM {$wpdb->posts} p
+             JOIN {$wpdb->postmeta} m ON m.post_id=p.ID AND m.meta_key='_sku'
+             WHERE p.post_type IN ('product','product_variation') AND p.post_status IN ('publish','draft','private')
+               AND m.meta_value<>''",ARRAY_A) as $row)$bySku[(string)$row['code']][]=$row;
+          $duplicate=0;
+          foreach($byCode as $code=>$p){
+            $hits=$bySku[$code]??[];
+            if(count($hits)>1){$duplicate++;continue;}
+            if(count($hits)===0){$noOwner++;continue;}
+            if($hits[0]['post_status']==='publish'&&$hits[0]['post_type']==='product')$publishedOwner++;
+            elseif($hits[0]['post_status']==='draft')$draftOwner++;
+          }
+          $s=['migrated_groups_verified'=>$groups,'variation_detail_links_verified'=>$variations,
+              'migrated_group_failures'=>$failures,'live_catalog_published_main_sku_owners'=>$publishedOwner,
+              'live_catalog_draft_sku_owners'=>$draftOwner,'live_catalog_missing_sku_owners'=>$noOwner,
+              'raw_duplicate_sku_cloud_codes'=>$duplicate,'active_cloud_goods'=>count($byCode),
+              'mehrona_main_sku'=>(string)get_post_meta(103200,'_sku',true),
+              'mehrona_original_gallery_unchanged'=>in_array(105559, wc_get_product(103201)->get_gallery_image_ids(),true)];
+          echo 'CANONICAL_SITEWIDE_INDEPENDENT_READBACK='.json_encode($s,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          if($groups<130||count($failures)>0||$duplicate>0)exit(31);
+          echo 'CANONICAL_INDEPENDENT_VERIFY_PASS=yes'.PHP_EOL;
+          echo 'READ_ONLY_NO_PRODUCT_PRICE_STOCK_IMAGE_OR_ORDER_WRITES=yes'.PHP_EOL;
+          PHP
