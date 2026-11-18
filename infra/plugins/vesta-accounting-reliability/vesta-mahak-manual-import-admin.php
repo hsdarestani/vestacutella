@@ -17,6 +17,28 @@ function vesta_mhi_code($value) {
         throw new InvalidArgumentException('کد محصول محک نامعتبر است.');
     return $code;
 }
+/** Per-request, read-only catalogue memoization; no cross-request stale ERP data. */
+function vesta_mhi_catalog() {
+    static $catalog=null;
+    if($catalog===null)$catalog=vmb_catalog(vmb_api());
+    return $catalog;
+}
+/** Per-request photo ledger memoization avoids repeated expensive full cloud reads. */
+function vesta_mhi_cloud_photo_ledger() {
+    static $ledger=null;
+    if($ledger!==null)return $ledger;
+    if(!function_exists('vmb_api'))throw new RuntimeException('اتصال محک ابری فعال نیست.');
+    $response=vmb_api()->get_all_data('',[
+      'fromPictureVersion'=>0,'fromPhotoGalleryVersion'=>0
+    ]);
+    if(!is_array($response)||empty($response['success'])||
+       !is_array($response['message']??null)||
+       !is_array($response['message']['Pictures']??null)||
+       !is_array($response['message']['PhotoGalleries']??null))
+       throw new RuntimeException('دریافت فهرست تصاویر محک ناموفق بود؛ تصاویر سایت بدون تغییر باقی ماندند.');
+    $ledger=$response['message'];
+    return $ledger;
+}
 function vesta_mhi_name_compatible($woo_name,$erp_name) {
     // Fail closed on conflicting identities. Translation and variant naming can legitimately differ:
     // such cases require a reviewed explicit link, never automatic photo attachment.
@@ -33,8 +55,9 @@ function vesta_mhi_identity_guard($woo_id,$erp_id,$expected_code='') {
         throw new RuntimeException('شناسه داخلی محصول سایت با شناسه محک تطابق ندارد.');
     if (!function_exists('vmb_catalog')||!function_exists('vmb_api'))
         throw new RuntimeException('بررسی هویت کالا در محک در دسترس نیست.');
+    $catalog=vesta_mhi_catalog();
     $source=null;
-    foreach (vmb_catalog(vmb_api())['Products']??[] as $row) {
+    foreach ($catalog['Products']??[] as $row) {
         if (empty($row['Deleted']) && (int)($row['ProductId']??0)===$erp_id) {
             if ($source!==null) throw new RuntimeException('شناسه محصول محک تکراری است.');
             $source=$row;
@@ -61,7 +84,6 @@ function vesta_mhi_identity_guard($woo_id,$erp_id,$expected_code='') {
     if (!vesta_mhi_name_compatible($p->get_name(),$source['Name']??'')) {
         throw new RuntimeException('تعارض هویت محصول: نام کالای محک با نام محصول سایت متفاوت است. انتقال عکس متوقف شد؛ اتصال شناسه‌ها باید بررسی شود.');
     }
-    $catalog=vmb_catalog(vmb_api());
     $detailIds=[];
     foreach ((array)($catalog['ProductDetails']??[]) as $d)
         if (empty($d['Deleted'])&&(int)($d['ProductId']??0)===$erp_id)
@@ -92,7 +114,7 @@ function vesta_mhi_complete_draft($woo_id,$erp_id) {
     $source=vesta_mhi_identity_guard($woo_id,$erp_id);
     if ($p->get_sku()!==(string)($source['ProductCode']??''))
         throw new RuntimeException('کد SKU با محصول محک یکسان نیست؛ تکمیل متوقف شد.');
-    $catalog=vmb_catalog(vmb_api());$details=[];
+    $catalog=vesta_mhi_catalog();$details=[];
     foreach ((array)($catalog['ProductDetails']??[]) as $d)
         if(empty($d['Deleted'])&&(int)($d['ProductId']??0)===$erp_id)$details[]=$d;
     if(count($details)!==1 ||
@@ -155,16 +177,7 @@ function vesta_mhi_photo_rows($erp_id) {
     if ($erp_id<=0) throw new InvalidArgumentException('شناسه محک نامعتبر است.');
     // Always request the live Mahak Cloud picture ledger when the merchant clicks.
     // Local Bazara cache may lag after a new upload in Mahak Windows.
-    if (!function_exists('vmb_api')) throw new RuntimeException('اتصال محک ابری فعال نیست.');
-    $response=vmb_api()->get_all_data('',[
-      'fromPictureVersion'=>0,'fromPhotoGalleryVersion'=>0
-    ]);
-    if (!is_array($response)||empty($response['success'])||
-        !is_array($response['message']??null)||
-        !is_array($response['message']['Pictures']??null)||
-        !is_array($response['message']['PhotoGalleries']??null))
-        throw new RuntimeException('فهرست جدید عکس‌های محک دریافت نشد؛ بدون تغییر در تصاویر سایت متوقف شد.');
-    $ledger=$response['message'];
+    $ledger=vesta_mhi_cloud_photo_ledger();
     $pictures=[];
     foreach ($ledger['Pictures'] as $row) {
         if (!is_array($row)||!empty($row['Deleted'])) continue;
