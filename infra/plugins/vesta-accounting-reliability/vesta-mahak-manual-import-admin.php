@@ -41,26 +41,62 @@ function vesta_mhi_identity_guard($woo_id,$erp_id,$expected_code='') {
         }
     }
     if (!$source) throw new RuntimeException('کالای متناظر در خروجی فعلی محک وجود ندارد.');
+    // A Mahak good with variants must be represented by its main Woo product.
+    // A variation-level SKU is NOT a stable Mahak parent ProductCode.
+    if ($p->is_type('variation'))
+        throw new RuntimeException('عکس‌های کالای دارای تنوع باید به محصول مادر وارد شوند؛ تنوع با شناسه محصول مستقل محک همگام نمی‌شود.');
     if ($expected_code!=='' && (string)($source['ProductCode']??'')!==$expected_code)
         throw new RuntimeException('کد کالای محک با نتیجه جست‌وجو متفاوت است.');
     if (!vesta_mhi_name_compatible($p->get_name(),$source['Name']??'')) {
         throw new RuntimeException('تعارض هویت محصول: نام کالای محک با نام محصول سایت متفاوت است. انتقال عکس متوقف شد؛ اتصال شناسه‌ها باید بررسی شود.');
     }
+    $catalog=vmb_catalog(vmb_api());
+    $detailIds=[];
+    foreach ((array)($catalog['ProductDetails']??[]) as $d)
+        if (empty($d['Deleted'])&&(int)($d['ProductId']??0)===$erp_id)
+            $detailIds[]=(int)($d['ProductDetailId']??0);
+    if (!$detailIds) throw new RuntimeException('محک برای این کالا هیچ ردیف جزئیات فعال ندارد.');
+    if ($p->is_type('simple')) {
+        if (count($detailIds)!==1 ||
+            (int)$p->get_meta('mahak_product_detail_id',true)!==$detailIds[0])
+            throw new RuntimeException('شناسه جزئیات محصول ساده با محک تطابق ندارد.');
+    } elseif (!$p->is_type('variable')) {
+        throw new RuntimeException('نوع این محصول برای انتقال خودکار عکس پشتیبانی نشده است.');
+    }
     return $source;
 }
 function vesta_mhi_photo_rows($erp_id) {
-    global $wpdb;
     if ($erp_id<=0) throw new InvalidArgumentException('شناسه محک نامعتبر است.');
-    $pt=$wpdb->prefix.'bazara_pictures';
-    $gt=$wpdb->prefix.'bazara_photo_gallery';
-    // ItemCode references the ERP ProductId (not Woo ID or ProductCode).
-    $query=$wpdb->prepare(
-        "SELECT DISTINCT p.PictureId,p.Url FROM $pt p INNER JOIN $gt g ON g.PictureId=p.PictureId
-         WHERE g.ItemCode=%d AND g.Deleted=0 AND p.Deleted=0
-         ORDER BY p.PictureId ASC LIMIT 20", $erp_id);
-    $rows=$wpdb->get_results($query,ARRAY_A);
-    if (!is_array($rows)) throw new RuntimeException('خطا در فهرست تصاویر بازارا.');
-    return $rows;
+    // Always request the live Mahak Cloud picture ledger when the merchant clicks.
+    // Local Bazara cache may lag after a new upload in Mahak Windows.
+    if (!function_exists('vmb_api')) throw new RuntimeException('اتصال محک ابری فعال نیست.');
+    $response=vmb_api()->get_all_data('',[
+      'fromPictureVersion'=>0,'fromPhotoGalleryVersion'=>0
+    ]);
+    if (!is_array($response)||empty($response['success'])||
+        !is_array($response['message']??null)||
+        !is_array($response['message']['Pictures']??null)||
+        !is_array($response['message']['PhotoGalleries']??null))
+        throw new RuntimeException('فهرست جدید عکس‌های محک دریافت نشد؛ بدون تغییر در تصاویر سایت متوقف شد.');
+    $ledger=$response['message'];
+    $pictures=[];
+    foreach ($ledger['Pictures'] as $row) {
+        if (!is_array($row)||!empty($row['Deleted'])) continue;
+        $id=(int)($row['PictureId']??0);
+        if ($id>0) $pictures[$id]=['PictureId'=>$id,'Url'=>(string)($row['Url']??'')];
+    }
+    $found=[];
+    foreach ($ledger['PhotoGalleries'] as $rel) {
+        if (!is_array($rel)||!empty($rel['Deleted'])||
+            (int)($rel['ItemCode']??0)!==$erp_id)continue;
+        $pictureId=(int)($rel['PictureId']??0);
+        if ($pictureId>0 && isset($pictures[$pictureId]))
+            $found[$pictureId]=$pictures[$pictureId];
+    }
+    ksort($found,SORT_NUMERIC);
+    if (count($found)>20)
+        throw new RuntimeException('این محصول بیش از ۲۰ عکس دارد؛ انتقال خودکار تا بررسی تعداد عکس‌ها متوقف شد.');
+    return array_values($found);
 }
 function vesta_mhi_plan($woo_id,$erp_id) {
     if (!vesta_mhi_ready()) throw new RuntimeException('اتصال امن محک یا محافظ تصاویر فعال نیست.');
@@ -234,7 +270,7 @@ function vesta_mhi_admin_page() {
         }
         echo '</td></tr>';
     }
-    echo '</tbody></table><p>عکس‌های محک فقط به محصول با شناسه حسابداری تأییدشده اضافه می‌شوند. تصویر شاخص و گالری قبلی حذف یا جایگزین نمی‌شود. برای تازه‌بودن عکس‌ها ابتدا دریافت اطلاعات بازارا را در محک انجام بده.</p></div>';
+    echo '</tbody></table><p>فهرست عکس‌ها هنگام درخواست مستقیماً از محک ابری خوانده می‌شود. عکس فقط به محصول اصلی با کد و نام و شناسه حسابداری منطبق اضافه خواهد شد؛ تصاویر و موجودی قبلی حذف یا جایگزین نمی‌شوند. بعد از ثبت عکس در محک ویندوزی، ابتدا ارسال و دریافت بازارا را انجام بده.</p></div>';
 }
 add_action('admin_post_vesta_mhi_import',function() {
     if (!current_user_can('manage_woocommerce')) wp_die('Access denied');
