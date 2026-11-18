@@ -1,0 +1,33 @@
+name: Inspect Bazara SKU matching and variation synchronization control
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-readonly-bazara-product-match-flow-20261118.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Show approved matching and variation source without credentials
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'python3 -' <<'PY'
+          from pathlib import Path
+          import re
+          p=Path('/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara/classes/functions.php')
+          lines=p.read_text('utf-8',errors='replace').splitlines()
+          groups=[(1170,1410),(1835,1950),(1060,1130)]
+          for start,end in groups:
+            print(f'==== VENDOR SOURCE {start}-{end} ====')
+            for n in range(start,min(len(lines),end)+1):
+              s=lines[n-1]
+              if re.search(r'(?i)(password|secret|authorization|token|api.?key|http://|https://)',s):
+                 print(f'{n} [REDACTED]');continue
+              print(f'{n} '+s[:230])
+          PY
