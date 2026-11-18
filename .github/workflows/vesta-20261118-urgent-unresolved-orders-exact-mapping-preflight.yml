@@ -1,0 +1,78 @@
+name: Vesta urgent exact product identity preflight for current blocked and recent orders
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-20261118-urgent-unresolved-orders-exact-mapping-preflight.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Investigate all recent blocked and missing product mapping with trusted cached Mahak product detail and variation attributes
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1536M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);set_time_limit(0);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $table=Vesta_Accounting_Reliability::table();$t=$wpdb->prefix;
+          $rows=$wpdb->get_results("SELECT order_id,state,reason,attempts,submitted_at,remote_id FROM $table
+            WHERE order_id>=105000 AND state<>'verified' ORDER BY order_id DESC LIMIT 180",ARRAY_A);
+          $stats=[];$out=[];$products=[];$persons=[];
+          $goodAll=$wpdb->get_results("SELECT ProductId,ProductCode,ProductName,Deleted FROM {$t}bazara_products WHERE Deleted=0",ARRAY_A);
+          $detailsAll=$wpdb->get_results("SELECT ProductId,ProductDetailId,Properties,Deleted FROM {$t}bazara_product_details WHERE Deleted=0",ARRAY_A);
+          $byCode=[];$byName=[];$byProduct=[];
+          foreach($goodAll as $good){
+            $byCode[(string)$good['ProductCode']][]=$good;
+            $byName[trim((string)$good['ProductName'])][]=$good;
+          }
+          foreach($detailsAll as $d)$byProduct[(int)$d['ProductId']][]=$d;
+          foreach($rows as $row){
+            $id=(int)$row['order_id'];$o=wc_get_order($id);
+            if(!$o)continue;
+            $key=$row['state'].'/'.$row['reason'];$stats[$key]=($stats[$key]??0)+1;
+            $items=[];
+            foreach($o->get_items('line_item') as $item){
+              $vid=(int)($item->get_variation_id()?:$item->get_product_id());
+              $prod=wc_get_product($vid);if(!$prod)continue;
+              $pid=(int)get_post_meta($vid,'mahak_id',true);$did=(int)get_post_meta($vid,'mahak_product_detail_id',true);
+              if($pid>0&&$did>0)continue;
+              if(isset($products[$vid])){$items[]=$vid;continue;}
+              $parent=$prod->is_type('variation')?wc_get_product($prod->get_parent_id()):null;
+              $codes=array_unique(array_filter([(string)$prod->get_sku(),(string)$vid,$parent?(string)$parent->get_sku():'',$parent?(string)$parent->get_id():'']));
+              $goods=[];
+              foreach($codes as $code)foreach($byCode[$code]??[] as $g)$goods[(int)$g['ProductId']]=$g;
+              $matches=[];
+              foreach($goods as $g){
+                $ds=$byProduct[(int)$g['ProductId']]??[];
+                $matches[]=['good_id'=>(int)$g['ProductId'],'code'=>(string)$g['ProductCode'],
+                 'good_name'=>(string)$g['ProductName'],'detail_count'=>count($ds),
+                 'details'=>array_slice(array_map(fn($d)=>['id'=>(int)$d['ProductDetailId'],'props'=>$d['Properties']],$ds),0,18)];
+              }
+              $products[$vid]=['woo_product_id'=>$vid,'type'=>$prod->get_type(),
+                'name'=>$prod->get_name(),'sku'=>$prod->get_sku(),
+                'parent_id'=>$parent?$parent->get_id():null,'parent_name'=>$parent?$parent->get_name():null,
+                'parent_sku'=>$parent?$parent->get_sku():null,
+                'variation_attrs'=>$prod->is_type('variation')?$prod->get_variation_attributes():[],
+                'old_mahak_id'=>$pid,'old_mahak_detail_id'=>$did,
+                'good_matches'=>$matches];
+              $items[]=$vid;
+            }
+            $out[]=['order_id'=>$id,'state'=>$row['state'],'reason'=>$row['reason'],
+              'attempts'=>(int)$row['attempts'],'submitted_at'=>(int)$row['submitted_at']>0,
+              'remote_id'=>(int)$row['remote_id'],'line_missing_product_ids'=>$items];
+          }
+          echo 'EXCEPTION_STATUS_COUNTS='.json_encode($stats,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'EXCEPTION_ACTIVE_PAID_QUEUE='.json_encode($out,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'EXCEPTION_MISSING_WOO_PRODUCT_CANDIDATES='.json_encode(array_values($products),JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'LIVE_MAPPING_DIAGNOSTIC_READ_ONLY=yes'.PHP_EOL;
+          PHP
