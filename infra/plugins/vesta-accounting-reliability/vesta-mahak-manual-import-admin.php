@@ -17,6 +17,37 @@ function vesta_mhi_code($value) {
         throw new InvalidArgumentException('کد محصول محک نامعتبر است.');
     return $code;
 }
+function vesta_mhi_name_compatible($woo_name,$erp_name) {
+    // Fail closed on conflicting identities. Translation and variant naming can legitimately differ:
+    // such cases require a reviewed explicit link, never automatic photo attachment.
+    if (!function_exists('vms_normalize')) return false;
+    $a=mb_strtolower(vms_normalize((string)$woo_name),'UTF-8');
+    $b=mb_strtolower(vms_normalize((string)$erp_name),'UTF-8');
+    if (mb_strlen($a)<5 || mb_strlen($b)<5) return false;
+    return $a===$b || (mb_strlen($b)>=8 && mb_stripos($a,$b,0,'UTF-8')!==false) ||
+        (mb_strlen($a)>=8 && mb_stripos($b,$a,0,'UTF-8')!==false);
+}
+function vesta_mhi_identity_guard($woo_id,$erp_id,$expected_code='') {
+    $p=wc_get_product($woo_id);
+    if (!$p || (int)$p->get_meta('mahak_id',true)!==$erp_id)
+        throw new RuntimeException('شناسه داخلی محصول سایت با شناسه محک تطابق ندارد.');
+    if (!function_exists('vmb_catalog')||!function_exists('vmb_api'))
+        throw new RuntimeException('بررسی هویت کالا در محک در دسترس نیست.');
+    $source=null;
+    foreach (vmb_catalog(vmb_api())['Products']??[] as $row) {
+        if (empty($row['Deleted']) && (int)($row['ProductId']??0)===$erp_id) {
+            if ($source!==null) throw new RuntimeException('شناسه محصول محک تکراری است.');
+            $source=$row;
+        }
+    }
+    if (!$source) throw new RuntimeException('کالای متناظر در خروجی فعلی محک وجود ندارد.');
+    if ($expected_code!=='' && (string)($source['ProductCode']??'')!==$expected_code)
+        throw new RuntimeException('کد کالای محک با نتیجه جست‌وجو متفاوت است.');
+    if (!vesta_mhi_name_compatible($p->get_name(),$source['Name']??'')) {
+        throw new RuntimeException('تعارض هویت محصول: نام کالای محک با نام محصول سایت متفاوت است. انتقال عکس متوقف شد؛ اتصال شناسه‌ها باید بررسی شود.');
+    }
+    return $source;
+}
 function vesta_mhi_photo_rows($erp_id) {
     global $wpdb;
     if ($erp_id<=0) throw new InvalidArgumentException('شناسه محک نامعتبر است.');
@@ -35,8 +66,7 @@ function vesta_mhi_plan($woo_id,$erp_id) {
     if (!vesta_mhi_ready()) throw new RuntimeException('اتصال امن محک یا محافظ تصاویر فعال نیست.');
     $p=wc_get_product($woo_id);
     if (!$p) throw new RuntimeException('محصول در سایت وجود ندارد.');
-    if ((int)$p->get_meta('mahak_id',true)!==$erp_id)
-        throw new RuntimeException('شناسه محک با اتصال محصول سایت تطابق ندارد؛ تصاویر منتقل نشد.');
+    vesta_mhi_identity_guard($woo_id,$erp_id);
     global $wpdb;
     $photos=vesta_mhi_photo_rows($erp_id);
     $missing=[];$present=0;$elsewhere=0;
@@ -185,7 +215,13 @@ function vesta_mhi_admin_page() {
         if ($woo) echo 'موجود در سایت ('.(int)$woo.')';
         else echo $count===1?'قابل ایجاد به‌صورت پیش‌نویس':'نیازمند بررسی تنوع‌ها';
         echo '</td><td>';
-        if (!$woo && $count!==1) {echo 'انتقال خودکار متوقف: جزئیات کالا یکتا نیست';}
+        $identityConflict=false;
+        if ($woo) {
+            $wp=wc_get_product($woo);
+            $identityConflict=(!$wp || !vesta_mhi_name_compatible($wp->get_name(),$item['name']));
+        }
+        if ($identityConflict) {echo '<strong style="color:#b91c1c">تعارض شناسه: نام سایت و محک متفاوت است؛ انتقال ممنوع</strong>';}
+        elseif (!$woo && $count!==1) {echo 'انتقال خودکار متوقف: جزئیات کالا یکتا نیست';}
         else {
             echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'">';
             echo '<input type="hidden" name="action" value="vesta_mhi_import">';
@@ -210,6 +246,12 @@ add_action('admin_post_vesta_mhi_import',function() {
         $code=vesta_mhi_code(wp_unslash($_POST['code']??''));
         list($ident,$exact,$product)=vms_identify(['product_id'=>$id,'code'=>$code]);
         if ($ident!==$id || $exact!==$code || !$product) throw new RuntimeException('تطبیق کد و شناسه محک ناموفق بود.');
+        $preexisting=vms_existing_woo($code,$id);
+        if ($preexisting) {
+            $old=wc_get_product($preexisting);
+            if (!$old || !vesta_mhi_name_compatible($old->get_name(),$product['Name']??''))
+                throw new RuntimeException('تعارض کد محصول بین محک و ووکامرس: نام کالاها متفاوت است. از ساخت یا اتصال خودکار جلوگیری شد.');
+        }
         $result=vms_import_existing(['product_id'=>$id,'code'=>$code]);
         $woo=(int)($result['woo_id']??0);
         if (!$woo) throw new RuntimeException('نتیجه ایجاد محصول قطعی نیست؛ پیش از درخواست مجدد، محصول را بررسی کن.');
