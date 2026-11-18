@@ -1,0 +1,61 @@
+name: Vesta 105617 price stock photo source and vendor policy audit
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-105617-source-completeness-preflight-20261118.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read source detail price tier warehouse and picture claims without writes
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1280M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);set_time_limit(0);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $source=vmb_catalog(vmb_api());$id=10755477;$did=12269305;
+          foreach($source['ProductDetails']??[] as $d){
+             if((int)($d['ProductDetailId']??0)!==$did)continue;
+             $fields=['ProductId','ProductDetailId','ProductDetailCode','Count1','Count2','Price1','Price2','DefaultSellPriceLevel','DefaultDiscountLevel','UnitRatio','RowVersion','Properties','Barcode','Deleted'];
+             $result=[];foreach($fields as $key)if(array_key_exists($key,$d))$result[$key]=$d[$key];
+             echo 'CLOUD_BOOK_DETAIL_FULL='.json_encode($result,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          }
+          foreach(['VisitorProducts','VisitorProductDetails','Stocks','ProductStores'] as $key){
+             if(!isset($source[$key]))continue;
+             $matches=[];foreach((array)$source[$key] as $row){
+               if(!is_array($row))continue;
+               if((int)($row['ProductId']??0)===$id||(int)($row['ProductDetailId']??0)===$did){
+                 $safe=[];foreach($row as $k=>$v)if(is_scalar($v)&&preg_match('/product|detail|count|store|quantity|qty|stock|visitor|price|warehouse|deleted/i',$k))$safe[$k]=$v;
+                 $matches[]=$safe;
+               }
+               if(count($matches)>=10)break;
+             }
+             echo 'CLOUD_OTHER_'.$key.'='.json_encode(['count'=>count($source[$key]),'matches'=>$matches],JSON_UNESCAPED_UNICODE).PHP_EOL;
+          }
+          $settings=get_bazara_visitor_settings();$keep=[];
+          foreach($settings as $key=>$value)if(preg_match('/Price|Sell|Discount|Quantity|Stock|Store|Currency|publishStatus/i',$key)&&is_scalar($value))$keep[$key]=$value;
+          echo 'PRICE_AND_STOCK_VENDOR_SETTINGS='.json_encode($keep,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          $photo=get_post(105559);$wc=wc_get_product(103201);$new=wc_get_product(105617);
+          $uses=$wpdb->get_results("SELECT post_id,meta_key,meta_value FROM {$wpdb->postmeta}
+            WHERE (meta_key='_thumbnail_id' AND meta_value='105559')
+               OR (meta_key='_product_image_gallery' AND meta_value LIKE '%105559%')
+               OR (post_id=105559 AND meta_key='mahak_picture_id') LIMIT 20",ARRAY_A);
+          $att=['id'=>105559,'exists'=>(bool)$photo,'post_parent'=>$photo?$photo->post_parent:null,
+            'mime_type'=>$photo?$photo->post_mime_type:null,'mahak_picture_id'=>get_post_meta(105559,'mahak_picture_id',true),
+            'wrong_woo_gallery'=>$wc?$wc->get_gallery_image_ids():null,
+            'wrong_woo_main'=>$wc?$wc->get_image_id():null,
+            'correct_woo_main'=>$new?$new->get_image_id():null,'other_uses'=>$uses];
+          echo 'PICTURE_ATTACHMENT_105559_OWNER_AUDIT='.json_encode($att,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'PRE_REPAIR_READONLY_NO_WRITES=yes'.PHP_EOL;
+          PHP
