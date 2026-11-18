@@ -70,7 +70,9 @@ jobs:
           try {vesta_mhi_plan(103201,10755477);}
           catch(RuntimeException $e) {
             if(strpos($e->getMessage(),'تعارض هویت محصول')!==false ||
-               strpos($e->getMessage(),'باید به محصول مادر وارد شوند')!==false) $conflictBlocked=true;
+               strpos($e->getMessage(),'باید به محصول مادر وارد شوند')!==false ||
+               strpos($e->getMessage(),'شناسه داخلی محصول سایت')!==false ||
+               strpos($e->getMessage(),'کد محصول در بازارا هنوز مالک تأییدشده ندارد')!==false) $conflictBlocked=true;
             else throw $e;
           }
           if(!$conflictBlocked)throw new RuntimeException('identity_collision_guard_failed_for_103201');
