@@ -76,6 +76,81 @@ function vesta_mhi_identity_guard($woo_id,$erp_id,$expected_code='') {
     }
     return $source;
 }
+/**
+ * Fill only missing fields of an imported *draft* simple product.
+ * Price: Mahak Price1, only with verified vendor settings and Toman/Toman currency.
+ * Stock: Bazara ProductDetailStoreAssets for the active store (not ProductDetails.Count1).
+ * No change to live catalog, manually edited prices, existing stock or orders.
+ */
+function vesta_mhi_complete_draft($woo_id,$erp_id) {
+    global $wpdb;
+    $p=wc_get_product($woo_id);
+    if (!$p) throw new RuntimeException('محصول سایت برای تکمیل پیدا نشد.');
+    if ($p->get_status()!=='draft' || !$p->is_type('simple') ||
+        (string)$p->get_meta('_vesta_mahak_import_source',true)!=='bazara_existing_product')
+        return ['price'=>'محصول موجود بدون تغییر','stock'=>'محصول موجود بدون تغییر'];
+    $source=vesta_mhi_identity_guard($woo_id,$erp_id);
+    if ($p->get_sku()!==(string)($source['ProductCode']??''))
+        throw new RuntimeException('کد SKU با محصول محک یکسان نیست؛ تکمیل متوقف شد.');
+    $catalog=vmb_catalog(vmb_api());$details=[];
+    foreach ((array)($catalog['ProductDetails']??[]) as $d)
+        if(empty($d['Deleted'])&&(int)($d['ProductId']??0)===$erp_id)$details[]=$d;
+    if(count($details)!==1 ||
+       (int)($details[0]['ProductDetailId']??0)!==(int)$p->get_meta('mahak_product_detail_id',true))
+        throw new RuntimeException('ردیف قیمت و موجودی این کالا در محک یکتا نیست.');
+    $d=$details[0];$settings=get_bazara_visitor_settings();
+    $priceStatus='قیمت قبلاً وارد شده';$stockStatus='موجودی قبلاً وارد شده';
+    $dirty=false;
+    if($p->get_regular_price()===''){
+        if(($settings['selectCurrencySoftware']??'')==='toman' &&
+           ($settings['selectCurrencyPlugin']??'')==='toman' &&
+           !empty($settings['chkRegularPrice']) &&
+           (string)($settings['RegularPrice']??'')==='1' &&
+           isset($d['Price1']) && is_numeric($d['Price1']) && (float)$d['Price1']>0 &&
+           (float)$d['Price1']<=10000000000) {
+            $price=(int)$d['Price1'];
+            $p->set_regular_price((string)$price);
+            $priceStatus='ثبت قیمت '.$price.' تومان';
+            $dirty=true;
+        }else $priceStatus='قیمت تأیید نشده؛ بررسی تنظیمات و قیمت محک لازم است';
+    }
+    if(!$p->get_manage_stock() || $p->get_stock_quantity()===null){
+        $table=$wpdb->prefix.'bazara_product_assets';
+        $assets=$wpdb->get_results($wpdb->prepare(
+            "SELECT ProductDetailId,StoreId,Count1,Deleted FROM $table
+             WHERE ProductDetailId=%d AND Deleted=0",
+            (int)$d['ProductDetailId']),ARRAY_A);
+        if(count($assets)===1 && !empty($settings['chkQuantity']) &&
+           is_numeric($assets[0]['Count1']) && (float)$assets[0]['Count1']>=0 &&
+           (float)$assets[0]['Count1']<=10000000 && function_exists('get_product_asset_quantity')) {
+            $store=(int)$assets[0]['StoreId'];
+            $qty=(float)get_product_asset_quantity((int)$d['ProductDetailId'],$store);
+            if($store>0 && is_finite($qty) && $qty>=0 && $qty<=10000000) {
+                $p->set_manage_stock(true);
+                $p->set_stock_quantity($qty);
+                $p->set_stock_status($qty>0?'instock':'outofstock');
+                $stockStatus='ثبت موجودی '.wc_format_decimal($qty).' از انبار '.$store;
+                $dirty=true;
+            }else $stockStatus='موجودی انبار قابل تأیید نیست';
+        }else $stockStatus='موجودی انبار هنوز دریافت نشده یا چند انبار نیازمند تطبیق‌اند';
+    }
+    if($dirty){
+        $originalStatus=$p->get_status();
+        $oldImage=$p->get_image_id();$oldGallery=$p->get_gallery_image_ids();
+        $p->update_meta_data('_vesta_mahak_last_draft_enrichment_at',gmdate('c'));
+        $p->save();
+        $check=wc_get_product($woo_id);
+        if(!$check || $check->get_status()!==$originalStatus ||
+           (int)$check->get_image_id()!==(int)$oldImage ||
+           $check->get_gallery_image_ids()!==$oldGallery)
+            throw new RuntimeException('بعد از ثبت مشخصات، کنترل وضعیت محصول ناموفق بود.');
+        if(str_starts_with($priceStatus,'ثبت قیمت') && $check->get_regular_price()!==(string)(int)$d['Price1'])
+            throw new RuntimeException('ثبت قیمت با تأیید مجدد مطابقت ندارد.');
+        if(str_starts_with($stockStatus,'ثبت موجودی') && (!$check->get_manage_stock() || $check->get_stock_quantity()===null))
+            throw new RuntimeException('ثبت موجودی با تأیید مجدد مطابقت ندارد.');
+    }
+    return ['price'=>$priceStatus,'stock'=>$stockStatus];
+}
 function vesta_mhi_photo_rows($erp_id) {
     if ($erp_id<=0) throw new InvalidArgumentException('شناسه محک نامعتبر است.');
     // Always request the live Mahak Cloud picture ledger when the merchant clicks.
@@ -116,25 +191,35 @@ function vesta_mhi_plan($woo_id,$erp_id) {
     vesta_mhi_identity_guard($woo_id,$erp_id);
     global $wpdb;
     $photos=vesta_mhi_photo_rows($erp_id);
-    $missing=[];$present=0;$elsewhere=0;
+    $missing=[];$present=0;$elsewhere=0;$reuse=[];
+    $linked=array_map('intval',array_merge([(int)$p->get_image_id()],$p->get_gallery_image_ids()));
     foreach ($photos as $photo) {
         $pic=(int)$photo['PictureId'];
         if ($pic<=0) continue;
         $attached=$wpdb->get_col($wpdb->prepare(
             "SELECT post_id FROM {$wpdb->postmeta} WHERE meta_key='mahak_picture_id' AND meta_value=%s",(string)$pic));
         if ($attached) {
-            $owned=false;
+            $already=false;$reusable=0;
             foreach ($attached as $aid) {
-                $post=get_post((int)$aid);
-                if ($post && (int)$post->post_parent===$woo_id) $owned=true;
+                $aid=(int)$aid;
+                if (in_array($aid,$linked,true)) {$already=true;break;}
+                if (!$reusable && get_post($aid) && get_post_mime_type($aid)==='image/jpeg')
+                    $reusable=$aid;
             }
-            if ($owned) $present++; else $elsewhere++;
+            if ($already) {$present++;continue;}
+            if ($reusable) {
+                $reuse[]=['PictureId'=>$pic,'attachment_id'=>$reusable];
+                $elsewhere++;
+                continue;
+            }
+            // A prior attachment has invalid media metadata: do not risk duplicating it.
+            $elsewhere++;
             continue;
         }
         $missing[]=$photo;
     }
     return ['product'=>$p,'total'=>count($photos),'present'=>$present,'elsewhere'=>$elsewhere,
-            'missing'=>$missing,'truncated'=>count($photos)>=20];
+            'reuse'=>$reuse,'missing'=>$missing,'truncated'=>count($photos)>=20];
 }
 function vesta_mhi_photo_base_url() {
     $source=@file_get_contents(WP_PLUGIN_DIR.'/bazara/classes/class.bazara.api.php');
@@ -157,13 +242,46 @@ function vesta_mhi_import_pictures($woo_id,$erp_id,$max=5) {
         throw new RuntimeException('انتقال عکس همین محصول در حال اجراست.');
     try {
         $plan=vesta_mhi_plan($woo_id,$erp_id);
-        if (!$plan['missing']) return ['added'=>0,'total'=>$plan['total'],'pending'=>0,'note'=>'تمام عکس‌های شناسایی‌شده قبلاً منتقل شده‌اند یا نیازمند بررسی هستند.'];
-        $base=vesta_mhi_photo_base_url();
-        require_once ABSPATH.'wp-admin/includes/file.php';
-        require_once ABSPATH.'wp-admin/includes/media.php';
-        require_once ABSPATH.'wp-admin/includes/image.php';
-        $added=0;$errors=0;
-        foreach (array_slice($plan['missing'],0,$max) as $photo) {
+        if (!$plan['missing'] && !$plan['reuse']) return [
+            'added'=>0,'total'=>$plan['total'],'pending'=>0,
+            'note'=>$plan['total']===0?'عکسی در اطلاعات محک ابری ثبت نشده؛ در صورت تازه‌بودن عکس، F2 بازارا را اجرا کن.':'تمام تصاویر این محصول قبلاً ثبت شده‌اند.'
+        ];
+        $added=0;$errors=0;$reused=0;
+        // If a photo was previously sideloaded to a different Woo record,
+        // link the already verified Mahak attachment without a second download.
+        // Do not remove anyone else's existing featured or gallery images.
+        foreach(array_slice($plan['reuse'],0,$max) as $item){
+            $aid=(int)$item['attachment_id'];$pic=(int)$item['PictureId'];
+            $current=wc_get_product($woo_id);
+            if(!$current || (int)$current->get_meta('mahak_id',true)!==$erp_id ||
+               get_post_mime_type($aid)!=='image/jpeg' ||
+               (int)get_post_meta($aid,'mahak_picture_id',true)!==$pic){$errors++;continue;}
+            $oldMain=(int)$current->get_image_id();$oldGallery=$current->get_gallery_image_ids();
+            try {
+                if($oldMain===0)$current->set_image_id($aid);
+                else $current->set_gallery_image_ids(array_values(array_unique(array_merge($oldGallery,[$aid]))));
+                $current->save();
+                $check=wc_get_product($woo_id);
+                if(!$check || (int)$check->get_image_id()!==($oldMain?:$aid) ||
+                   ($oldMain && !in_array($aid,$check->get_gallery_image_ids(),true)))
+                    throw new RuntimeException('reused_picture_readback');
+                $added++;$reused++;
+            }catch(Throwable $e){
+                $errors++;$restore=wc_get_product($woo_id);
+                if($restore) {
+                    $restore->set_image_id($oldMain);
+                    $restore->set_gallery_image_ids($oldGallery);
+                    $restore->save();
+                }
+            }
+        }
+        if($plan['missing'] && $added<$max){
+            $base=vesta_mhi_photo_base_url();
+            require_once ABSPATH.'wp-admin/includes/file.php';
+            require_once ABSPATH.'wp-admin/includes/media.php';
+            require_once ABSPATH.'wp-admin/includes/image.php';
+        }
+        foreach (array_slice($plan['missing'],0,$max-$added) as $photo) {
             $pic=(int)$photo['PictureId'];
             $filename=basename((string)$photo['Url']);
             if (!$pic || !preg_match('/^[a-zA-Z0-9_.-]{1,180}\.jpe?g$/iD',$filename)) {$errors++;continue;}
@@ -217,9 +335,9 @@ function vesta_mhi_import_pictures($woo_id,$erp_id,$max=5) {
             } finally { if (is_string($tmp) && $tmp!=='' && file_exists($tmp)) @unlink($tmp); }
         }
         $after=vesta_mhi_plan($woo_id,$erp_id);
-        return ['added'=>$added,'errors'=>$errors,'total'=>$after['total'],
-          'pending'=>count($after['missing']),
-          'note'=>$errors?'بعضی عکس‌ها به دلیل خطای دریافت یا اعتبارسنجی منتقل نشدند.':'عکس‌های قبلی محصول حفظ شدند.'];
+        return ['added'=>$added,'reused'=>$reused,'errors'=>$errors,'total'=>$after['total'],
+          'pending'=>count($after['missing'])+count($after['reuse']),
+          'note'=>$errors?'بعضی عکس‌ها به بررسی بیشتر نیاز دارند.':'عکس‌ها به محصول درست متصل شدند و تصاویر قبلی حفظ شدند.'];
     } finally {
         $wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)',$lock));
     }
@@ -235,7 +353,7 @@ add_action('admin_menu',function(){
 function vesta_mhi_admin_page() {
     if (!current_user_can('manage_woocommerce')) wp_die('Access denied');
     echo '<div class="wrap"><h1>دریافت محصول از محک</h1>';
-    echo '<p>کالای موجود در محک را با نام یا کد جست‌وجو کن. محصولات جدید به‌صورت <strong>پیش‌نویس غیرفعال</strong> ایجاد می‌شوند؛ قیمت و موجودی قبل از انتشار باید بررسی شوند. هیچ کالایی در محک ساخته یا تغییر داده نمی‌شود.</p>';
+    echo '<p>کالای محک را جست‌وجو کن. برای کالاهای ساده، قیمت از سطح فروش تأییدشده و موجودی از جدول انبار بازارا دریافت می‌شود؛ عکس‌ها از محک ابری اضافه می‌شوند. کالا ابتدا <strong>پیش‌نویس</strong> می‌ماند و موارد نامشخص برای بررسی نمایش داده می‌شوند. هیچ کالایی در محک تغییر داده نمی‌شود.</p>';
     $notice=get_transient('vesta_mhi_notice_'.get_current_user_id());
     if (is_array($notice)) {
         delete_transient('vesta_mhi_notice_'.get_current_user_id());
@@ -284,7 +402,7 @@ function vesta_mhi_admin_page() {
             echo '<input type="hidden" name="product_id" value="'.(int)$id.'">';
             echo '<input type="hidden" name="code" value="'.esc_attr($code).'">';
             wp_nonce_field('vesta_mhi_import_'.$id);
-            submit_button($woo?'افزودن عکس‌های محک':'ایجاد پیش‌نویس + عکس‌ها','secondary','submit',false);
+            submit_button($woo?'تکمیل قیمت، موجودی و عکس‌ها':'ایجاد پیش‌نویس کامل + عکس‌ها','secondary','submit',false);
             echo '</form>';
             if ($woo) echo ' <a href="'.esc_url(admin_url('post.php?post='.$woo.'&action=edit')).'">ویرایش در سایت</a>';
         }
@@ -315,8 +433,9 @@ add_action('admin_post_vesta_mhi_import',function() {
         if (!$product) throw new RuntimeException('محصول سایت پس از عملیات پیدا نشد.');
         if ((int)$product->get_meta('mahak_id',true)!==$id)
             throw new RuntimeException('محصول موجود است، اما اتصال یکتای آن به محک تأیید نشده؛ عکس وارد نشد.');
+        $completed=vesta_mhi_complete_draft($woo,$id);
         $images=vesta_mhi_import_pictures($woo,$id,5);
-        vesta_mhi_admin_notice('محصول سایت '.$woo.'؛ عکس جدید: '.$images['added'].'؛ باقی‌مانده: '.$images['pending'].'؛ '.($images['note']??''));
+        vesta_mhi_admin_notice('محصول سایت '.$woo.'؛ '.$completed['price'].'؛ '.$completed['stock'].'؛ عکس اضافه/متصل: '.$images['added'].'؛ باقی‌مانده: '.$images['pending'].'؛ '.($images['note']??''),!empty($images['errors'])||$images['pending']>0);
         $url=add_query_arg('q',rawurlencode($code),$url);
     } catch(Throwable $e) {vesta_mhi_admin_notice($e->getMessage(),true);}
     wp_safe_redirect($url);exit;
