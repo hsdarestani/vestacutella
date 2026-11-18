@@ -1,0 +1,38 @@
+name: Inspect Mehrona exact Woo and vendor-created draft prop_id links
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-mehrona-prop-id-before-migration-20261118.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Confirm draft prop_id values and SKU owner before safe transfer
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=512M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          foreach([103200,103201,103202,103203,103204,103703,103705,103707] as $id){
+            $p=wc_get_product($id);$post=get_post($id);if(!$p)continue;
+            $props=['woo_id'=>$id,'post_type'=>$post->post_type,'post_status'=>$post->post_status,
+              'parent_id'=>$post->post_parent,'get_sku'=>$p->get_sku(),
+              'raw_sku'=>(string)get_post_meta($id,'_sku',true),
+              'good_id'=>(int)get_post_meta($id,'mahak_id',true),
+              'detail_id'=>(int)get_post_meta($id,'mahak_product_detail_id',true),
+              'prop_id'=>(int)get_post_meta($id,'prop_id',true),
+              'attrs'=>$p->is_type('variation')?$p->get_variation_attributes():null,
+              'name'=>$p->get_name()];
+            echo 'MEHRONA_PROP_ROW='.json_encode($props,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          }
+          echo 'READ_ONLY_NO_WRITES=yes'.PHP_EOL;
+          PHP
