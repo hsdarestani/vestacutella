@@ -1,0 +1,72 @@
+name: Vesta audit all cloud-linked Bazaar-native draft simple products completeness
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-audit-all-native-simple-drafts-20261118.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 14
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Classify safe draft simple goods needing price or stock without writing
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1536M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);set_time_limit(0);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $catalog=vesta_mhi_catalog();$goods=[];$details=[];$codes=[];
+          foreach($catalog['Products']??[] as $g)if(empty($g['Deleted']))$goods[(int)$g['ProductId']]=$g;
+          foreach($catalog['ProductDetails']??[] as $d)if(empty($d['Deleted']))$details[(int)$d['ProductId']][]=$d;
+          $pids=$wpdb->get_results("SELECT ID FROM {$wpdb->posts} WHERE post_type='product' AND post_status='draft' ORDER BY ID DESC LIMIT 2000",ARRAY_A);
+          $stats=['draft_product_posts_scanned'=>count($pids),'draft_with_mahak_id'=>0,
+              'draft_simple_with_single_valid_erp_detail'=>0,'draft_simple_eligible_with_missing_price_or_stock'=>0,
+              'draft_simple_missing_price'=>0,'draft_simple_missing_stock'=>0,
+              'draft_simple_not_matching_identity'=>0,'draft_simple_missing_warehouse_asset'=>0,
+              'draft_variable_count'=>0,'sample_eligible'=>[],'samples_blocked'=>[]];
+          foreach($pids as $row){
+            $id=(int)$row['ID'];$p=wc_get_product($id);if(!$p)continue;
+            $gid=(int)$p->get_meta('mahak_id',true);if(!$gid)continue;
+            $stats['draft_with_mahak_id']++;
+            if($p->is_type('variable')){$stats['draft_variable_count']++;continue;}
+            if(!$p->is_type('simple'))continue;
+            $g=$goods[$gid]??null;$ds=$details[$gid]??[];
+            $did=(int)$p->get_meta('mahak_product_detail_id',true);
+            if(!$g||count($ds)!==1||(int)$ds[0]['ProductDetailId']!==$did||
+               (string)$g['ProductCode']!==$p->get_sku()) {
+               $stats['draft_simple_not_matching_identity']++;continue;
+            }
+            try{$check=vesta_mhi_identity_guard($id,$gid);}
+            catch(Throwable $e) {
+               $stats['draft_simple_not_matching_identity']++;
+               if(count($stats['samples_blocked'])<8)$stats['samples_blocked'][]=['id'=>$id,'reason'=>$e->getMessage()];
+               continue;
+            }
+            $stats['draft_simple_with_single_valid_erp_detail']++;
+            $needPrice=$p->get_regular_price()==='';
+            $needStock=!$p->get_manage_stock()||$p->get_stock_quantity()===null;
+            $asset=(int)$wpdb->get_var($wpdb->prepare(
+              "SELECT COUNT(*) FROM {$wpdb->prefix}bazara_product_assets WHERE ProductDetailId=%d AND Deleted=0",$did));
+            if($needPrice)$stats['draft_simple_missing_price']++;
+            if($needStock)$stats['draft_simple_missing_stock']++;
+            if($asset!==1)$stats['draft_simple_missing_warehouse_asset']++;
+            if($needPrice||$needStock) {
+              $stats['draft_simple_eligible_with_missing_price_or_stock']++;
+              if(count($stats['sample_eligible'])<20)$stats['sample_eligible'][]=[
+                'woo_id'=>$id,'mahak_id'=>$gid,'detail_id'=>$did,
+                'need_price'=>$needPrice,'need_stock'=>$needStock,
+                'source_Price1'=>$ds[0]['Price1']??null,'asset_count'=>$asset,
+                'source_title'=>$g['Name']];
+            }
+          }
+          echo 'ALL_BAZAAR_NATIVE_DRAFT_COMPLETENESS='.json_encode($stats,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'NATIVE_DRAFT_AUDIT_NO_WRITES=yes'.PHP_EOL;
+          PHP
