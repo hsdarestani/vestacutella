@@ -1,0 +1,34 @@
+name: Vesta verify remaining canonical Mahak product migrations for whole catalog
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-readonly-all-canonical-migration-plan-20261118.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq php-cli sshpass
+      - name: Read only catalog-wide exact-match plan (no writes)
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          php -l scripts/vesta-canonical-catalog-reconcile-20261118.php
+          sshpass -e scp -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            scripts/vesta-canonical-catalog-reconcile-20261118.php "root@$HOST:/tmp/vesta-canonical-catalog-reconcile-20261118.php"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" \
+           'timeout 500 docker exec -i -e VESTA_CATALOG_COMMIT=no -e VESTA_CATALOG_BATCH=30 vc-vesta php -d display_errors=0 -d memory_limit=1536M < /tmp/vesta-canonical-catalog-reconcile-20261118.php' | tee vesta-catalog-wide-dryrun.txt
+          grep -Fq 'CATALOG_CANONICAL_DRY_RUN_NO_CHANGES=yes' vesta-catalog-wide-dryrun.txt
+          grep -F 'VESTA_CANONICAL_CATALOG_PLAN=' vesta-catalog-wide-dryrun.txt >> "$GITHUB_STEP_SUMMARY"
+          echo 'SITEWIDE_CATALOG_READ_ONLY_PLAN_VERIFIED=yes'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vesta-catalog-canonical-dryrun-20261118
+          path: vesta-catalog-wide-dryrun.txt
+          retention-days: 30
