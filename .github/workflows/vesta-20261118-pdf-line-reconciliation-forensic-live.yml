@@ -50,7 +50,7 @@ jobs:
           foreach($rows as $r){
             $id=(int)$r['ID'];$o=wc_get_order($id);
             if(!$o||!in_array($o->get_status(),['processing','completed','on-hold'],true))continue;
-            $out=[];
+            $out=[];$quantities=[];
             foreach($o->get_items('line_item') as $it){
               $vid=$it->get_variation_id()?:$it->get_product_id();
               $p=wc_get_product($vid);$erpId=(int)get_post_meta($vid,'mahak_id',true);
@@ -58,14 +58,21 @@ jobs:
               if(!$code)$code=$p?(string)$p->get_sku():'';
               if(!$code)$code=(string)$vid;
               $out[]=[$code,(int)$it->get_quantity()];
+              $quantities[$code]=($quantities[$code]??0)+(int)$it->get_quantity();
             }
+            // Mahak desktop prints one row for a good, even where two Woo
+            // variation lines map to the same Mahak product code.
+            $out=[];foreach($quantities as $code=>$qty)$out[]=[(string)$code,(int)$qty];
             sort($out);
             $fingerprint=hash('sha256',json_encode($out,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES));
             $q=$wpdb->get_row($wpdb->prepare("SELECT state,reason,remote_id FROM ".Vesta_Accounting_Reliability::table()." WHERE order_id=%d",$id),ARRAY_A);
             $result[]=['id'=>$id,'date'=>$o->get_date_created()?$o->get_date_created()->date('Y-m-d'):null,
-              'purchased_lines'=>count($out),'item_count'=>array_sum(array_column($out,1)),
+              'purchased_lines'=>count($o->get_items('line_item')),'good_groups'=>count($out),'item_count'=>array_sum(array_column($out,1)),
               'fingerprint_sha256'=>$fingerprint,'order_total'=>(int)round($o->get_total()),
               'item_net_total'=>(int)round(array_sum(array_map(fn($t)=>(float)$t->get_total(),$o->get_items('line_item')))),
+              'item_gross_total'=>(int)round(array_sum(array_map(fn($t)=>(float)$t->get_subtotal(),$o->get_items('line_item')))),
+              'shipping'=>(int)round($o->get_shipping_total()),
+              'discount'=>(int)round($o->get_discount_total()),
               'state'=>$q['state']??null,'remote_id'=>(int)($q['remote_id']??0)];
           }
           echo 'PDF_MATCH_PERIOD_SUMMARY='.json_encode(['eligible_order_count'=>count($result),'window_start'=>'2026-11-06','window_end'=>'2026-11-18']).PHP_EOL;
