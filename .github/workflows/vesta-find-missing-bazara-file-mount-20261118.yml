@@ -1,0 +1,36 @@
+name: Vesta urgent identify missing bazara class file container mount and original backup
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-find-missing-bazara-file-mount-20261118.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Check in-container file, host volume and verified backup before surgical recovery
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set +e
+          host=/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara/classes/class.bazara.api.php
+          path=/var/www/html/wp-content/plugins/bazara/classes/class.bazara.api.php
+          echo 'HOST_FILE_STATUS'
+          stat -c 'mode=%a owner=%U group=%G size=%s inode=%i mtime=%y' "$host" || true
+          echo 'CONTAINER_FILE_STATUS'
+          docker exec vc-vesta sh -c "ls -ld /var/www/html/wp-content/plugins/bazara /var/www/html/wp-content/plugins/bazara/classes; stat -c 'mode=%a owner=%U group=%G size=%s inode=%i mtime=%y' '$path'; ls -la '$path'" 2>&1 || true
+          echo 'VESTA_DOCKER_MOUNT_REFS'
+          docker inspect vc-vesta --format '{{json .Mounts}}' | python3 -c 'import json,sys; x=json.load(sys.stdin);print([(m.get("Type"),m.get("Source"),m.get("Destination"),m.get("RW")) for m in x if any(z in m.get("Destination","") for z in ("wp-content","/var/www/html"))])'
+          echo 'LATEST_VERIFIED_VENDOR_BACKUPS'
+          find /srv/backups -maxdepth 2 -path '*vesta-false-invoice-ack-*/original.php' -type f -printf '%T@ %p %s bytes\n' | sort -nr | head -n 7
+          echo 'CONTAINER_BAZARA_CLASSESDIR'
+          docker exec vc-vesta ls -lab /var/www/html/wp-content/plugins/bazara/classes 2>&1 | head -n 18 || true
+          echo 'READ_ONLY_MISSING_PLUGIN_FILE_DIAG=yes'
+          REMOTE
