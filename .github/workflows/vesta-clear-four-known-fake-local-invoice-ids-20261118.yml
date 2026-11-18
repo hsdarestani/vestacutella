@@ -1,0 +1,60 @@
+name: Vesta cleanup four fake local invoice IDs while keeping uncertain submissions blocked
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-clear-four-known-fake-local-invoice-ids-20261118.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-four-uncertain-fake-local-acks
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 13
+    steps:
+      - uses: actions/checkout@v4
+      - name: PHP lint and stage 4 exact fake local invoice cleanup
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq php-cli sshpass
+          php -l scripts/vesta-clear-false-local-invoice-sentinel-four-uncertain-orders-20261118.php
+          sshpass -e scp -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null scripts/vesta-clear-false-local-invoice-sentinel-four-uncertain-orders-20261118.php "root@$HOST:/tmp/vesta-four-false-local-acks-20261118.php"
+      - name: Live cloud proof and original outbox/meta backup followed by exactly four local metadata corrections
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          umask 077
+          exec 9>/run/lock/vesta-four-false-local-ack-cleanup.lock
+          flock -n 9
+          backup=/srv/backups/vesta-four-false-local-acks-$(date -u +%Y%m%dT%H%M%SZ)
+          mkdir -p -m 0700 "$backup"
+          docker exec -i -e VESTA_CLEAR_FALSE_ACK_COMMIT=no vc-vesta php -d display_errors=0 -d memory_limit=1536M < /tmp/vesta-four-false-local-acks-20261118.php | tee "$backup/dryrun.log"
+          grep -Fq 'FOUR_FALSE_ACK_DRYRUN_NO_WRITES=yes' "$backup/dryrun.log"
+          docker exec vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -D "$MARIADB_DATABASE" --batch --raw' > "$backup/exact-outbox-and-postmeta-before.tsv" <<'SQL'
+          SELECT * FROM wp_vesta_accounting_outbox WHERE order_id IN (105540,105535,105482,105369);
+          SELECT meta_id,post_id,meta_key,meta_value FROM wp_postmeta WHERE post_id IN (105540,105535,105482,105369) AND meta_key IN ('mahak_id','_vcar_money_multiplier','_vcar_vendor_missing_order_ack') ORDER BY post_id,meta_id;
+          SQL
+          (cd "$backup";sha256sum exact-outbox-and-postmeta-before.tsv > SHA256SUMS;sha256sum -c SHA256SUMS)
+          echo 'FOUR_UNCERTAIN_LOCAL_REFERENCE_BACKUP_VERIFIED=yes'
+          docker exec -i -e VESTA_CLEAR_FALSE_ACK_COMMIT=yes -e VESTA_FALSE_ACK_BACKUP_VERIFIED=yes vc-vesta php -d display_errors=0 -d memory_limit=1536M < /tmp/vesta-four-false-local-acks-20261118.php | tee "$backup/result.log"
+          grep -Fq 'FOUR_UNCERTAIN_LOCAL_FAKE_INVOICE_IDS_CLEARED_WITHOUT_RESUBMISSION=yes' "$backup/result.log"
+          grep -Fq 'ALL_FOUR_OUTBOX_STATES_REMAIN_UNCERTAIN_AND_UNTOUCHED=yes' "$backup/result.log"
+          grep -Fq 'ZERO_ERP_INVOICES_RECEIPTS_STOCK_CUSTOMERS_WRITTEN=yes' "$backup/result.log"
+          echo 'EXACT_FOUR_FAKE_LOCAL_IDS_CLEANED_AND_OUTBOX_GUARD_PRESERVED=yes'
+          REMOTE
+      - name: All three storefront endpoints still healthy
+        run: |
+          set -Eeuo pipefail
+          for host in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
+            code=$(curl -LsS --connect-timeout 8 --max-time 25 -o /dev/null -w '%{http_code}' "https://$host/")
+            echo "SITE=$host HTTP=$code";test "$code" = 200
+          done
