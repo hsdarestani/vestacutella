@@ -1,0 +1,55 @@
+name: Vesta inspect self-service Mahak product/photo import prerequisites
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-mahak-manual-import-preflight-20261118.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 13
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Inspect product bridge, image catalog and sample data read only
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1536M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);set_time_limit(0);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php'; global $wpdb;
+          $sett=get_option('bazara_visitor_settings',[]);
+          $pre=['vms_exists'=>function_exists('vms_import_existing'),'vms_search'=>function_exists('vms_search'),
+          'vmb_exists'=>function_exists('vmb_catalog'),'image_guard'=>function_exists('vesta_bazara_image_patch_verified')&&vesta_bazara_image_patch_verified(),
+          'woocommerce'=>class_exists('WC_Product_Simple'),'pictures_enabled'=>!empty($sett['chkPicture'])];
+          echo 'MANUAL_IMPORT_PREREQUISITES='.json_encode($pre).PHP_EOL;
+          foreach(['bazara_products','bazara_product_details','bazara_pictures','bazara_photo_gallery'] as $short){
+            $table=$wpdb->prefix.$short;
+            $cols=$wpdb->get_col("SHOW COLUMNS FROM ".$table,0);
+            echo 'TABLE_COLUMNS_'.$short.'='.json_encode($cols).PHP_EOL;
+          }
+          $picture=$wpdb->get_row("SELECT PictureId,Deleted FROM {$wpdb->prefix}bazara_pictures WHERE PictureId=1887347",ARRAY_A);
+          if($picture)echo 'CANARY_PICTURE='.json_encode($picture).PHP_EOL;
+          $gallery=$wpdb->get_results("SELECT * FROM {$wpdb->prefix}bazara_photo_gallery WHERE PictureId=1887347 LIMIT 5",ARRAY_A);
+          echo 'CANARY_PHOTO_RELATIONS='.json_encode($gallery).PHP_EOL;
+          $detail=$wpdb->get_results("SELECT * FROM {$wpdb->prefix}bazara_product_details WHERE ProductId=10755477 LIMIT 5",ARRAY_A);
+          foreach($detail as &$d){$d=array_intersect_key($d,array_fill_keys(['ProductDetailId','ProductId','ProductDetailCode','Properties','Price1','Price2','Count1','Count2','Deleted'],1));}unset($d);
+          echo 'CANARY_ERP_DETAILS='.json_encode($detail,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          $p=wc_get_product(103201);
+          if($p)echo 'CANARY_WOO='.json_encode(['price'=>$p->get_price(),'regular_price'=>$p->get_regular_price(),'stock'=>$p->get_stock_quantity(),'stock_status'=>$p->get_stock_status(),'manage_stock'=>$p->get_manage_stock(),'gallery'=>$p->get_gallery_image_ids(),'image'=>$p->get_image_id(),'type'=>$p->get_type()]).PHP_EOL;
+          $api=new BazaraApi(true);$r=$api->get_all_data('', ['fromProductVersion'=>0,'fromProductDetailVersion'=>0]);
+          echo 'CLOUD_CATALOG_READ_OK='.(is_array($r)&&!empty($r['success'])?'yes':'no').PHP_EOL;
+          if(is_array($r)&&!empty($r['success'])){
+            $goods=$r['message']['Products']??[];$d=$r['message']['ProductDetails']??[];
+            echo 'CLOUD_PRODUCT_COUNT='.count($goods).' CLOUD_DETAIL_COUNT='.count($d).PHP_EOL;
+            $sample=[];foreach($goods as $g)if((int)($g['ProductId']??0)===10755477)$sample=$g;
+            foreach(['Description','Tags','ProductCategoryId','UnitName','ProductCode','UnitRatio','ProductId'] as $key)
+              if(isset($sample[$key]))echo 'SAMPLE_PRODUCT_FIELD_'.$key.'='.json_encode($sample[$key],JSON_UNESCAPED_UNICODE).PHP_EOL;
+          }
+          echo 'PREFLIGHT_READ_ONLY_NO_CHANGES=yes'.PHP_EOL;
+          PHP
