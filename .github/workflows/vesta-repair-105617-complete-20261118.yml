@@ -1,0 +1,69 @@
+name: Vesta repair Woo 105617 book price stock and misplaced Mahak photo
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/vesta-repair-one-imported-book-105617-20261118.php
+      - .github/workflows/vesta-repair-105617-complete-20261118.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-product-105617-safe-repair
+  cancel-in-progress: false
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install CLI and syntax check
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq php-cli sshpass
+          php -l scripts/vesta-repair-one-imported-book-105617-20261118.php
+      - name: Verify Mahak source, back up affected Woo tables, repair, and inspect final state
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e scp -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            scripts/vesta-repair-one-imported-book-105617-20261118.php "root@$HOST:/tmp/vesta-repair-105617-20261118.php"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          umask 077
+          exec 9>/run/lock/vesta-product-105617-20261118.lock
+          flock -n 9
+          src=/tmp/vesta-repair-105617-20261118.php
+          backup=/srv/backups/vesta-105617-repair-$(date -u +%Y%m%dT%H%M%SZ)
+          mkdir -m 0700 -p "$backup"
+          timeout 110 docker exec -i -e VESTA_BOOK_105617_COMMIT=no vc-vesta php -d memory_limit=1280M -d display_errors=0 < "$src" | tee "$backup/dryrun.log"
+          grep -Fq 'BOOK_105617_DRY_RUN_NO_WRITES=yes' "$backup/dryrun.log"
+          docker exec vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb-dump -uroot --single-transaction --quick "$MARIADB_DATABASE" wp_posts wp_postmeta wp_wc_product_meta_lookup' | gzip -1 > "$backup/woo_product_media_before.sql.gz"
+          gzip -t "$backup/woo_product_media_before.sql.gz"
+          (cd "$backup";sha256sum woo_product_media_before.sql.gz > SHA256SUMS;sha256sum -c SHA256SUMS)
+          echo 'BOOK_105617_FULL_WOO_BACKUP_VERIFIED=yes'
+          timeout 110 docker exec -i -e VESTA_BOOK_105617_COMMIT=yes -e VESTA_BOOK_105617_BACKUP_VERIFIED=yes \
+             vc-vesta php -d memory_limit=1280M -d display_errors=0 < "$src" | tee "$backup/commit.log"
+          grep -Fq 'BOOK_105617_REPAIR_DONE_NO_OTHER_PRODUCT_OR_ORDER_CHANGES=yes' "$backup/commit.log"
+          docker exec -i vc-vesta php -d display_errors=0 <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          $p=wc_get_product(105617);$v=wc_get_product(103201);
+          if(!$p||!$v||$p->get_status()!=='draft'||$p->get_regular_price()!=='2599000'||
+             $p->get_stock_quantity()!==0||!$p->get_manage_stock()||
+             (int)$p->get_image_id()!==105559||
+             (int)get_post(105559)->post_parent!==105617||
+             (int)$v->get_image_id()!==103196||
+             $v->get_gallery_image_ids()!==[])exit(81);
+          echo 'INDEPENDENT_105617_POST_REPAIR_CHECK=PASS'.PHP_EOL;
+          PHP
+          for host in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
+            code=$(curl --noproxy '*' -ksS --connect-timeout 8 --max-time 25 --resolve "$host:443:127.0.0.1" -o /dev/null -w '%{http_code}' "https://$host/")
+            echo "SITE=$host HTTP=$code";test "$code" = 200
+          done
+          echo 'BOOK_105617_PRODUCTION_FIX_VERIFIED=yes'
+          REMOTE
