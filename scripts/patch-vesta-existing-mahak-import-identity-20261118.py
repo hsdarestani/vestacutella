@@ -75,8 +75,11 @@ def main():
         return vms_public_result(array('status' => 'already_on_site', 'woo_id' => $woo_id));
     }
     vms_block_unowned_canonical_code($code, $p);"""
-    if updated.count(before1)!=1:raise ValueError("initial existing Woo check drift")
-    updated=updated.replace(before1,after1)
+    begin=updated.index(anchor)
+    end=updated.index("\nadd_action('plugins_loaded'",begin)
+    body=updated[begin:end]
+    if body.count(before1)!=1:raise ValueError("initial existing Woo check drift")
+    body=body.replace(before1,after1)
     before2="""        if ($woo_id) {
             $record['status'] = 'already_on_site';
         } else {"""
@@ -84,8 +87,9 @@ def main():
             vms_verify_existing_link($woo_id, $code, $p);
             $record['status'] = 'already_on_site';
         } else {"""
-    if updated.count(before2)!=1:raise ValueError("reserved Woo check drift")
-    updated=updated.replace(before2,after2)
+    if body.count(before2)!=1:raise ValueError("reserved Woo check drift")
+    body=body.replace(before2,after2)
+    updated=updated[:begin]+body+updated[end:]
     if updated.count(MARKER)!=1 or updated.count("vms_verify_existing_link($woo_id, $code, $p);")!=2 or updated.count("vms_block_unowned_canonical_code($code, $p);")!=1:
         raise ValueError("invalid guard output")
     print("SOURCE_IMPORT_MATCH_SAFETY_PATCH_READY=yes")
