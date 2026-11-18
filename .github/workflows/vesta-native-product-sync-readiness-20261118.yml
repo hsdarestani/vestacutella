@@ -1,0 +1,47 @@
+name: Verify Vesta native Bazaar product sync schedule and safe publish settings
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-native-product-sync-readiness-20261118.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 11
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read active action scheduler hooks, catalog receive options, no writes
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1024M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $raw=get_option('bazara_options',[]);$v=get_option('bazara_visitor_settings',[]);
+          echo 'PRODUCT_SYNC_CONFIGURATION='.json_encode([
+            'refresh_interval_minutes'=>$raw['refresh_interval']??null,
+            'product_sync_enabled'=>!empty($v['chkProduct']),
+            'image_full_sync_enabled'=>!empty($v['chkPicture']),
+            'price_sync_enabled'=>!empty($v['chkPrice']),
+            'qty_sync_enabled'=>!empty($v['chkQuantity']),
+            'new_product_status'=>$v['publishStatus']??'unset',
+            'software_currency'=>$v['selectCurrencySoftware']??'unset',
+            'site_currency'=>$v['selectCurrencyPlugin']??'unset',
+            'next_action_epoch'=>function_exists('as_next_scheduled_action')?as_next_scheduled_action('bazara_run_product_sync'):false
+          ]).PHP_EOL;
+          $t=$wpdb->prefix.'actionscheduler_actions';
+          $recent=$wpdb->get_results("SELECT action_id,status,scheduled_date_gmt,last_attempt_gmt,attempts
+             FROM $t WHERE hook='bazara_run_product_sync' ORDER BY action_id DESC LIMIT 12",ARRAY_A);
+          $sum=$wpdb->get_results("SELECT status,COUNT(*) n FROM $t
+             WHERE hook='bazara_run_product_sync' GROUP BY status",ARRAY_A);
+          echo 'PRODUCT_SYNC_RECENT_ACTIONS='.json_encode($recent).PHP_EOL;
+          echo 'PRODUCT_SYNC_ACTION_COUNTS='.json_encode($sum).PHP_EOL;
+          echo 'PRODUCT_SYNC_NATIVE_READ_ONLY=yes'.PHP_EOL;
+          PHP
