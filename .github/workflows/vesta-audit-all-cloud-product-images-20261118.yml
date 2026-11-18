@@ -1,0 +1,63 @@
+name: Vesta audit every Mahak Cloud photo and Woo product mapping
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-audit-all-cloud-product-images-20261118.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  photos:
+    runs-on: ubuntu-latest
+    timeout-minutes: 13
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Map each cloud photo to SKU, original image IDs, and protected import eligibility
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1536M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);set_time_limit(0);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $ledger=vesta_mhi_cloud_photo_ledger();$catalog=vesta_mhi_catalog();
+          $goods=[];foreach($catalog['Products']??[] as $g)if(empty($g['Deleted']))$goods[(int)$g['ProductId']]=$g;
+          $pictureIdSet=[];
+          foreach($ledger['Pictures'] as $p)if(is_array($p)&&empty($p['Deleted']))
+            $pictureIdSet[(int)$p['PictureId']]=true;
+          $byGood=[];$orphanRelations=0;
+          foreach($ledger['PhotoGalleries'] as $r){
+            if(!is_array($r)||!empty($r['Deleted']))continue;
+            $pic=(int)($r['PictureId']??0);$good=(int)($r['ItemCode']??0);
+            if($pic&&$good&&isset($pictureIdSet[$pic]))$byGood[$good][$pic]=true;
+            else $orphanRelations++;
+          }
+          $stats=['active_picture_files'=>count($pictureIdSet),'active_goods_with_pictures'=>count($byGood),
+           'orphan_picture_relations'=>$orphanRelations,'good_with_verified_woo_product'=>0,
+           'good_with_unmatched_or_conflict_woo'=>0,'already_correct_on_woo'=>0,
+           'photos_pending_link_or_sideload'=>0,'examples'=>[]];
+          foreach($byGood as $good=>$pics){
+            $src=$goods[$good]??null;
+            $code=$src?(string)$src['ProductCode']:'';
+            $woo=$code!==''?wc_get_product_id_by_sku($code):0;
+            $plan=null;$reason='';
+            if($woo){
+              try{$plan=vesta_mhi_plan((int)$woo,(int)$good);}
+              catch(Throwable $e){$reason=mb_substr($e->getMessage(),0,140);}
+            }else $reason='no_exact_woo_sku_owner';
+            if($plan){
+              $stats['good_with_verified_woo_product']++;
+              $stats['already_correct_on_woo']+=$plan['present'];
+              $stats['photos_pending_link_or_sideload']+=count($plan['missing'])+count($plan['reuse']);
+            }else $stats['good_with_unmatched_or_conflict_woo']++;
+            if(count($stats['examples'])<40)$stats['examples'][]=[
+              'erp_good'=>$good,'sku'=>$code,'woo_id'=>$woo?:0,'photos'=>array_keys($pics),
+              'present'=>$plan['present']??0,'missing'=>isset($plan)?count($plan['missing']):null,
+              'reuse'=>isset($plan)?count($plan['reuse']):null,'blocked_reason'=>$reason];
+          }
+          echo 'ALL_CLOUD_PICTURE_TO_WOO_AUDIT='.json_encode($stats,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'CLOUD_IMAGE_AUDIT_READ_ONLY=yes'.PHP_EOL;
+          PHP
