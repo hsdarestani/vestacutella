@@ -1,0 +1,108 @@
+name: Diagnose Woo product 105617 Mahak draft price stock and picture
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-audit-product-105617-20261118.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 14
+    steps:
+      - name: Install SSH helper
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read Woo 105617 exact metadata and Mahak Cloud source without writes
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1600M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);set_time_limit(0);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';
+          $_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $id=105617;$p=wc_get_product($id);$post=get_post($id);
+          if(!$p || !$post){echo "TARGET_105617_NOT_WOO_PRODUCT=yes\n";exit(11);}
+          $erpId=(int)$p->get_meta('mahak_id',true);
+          $did=(int)$p->get_meta('mahak_product_detail_id',true);
+          $sku=(string)$p->get_sku();
+          $summary=['id'=>$id,'title'=>$p->get_name(),'type'=>$p->get_type(),
+             'post_status'=>$post->post_status,'post_created'=>$post->post_date_gmt,
+             'sku'=>$sku,'mahak_id'=>$erpId,'mahak_product_detail_id'=>$did,
+             'regular_price'=>$p->get_regular_price(),'sale_price'=>$p->get_sale_price(),
+             'effective_price'=>$p->get_price(),'stock'=>$p->get_stock_quantity(),
+             'manage_stock'=>$p->get_manage_stock(),'stock_status'=>$p->get_stock_status(),
+             'image_id'=>(int)$p->get_image_id(),'gallery_ids'=>$p->get_gallery_image_ids(),
+             'variation_count'=>method_exists($p,'get_children')?count($p->get_children()):0,
+             'product_is_purchasable'=>$p->is_purchasable(),
+             'barcode_meta_present'=>(string)get_post_meta($id,'_barcode',true)!=='',
+             'import_source'=>(string)$p->get_meta('_vesta_mahak_import_source',true)];
+          echo 'WOO_PRODUCT_105617='.json_encode($summary,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          if(method_exists($p,'get_children')){
+            foreach(array_slice($p->get_children(),0,12) as $cid){
+              $v=wc_get_product($cid);if(!$v)continue;
+              echo 'WOO_CHILD_105617='.json_encode([
+                'id'=>$cid,'sku'=>$v->get_sku(),'regular_price'=>$v->get_regular_price(),
+                'price'=>$v->get_price(),'stock'=>$v->get_stock_quantity(),
+                'stock_status'=>$v->get_stock_status(),'image_id'=>(int)$v->get_image_id(),
+                'mahak_id'=>(int)$v->get_meta('mahak_id',true),
+                'mahak_detail_id'=>(int)$v->get_meta('mahak_product_detail_id',true),
+                'attributes'=>$v->get_attributes()],JSON_UNESCAPED_UNICODE).PHP_EOL;
+            }
+          }
+          $catalog=vmb_catalog(vmb_api());$matches=[];$details=[];
+          foreach((array)($catalog['Products']??[]) as $g){
+            if(!empty($g['Deleted']))continue;
+            if(($erpId && (int)($g['ProductId']??0)===$erpId) ||
+               ($sku!=='' && (string)($g['ProductCode']??'')===$sku)){
+              $matches[]=['product_id'=>(int)($g['ProductId']??0),
+                'code'=>(string)($g['ProductCode']??''),'name'=>(string)($g['Name']??''),
+                'unit'=>(string)($g['UnitName']??''),'row_version'=>$g['RowVersion']??null];
+            }
+          }
+          $sourceId=$erpId;
+          if(!$sourceId && count($matches)===1)$sourceId=(int)$matches[0]['product_id'];
+          foreach((array)($catalog['ProductDetails']??[]) as $d){
+            if(!empty($d['Deleted']) || (int)($d['ProductId']??0)!==$sourceId)continue;
+            $prices=[];foreach(['Price1','Price2','Count1','Count2','Barcode','Properties','ProductDetailCode'] as $key)
+              if(isset($d[$key]))$prices[$key]=$d[$key];
+            $details[]=['product_detail_id'=>(int)($d['ProductDetailId']??0),
+              'fields'=>$prices];
+            if(count($details)>=15)break;
+          }
+          echo 'MAHAK_SOURCE_105617='.json_encode(['matching_goods'=>$matches,'detail_rows'=>$details],JSON_UNESCAPED_UNICODE).PHP_EOL;
+          $localCount=0;$localPhotos=0;
+          if($sourceId){
+            $localCount=(int)$wpdb->get_var($wpdb->prepare(
+              "SELECT COUNT(*) FROM {$wpdb->prefix}bazara_product_details WHERE ProductId=%d AND Deleted=0",$sourceId));
+            $localPhotos=(int)$wpdb->get_var($wpdb->prepare(
+              "SELECT COUNT(*) FROM {$wpdb->prefix}bazara_photo_gallery WHERE ItemCode=%d AND Deleted=0",$sourceId));
+          }
+          echo 'BAZARA_LOCAL_105617='.json_encode([
+            'source_erp_id'=>$sourceId,'local_active_detail_rows'=>$localCount,
+            'local_photo_relation_count'=>$localPhotos,
+            'global_full_picture_sync_enabled'=>!empty(get_option('bazara_visitor_settings',[])['chkPicture'])
+          ]).PHP_EOL;
+          if($sourceId && function_exists('vesta_mhi_photo_rows')){
+            try{$photos=vesta_mhi_photo_rows($sourceId);
+              echo 'MAHAK_CLOUD_PICTURES_105617='.json_encode([
+                'count'=>count($photos),
+                'picture_ids'=>array_map(fn($x)=>(int)$x['PictureId'],$photos)
+              ]).PHP_EOL;
+            }catch(Throwable $e){echo 'MAHAK_CLOUD_PICTURES_ERROR_105617='.get_class($e).':'.mb_substr($e->getMessage(),0,140).PHP_EOL;}
+          }
+          if($erpId && function_exists('vesta_mhi_plan')){
+            try{$plan=vesta_mhi_plan($id,$erpId);
+              echo 'PHOTO_IMPORT_PLAN_105617='.json_encode([
+                'total'=>$plan['total'],'present'=>$plan['present'],
+                'elsewhere'=>$plan['elsewhere'],'missing'=>count($plan['missing'])
+              ]).PHP_EOL;
+            }catch(Throwable $e){echo 'PHOTO_IMPORT_BLOCK_105617='.get_class($e).':'.mb_substr($e->getMessage(),0,180).PHP_EOL;}
+          }
+          echo 'READ_ONLY_NO_PRODUCT_OR_MAHAK_CHANGES=yes'.PHP_EOL;
+          PHP
