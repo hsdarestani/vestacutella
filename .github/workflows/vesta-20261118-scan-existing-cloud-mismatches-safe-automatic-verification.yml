@@ -1,0 +1,62 @@
+name: Vesta determine which already-existing ERP invoice mismatches can be safely reverified without editing ERP
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-20261118-scan-existing-cloud-mismatches-safe-automatic-verification.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Review all cloud-mismatch orders for complete bank exact-item and identity proof under both money units
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1536M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);set_time_limit(0);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $t=Vesta_Accounting_Reliability::table();
+          $c=$wpdb->get_results("SELECT order_id,state,reason,remote_id,attempts FROM $t WHERE state='cloud_mismatch' ORDER BY order_id DESC LIMIT 1500",ARRAY_A);
+          $settings=get_option('bazara_visitor_settings',[]);
+          $api=new BazaraApi(true);$cloud=Vesta_Accounting_Reliability::cloud($api);
+          $stats=['checked'=>0,'no_cloud_invoice'=>0,'multiple_cloud_invoices'=>0,'identity_not_proven'=>0,
+              'valid_under_one_unit'=>0,'valid_under_ten_units'=>0,'no_safe_unit'=>0,'could_fix_stored_multiplier'=>0,
+              'could_recheck_same_unit'=>0,'local_invoice_conflict'=>0];
+          $candidates=[];$safeButOldReasons=[];
+          foreach($c as $row){
+            $id=(int)$row['order_id'];$o=wc_get_order($id);if(!$o||!vcar_eligible($o))continue;
+            $stats['checked']++;$r=$cloud['orders'][$id]??[];
+            if(count($r)!==1){$stats[count($r)===0?'no_cloud_invoice':'multiple_cloud_invoices']++;continue;}
+            $erp=(int)$r[0]['OrderId'];$local=(int)$o->get_meta('mahak_id');
+            if($local>0 && $local!==$erp){$stats['local_invoice_conflict']++;continue;}
+            if($erp<1 || (int)$row['remote_id']!==$erp)continue;
+            $bank=vcar_bank($settings,$o->get_payment_method());
+            $errors=[];foreach([1,10] as $mult){
+              $errors[$mult]=vcar_verify($o,$r[0],$cloud['details'][$erp]??[],
+                  $cloud['receipts'][$erp]??[],$bank,$cloud['transfers'],$mult);
+            }
+            if($errors[1]==='')$stats['valid_under_one_unit']++;
+            if($errors[10]==='')$stats['valid_under_ten_units']++;
+            if($errors[1]!=='' && $errors[10]!==''){$stats['no_safe_unit']++;continue;}
+            $identityError=vcar_identity_guard($o,(int)($r[0]['PersonId']??0));
+            if($identityError!==''){$stats['identity_not_proven']++;continue;}
+            $current=(int)($o->get_meta('_vcar_money_multiplier')?:0);
+            $correct=($errors[1]===''?1:10);
+            if($current!==$correct)$stats['could_fix_stored_multiplier']++;
+            else $stats['could_recheck_same_unit']++;
+            $candidates[]=['order_id'=>$id,'current_unit'=>$current,'verified_unit'=>$correct,
+                'remote_invoice'=>$erp,'old_reason'=>$row['reason'],'old_state'=>$row['state'],
+                'old_attempts'=>(int)$row['attempts']];
+          }
+          echo 'ALL_CLOUD_MISMATCH_RECHECK_STATS='.json_encode($stats,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'CLOUD_MISMATCH_FULLY_PROVEN_REVERIFY_CANDIDATES='.json_encode($candidates,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'CLOUD_BANK_PERSON_ITEMS_AND_PAYMENT_RECON_READ_ONLY=yes'.PHP_EOL;
+          PHP
