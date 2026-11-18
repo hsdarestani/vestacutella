@@ -203,7 +203,7 @@ function vci_write($plan){
 }
 $plans=[];$reasons=[];$examples=[];
 foreach($goods as $code=>$g){
- if($target!=='' && $code!==$target)continue;
+ if($target!=='' && (string)$code!==$target)continue;
  if(!ctype_digit((string)$code)||count($owners[$code]??[])!==1)continue;
  $owner=$owners[$code][0];
  if($owner['post_type']!=='product'||$owner['post_status']!=='draft')continue;
