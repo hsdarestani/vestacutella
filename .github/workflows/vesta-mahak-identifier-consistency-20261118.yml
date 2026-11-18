@@ -1,0 +1,88 @@
+name: Audit Mahak product identifier mapping for Woo and Bazara
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-mahak-identifier-consistency-20261118.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 13
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Verify source keys ProductCode ProductId ProductDetailId picture ItemCode and Woo link read-only
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1536M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);set_time_limit(0);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $api=vmb_api();$catalog=vmb_catalog($api);
+          $goods=[];$codeIndex=[];$dup=0;
+          foreach($catalog['Products']??[] as $g){
+             if(!empty($g['Deleted']))continue;
+             $id=(int)($g['ProductId']??0);$code=(string)($g['ProductCode']??'');
+             $goods[$id]=$g; $codeIndex[$code][]=$id;
+          }
+          $details=[];$detailOwner=[];$detailIds=[];
+          foreach($catalog['ProductDetails']??[] as $d){
+            if(!empty($d['Deleted']))continue;
+            $pid=(int)($d['ProductId']??0);$did=(int)($d['ProductDetailId']??0);
+            $details[$pid][]=$d;$detailOwner[$did]=$pid;
+            $detailIds[$did]=true;
+          }
+          $stats=['active_cloud_goods'=>count($goods),'active_cloud_details'=>count($detailIds),
+                  'duplicate_product_codes'=>0,'cloud_detail_parent_missing'=>0,
+                  'cloud_goods_zero_details'=>0,'cloud_goods_one_detail'=>0,'cloud_goods_multiple_details'=>0,
+                  'has_mahak_product_meta'=>0,'has_mahak_product_detail_meta'=>0,
+                  'site_product_meta_erp_missing_in_cloud'=>0,'site_detail_meta_erp_missing_in_cloud'=>0,
+                  'site_detail_to_product_mismatch'=>0,'site_erp_product_code_vs_woo_sku_different'=>0,
+                  'sample_bad_woo_ids'=>[]];
+          foreach($codeIndex as $key=>$ids)if(count($ids)>1)$stats['duplicate_product_codes']++;
+          foreach($goods as $id=>$g){
+            $n=count($details[$id]??[]);
+            $stats[$n===0?'cloud_goods_zero_details':($n===1?'cloud_goods_one_detail':'cloud_goods_multiple_details')]++;
+          }
+          foreach($detailOwner as $did=>$pid)if(!isset($goods[$pid]))$stats['cloud_detail_parent_missing']++;
+          $posts=$wpdb->get_results("SELECT post_id,meta_key,meta_value FROM {$wpdb->postmeta}
+             WHERE meta_key IN ('mahak_id','mahak_product_detail_id') AND CAST(meta_value AS UNSIGNED)>0",ARRAY_A);
+          $pairs=[];
+          foreach($posts as $m) $pairs[(int)$m['post_id']][(string)$m['meta_key']]=(int)$m['meta_value'];
+          foreach($pairs as $wid=>$item){
+            $pid=(int)($item['mahak_id']??0);$did=(int)($item['mahak_product_detail_id']??0);
+            if($pid)$stats['has_mahak_product_meta']++;
+            if($did)$stats['has_mahak_product_detail_meta']++;
+            $issue=[];
+            if($pid&&!isset($goods[$pid])){$stats['site_product_meta_erp_missing_in_cloud']++;$issue[]='erp_product_not_in_cloud';}
+            if($did&&!isset($detailOwner[$did])){$stats['site_detail_meta_erp_missing_in_cloud']++;$issue[]='erp_detail_not_in_cloud';}
+            if($pid&&$did&&isset($detailOwner[$did])&&$pid!==$detailOwner[$did]){
+               $stats['site_detail_to_product_mismatch']++;$issue[]='erp_detail_wrong_parent';}
+            if($pid&&isset($goods[$pid])){
+              $sku=(string)get_post_meta($wid,'_sku',true);$code=(string)($goods[$pid]['ProductCode']??'');
+              if($sku!==''&&$code!==''&&$sku!==$code)$stats['site_erp_product_code_vs_woo_sku_different']++;
+            }
+            if($issue&&count($stats['sample_bad_woo_ids'])<12)$stats['sample_bad_woo_ids'][]=['woo_id'=>$wid,'why'=>$issue];
+          }
+          echo 'IDENTITY_GLOBAL_STATS='.json_encode($stats,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          $examples=[];
+          foreach([103201,87685,101738,52855] as $wid){
+            $p=wc_get_product($wid);if(!$p)continue;
+            $pid=(int)$p->get_meta('mahak_id',true);$did=(int)$p->get_meta('mahak_product_detail_id',true);
+            $examples[]=['woo_id'=>$wid,'woo_kind'=>$p->get_type(),'woo_sku'=>$p->get_sku(),
+              'erp_product_id'=>$pid,'erp_detail_id'=>$did,
+              'cloud_code'=>($goods[$pid]['ProductCode']??null),
+              'cloud_detail_owner'=>($detailOwner[$did]??null),
+              'mapping_valid'=>$pid>0&&$did>0&&isset($goods[$pid])&&($detailOwner[$did]??null)===$pid];
+          }
+          echo 'IDENTITY_SAMPLES='.json_encode($examples,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          $s=vms_search(['query'=>'103201']);
+          echo 'EXISTING_IMPORT_SEARCH_103201='.json_encode($s,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'SOURCE_READ_ONLY_IDENTIFIERS_NO_MUTATIONS=yes'.PHP_EOL;
+          PHP
