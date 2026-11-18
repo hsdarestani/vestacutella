@@ -1,0 +1,69 @@
+name: Vesta strictly preflight current blocked customer identity against independently fetched existing Mahak People
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-20261118-current-customer-strict-cloud-person-candidate-audit.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read cloud People and verify uniquely OTP-owned exact full names, no PII output
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1024M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);set_time_limit(0);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          $api=new BazaraApi(true);$res=$api->get_all_data('',array('fromPersonVersion'=>0));
+          if(!is_array($res)||empty($res['success'])||!is_array($res['message']['People']??null))exit(12);
+          $people=array_values(array_filter($res['message']['People'],fn($p)=>empty($p['Deleted'])));
+          $out=[];
+          foreach([105580,105537] as $id){
+            $o=wc_get_order($id);if(!$o)continue;
+            $uid=(int)$o->get_customer_id();$u=$uid?get_user_by('id',$uid):false;
+            $phone=vesta_otp_phone((string)$o->get_billing_phone());
+            $profilePhone=$uid?vesta_otp_phone((string)get_user_meta($uid,'billing_phone',true)):false;
+            $owner=$phone?vesta_otp_existing_user($phone):false;
+            $billName=vcar_identity_normalize_name($o->get_billing_first_name().' '.$o->get_billing_last_name());
+            $profileName=$u?vcar_identity_normalize_name($u->first_name.' '.$u->last_name):'';
+            $old=(int)get_user_meta($uid,'mahak_id',true);
+            $found=[];$phoneMatches=[];$sameClient=[];
+            foreach($people as $p){
+              $mob=vesta_otp_phone((string)($p['Mobile']??''));
+              $client=(int)($p['PersonClientID']??$p['PersonClientId']??0);
+              if($mob&&$mob===$phone)$phoneMatches[]=$p;
+              if($client>0&&$client===$uid)$sameClient[]=$p;
+              if(!$phone||!$mob||$mob!==$phone)continue;
+              $name=vcar_identity_normalize_name(($p['FirstName']??'').' '.($p['LastName']??''));
+              if($name!==''&&$name===$billName)$found[]=$p;
+            }
+            $currentProfile=$old?array_values(array_filter($people,fn($p)=>(int)($p['PersonId']??0)===$old)):[];
+            $proven=count($found)===1&&count($phoneMatches)===1&&count($sameClient)<=1&&
+              ($uid>0)&&$u&&!array_intersect((array)$u->roles,['administrator','shop_manager','editor','author'])&&
+              ((int)$owner===$uid)&&$phone===$profilePhone&&$profileName===$billName&&
+              ((int)($found[0]['PersonClientID']??$found[0]['PersonClientId']??0)===$uid);
+            $out[]=['order'=>$id,'paid'=>!!$o->get_date_paid(),'account_assigned'=>$uid>0,
+               'unique_verified_phone_owner_matches_account'=>is_numeric($owner)&&$uid>0&&(int)$owner===$uid,
+               'profile_phone_equals_checkout'=>$phone&&$phone===$profilePhone,
+               'profile_name_equals_billing'=>$billName!==''&&$billName===$profileName,
+               'cloud_persons_same_phone_count'=>count($phoneMatches),'cloud_exact_name_and_phone_count'=>count($found),
+               'cloud_persons_with_same_account_client_id'=>count($sameClient),
+               'old_link_exists'=>$old>0,'old_link_cloud_person_count'=>count($currentProfile),
+               'old_link_is_correct_exact_person'=>count($found)===1&&(int)$found[0]['PersonId']===$old,
+               'exact_safe_existing_person_relink_candidate'=>(bool)$proven,
+               'conflicting_existing_person_id'=>($old>0&&count($found)===1&&(int)$found[0]['PersonId']!==$old),
+               'candidate_erp_person_id'=>$proven?(int)$found[0]['PersonId']:0];
+          }
+          echo 'CURRENT_BLOCKED_CUSTOMER_RELINK_PREFLIGHT='.json_encode($out,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'CLOUD_PEOPLE_PRECHECK_READ_ONLY_NO_PERSON_ORDER_MUTATIONS=yes'.PHP_EOL;
+          PHP
