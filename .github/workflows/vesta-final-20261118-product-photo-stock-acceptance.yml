@@ -1,0 +1,61 @@
+name: Vesta final independent imported product media and warehouse acceptance
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-final-20261118-product-photo-stock-acceptance.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Verify live books, exact Mahak picture IDs, draft control and no missed remote images
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1536M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);set_time_limit(0);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          if(!function_exists('vesta_mhi_complete_draft')||
+             !function_exists('vesta_mhi_import_pictures')||
+             !function_exists('vesta_catalog_bazara_policy'))exit(11);
+          $p=wc_get_product(105617);$x=wc_get_product(105598);$mehrona=wc_get_product(103201);
+          if(!$p||!$x||!$mehrona)exit(12);
+          $a=vesta_mhi_plan(105617,10755477);
+          $b=vesta_mhi_plan(105598,10755484);
+          $valid=($p->get_regular_price()==='2599000'&&$p->get_stock_quantity()===24&&
+             (int)$p->get_image_id()===105559&&$p->get_status()==='draft'&&
+             $x->get_regular_price()==='777400'&&$x->get_stock_quantity()===8&&
+             $x->get_status()==='draft'&&
+             (int)$mehrona->get_image_id()===103196&&
+             !in_array(105559,$mehrona->get_gallery_image_ids(),true)&&
+             $a['total']===1&&$a['present']===1&&
+             !$a['missing']&&!$a['reuse']&&
+             $b['total']===5&&$b['present']===5&&
+             !$b['missing']&&!$b['reuse']);
+          $cfg=get_bazara_visitor_settings();
+          if(!$valid||!empty($cfg['chkPicture'])||
+              ($cfg['publishStatus']??'')!=='draft')exit(13);
+          $summ=[
+            'book_woo_id'=>105617,'book_price_toman'=>$p->get_regular_price(),
+            'book_real_warehouse_qty'=>$p->get_stock_quantity(),
+            'book_featured_photo_id'=>$p->get_image_id(),
+            'book_status'=>$p->get_status(),
+            'other_woo_id'=>105598,'other_price_toman'=>$x->get_regular_price(),
+            'other_warehouse_qty'=>$x->get_stock_quantity(),
+            'correctly_linked_cloud_photo_count'=>$a['present']+$b['present'],
+            'remaining_pictures_for_these_verified_goods'=>0,
+            'global_picture_replacement_disabled'=>true,
+            'new_products_start_as_draft'=>true
+          ];
+          echo 'VESTA_MAHAK_PRODUCT_IMPORT_FINAL_ACCEPTANCE='.json_encode($summ,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'VESTA_FINAL_INDEPENDENT_PRODUCT_MEDIA_AND_STOCK_PASS=yes'.PHP_EOL;
+          echo 'VESTA_FINAL_CHECK_READ_ONLY=yes'.PHP_EOL;
+          PHP
