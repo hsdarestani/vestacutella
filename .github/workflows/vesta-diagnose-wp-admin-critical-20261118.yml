@@ -1,0 +1,45 @@
+name: Vesta urgent diagnose WordPress admin PHP critical error read-only
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-diagnose-wp-admin-critical-20261118.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read latest PHP fatal patterns and WordPress critical diagnostics with sensitive values redacted
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -u
+          echo 'WP_CRITICAL_DIAGNOSTIC_BEGIN=yes'
+          echo 'UTC_TIME='$(date -u +%FT%TZ)
+          for host in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
+             for path in / /wp-login.php /wp-admin/ /wp-admin/admin-ajax.php;do
+               response=$(curl -kLsS --max-time 12 --connect-timeout 6 --resolve "$host:443:127.0.0.1" -o /dev/null -w '%{http_code}' "https://$host$path" 2>/dev/null || echo '000')
+               echo "WP_ROUTE_STATUS host=$host path=$path http=$response"
+             done
+          done
+          echo 'RECENT_DOCKER_PHP_FATAL_LOGS_START'
+          docker logs --since '2026-11-18T10:15:00Z' vc-vesta 2>&1 | grep -Eai 'PHP (Fatal|Parse|Warning)|Uncaught |Allowed memory|Call to undefined|Class .*not found|critical error|Uncaught Error|Stack trace' | tail -65 | sed -E 's/(password|token|secret|key)=([^[:space:]]+)/\1=<redacted>/Ig;s/([a-zA-Z0-9._%+-]+)@([a-zA-Z0-9.-]+)\.([a-zA-Z]{2,})/<email>/g' | cut -c 1-400 || true
+          echo 'RECENT_DOCKER_PHP_FATAL_LOGS_END'
+          for p in /srv/vestacutella/runtime/vesta/wp-content/debug.log /srv/vestacutella/runtime/vesta/error_log /srv/vestacutella/runtime/vesta/wp-admin/error_log;do
+            if test -f "$p";then
+              echo 'RECENT_WORDPRESS_ERROR_LOG_SOURCE='$(basename "$p")
+              tail -n 1200 "$p" | grep -Eai 'PHP (Fatal|Parse)|Uncaught |Allowed memory|Call to undefined|Class .*not found|Stack trace|critical error' | tail -70 | sed -E 's/([a-zA-Z0-9._%+-]+)@([a-zA-Z0-9.-]+)\.([a-zA-Z]{2,})/<email>/g' | cut -c 1-400 || true
+            fi
+          done
+          echo 'PHP_CONFIG_ADMIN_LOGGING'
+          docker exec vc-vesta php -r 'echo "php_version=".PHP_VERSION." memory_limit=".ini_get("memory_limit")." error_log_basename=".basename(ini_get("error_log")).PHP_EOL;' || true
+          echo 'MOST_RECENT_WP_PLUGIN_FILE_TIMES'
+          stat -c '%y %s %n' /srv/vestacutella/runtime/vesta/wp-content/mu-plugins/vesta-accounting-policy.php /srv/vestacutella/runtime/vesta/wp-content/plugins/bazara/classes/class.bazara.api.php /srv/vestacutella/runtime/vesta/wp-content/mu-plugins/vesta-accounting-reliability.php || true
+          echo 'WP_CRITICAL_DIAGNOSTIC_READ_ONLY=yes'
+          REMOTE
