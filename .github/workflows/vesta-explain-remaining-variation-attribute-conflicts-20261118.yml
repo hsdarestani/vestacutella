@@ -1,0 +1,97 @@
+name: Diagnose remaining nonunique Mahak variation attributes across current Vesta catalog
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-explain-remaining-variation-attribute-conflicts-20261118.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  explain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 13
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read source and site attributes and classify mismatch types without writes
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1536M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);set_time_limit(0);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $c=vmb_catalog(vmb_api());
+          $goods=[];$details=[];$norm=function($s){$s=rawurldecode((string)$s);
+           $s=strtr($s,['ي'=>'ی','ك'=>'ک','آ'=>'ا','‌'=>' ','٠'=>'0','١'=>'1','٢'=>'2','٣'=>'3','٤'=>'4','٥'=>'5','٦'=>'6','٧'=>'7','٨'=>'8','٩'=>'9','۰'=>'0','۱'=>'1','۲'=>'2','۳'=>'3','۴'=>'4','۵'=>'5','۶'=>'6','۷'=>'7','۸'=>'8','۹'=>'9']);
+           return preg_replace('/[^\p{L}\p{N}]+/u','',mb_strtolower($s,'UTF-8'));};
+          foreach($c['Products']??[] as $g)if(empty($g['Deleted']))$goods[(string)$g['ProductCode']]=$g;
+          foreach($c['ProductDetails']??[] as $d)if(empty($d['Deleted']))$details[(int)$d['ProductId']][]=$d;
+          $skuRows=$wpdb->get_results("SELECT p.ID,p.post_status,p.post_type,m.meta_value AS sku
+            FROM {$wpdb->posts} p JOIN {$wpdb->postmeta} m ON m.post_id=p.ID AND m.meta_key='_sku'
+            WHERE p.post_type IN ('product','product_variation') AND p.post_status IN ('publish','draft','private')
+            AND m.meta_value<>''",ARRAY_A);
+          $by=[];foreach($skuRows as $r)$by[(string)$r['sku']][]=$r;
+          $stat=['candidate_good_groups'=>0,'groups_no_exact_attribute'=>0,'groups_multi_attribute'=>0,
+           'groups_no_value_match'=>0,'groups_ambiguous_value'=>0,'groups_missing_prop_detail'=>0,
+           'groups_have_draft_detail_provenance'=>0,'groups_all_attr_match_but_still_blocked'=>0,
+           'examples'=>[]];
+          foreach($goods as $code=>$g){
+            if(!ctype_digit((string)$code) || count($by[$code]??[])!==1)continue;
+            $holder=$by[$code][0];
+            if($holder['post_type']!=='product'||$holder['post_status']!=='draft')continue;
+            $pid=(int)$code;$original=get_post($pid);
+            if(!$original||$original->post_type!=='product'||$original->post_status!=='publish'||
+              $norm($original->post_title)!==$norm($g['Name']))continue;
+            $parent=wc_get_product($pid);$draft=wc_get_product((int)$holder['ID']);
+            if(!$parent||!$draft||!$parent->is_type('variable'))continue;
+            $stat['candidate_good_groups']++;
+            $byValue=[];$allDetail=[];
+            foreach($details[(int)$g['ProductId']]??[] as $d){
+              $v=json_decode((string)($d['Properties']??''),true);
+              $vals=[];foreach(is_array($v)?$v:[] as $e)
+                if(is_array($e)&&isset($e['V'])&&trim((string)$e['V'])!=='')$vals[]=$norm($e['V']);
+              if(count($vals)===1)$byValue[$vals[0]][]=(int)$d['ProductDetailId'];
+              $allDetail[]=['id'=>(int)$d['ProductDetailId'],'attributes'=>array_map(
+                  fn($e)=>(string)($e['V']??''),is_array($v)?$v:[])];
+            }
+            $why=[];$sample=[];
+            $draftChildDetails=[];
+            foreach($draft->get_children() as $did){
+              $v=wc_get_product($did);if(!$v)continue;
+              $detail=(int)$v->get_meta('mahak_product_detail_id',true);
+              if($detail>0)$draftChildDetails[$detail]=['woo'=>$did,'prop_id'=>(int)$v->get_meta('prop_id',true)];
+            }
+            if(count($draftChildDetails)>0)$stat['groups_have_draft_detail_provenance']++;
+            foreach($parent->get_children() as $id){
+              $v=wc_get_product($id);if(!$v)continue;
+              $attrs=array_values($v->get_variation_attributes());
+              $value=count($attrs)===1?$norm($attrs[0]):'';
+              $n=count($byValue[$value]??[]);
+              if(count($attrs)!==1)$why['multi_attribute']=true;
+              elseif($value==='')$why['empty_attribute']=true;
+              elseif($n===0)$why['no_value_match']=true;
+              elseif($n>1)$why['ambiguous_match']=true;
+              if(count($sample)<9)$sample[]=['woo'=>$id,'attrs'=>$attrs,
+                'norm'=>$value,'matched_detail_ids'=>$byValue[$value]??[],
+                'current_detail_id'=>(int)$v->get_meta('mahak_product_detail_id',true)];
+            }
+            if(!$why)$stat['groups_all_attr_match_but_still_blocked']++;
+            else{
+              $stat['groups_no_exact_attribute']++;
+              if(isset($why['multi_attribute']))$stat['groups_multi_attribute']++;
+              if(isset($why['no_value_match'])||isset($why['empty_attribute']))$stat['groups_no_value_match']++;
+              if(isset($why['ambiguous_match']))$stat['groups_ambiguous_value']++;
+              if(count($stat['examples'])<10)$stat['examples'][]=[
+                 'cloud_code'=>$code,'woo_parent_id'=>$pid,'draft_id'=>(int)$holder['ID'],
+                 'goods_name'=>$g['Name'],'causes'=>array_keys($why),
+                 'live_variations'=>$sample,'cloud_details'=>array_slice($allDetail,0,12),
+                 'draft_child_details'=>$draftChildDetails];
+            }
+          }
+          echo 'VARIATION_ATTRIBUTE_CONFLICT_ANALYSIS='.json_encode($stat,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'READ_ONLY_NO_CATALOG_OR_ORDER_WRITES=yes'.PHP_EOL;
+          PHP
