@@ -1,0 +1,58 @@
+name: Correct Woo 105617 inventory from Bazara warehouse assets to 24
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/vesta-correct-105617-stock-from-assets-20261118.php
+      - .github/workflows/vesta-105617-correct-real-warehouse-stock-20261118.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-105617-inventory-correction
+  cancel-in-progress: false
+jobs:
+  correct:
+    runs-on: ubuntu-latest
+    timeout-minutes: 13
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq php-cli sshpass
+          php -l scripts/vesta-correct-105617-stock-from-assets-20261118.php
+      - name: Backed-up actual inventory repair with dry-run then readback
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e scp -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            scripts/vesta-correct-105617-stock-from-assets-20261118.php "root@$HOST:/tmp/vesta-correct-105617-real-stock.php"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          umask 077
+          exec 9>/run/lock/vesta-105617-inventory-repair.lock;flock -n 9
+          s=/tmp/vesta-correct-105617-real-stock.php
+          backup=/srv/backups/vesta-105617-real-stock-$(date -u +%Y%m%dT%H%M%SZ)
+          mkdir -m 0700 -p "$backup"
+          docker exec -i -e VESTA_105617_STOCK_COMMIT=no vc-vesta php -d memory_limit=1024M -d display_errors=0 < "$s" | tee "$backup/preflight.log"
+          grep -Fq 'AUTHORITATIVE_BOOK_STOCK_DRYRUN_NO_WRITES=yes' "$backup/preflight.log"
+          docker exec vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb-dump -uroot --single-transaction --quick "$MARIADB_DATABASE" wp_postmeta wp_wc_product_meta_lookup' | gzip -1 > "$backup/pre-inventory.sql.gz"
+          gzip -t "$backup/pre-inventory.sql.gz"
+          (cd "$backup";sha256sum pre-inventory.sql.gz > SHA256SUMS;sha256sum -c SHA256SUMS)
+          echo 'REAL_STOCK_DB_BACKUP_VALIDATED=yes'
+          docker exec -i -e VESTA_105617_STOCK_COMMIT=yes -e VESTA_105617_STOCK_BACKUP=yes \
+            vc-vesta php -d memory_limit=1024M -d display_errors=0 < "$s" | tee "$backup/commit.log"
+          grep -Fq 'AUTHORITATIVE_BOOK_STOCK_105617_CORRECTED=24' "$backup/commit.log"
+          docker exec -i vc-vesta php -d display_errors=0 <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          $p=wc_get_product(105617);
+          if(!$p || $p->get_stock_quantity()!==24 || $p->get_regular_price()!=='2599000' ||
+             (int)$p->get_image_id()!==105559 || $p->get_status()!=='draft')exit(88);
+          echo 'REAL_STOCK_INDEPENDENT_POST_WRITE_VERIFIED=24'.PHP_EOL;
+          PHP
+          echo 'REAL_STOCK_REPAIR_VERIFIED_SUCCESS=yes'
+          REMOTE
