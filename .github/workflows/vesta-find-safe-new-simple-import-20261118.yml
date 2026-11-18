@@ -1,0 +1,61 @@
+name: Vesta identify safe never-before-imported simple Mahak good for end-to-end canary
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-find-safe-new-simple-import-20261118.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 11
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Find unlinked Mahak goods without another Woo product or exact-title duplicate
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1536M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);set_time_limit(0);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $cat=vesta_mhi_catalog();$details=[];
+          foreach($cat['ProductDetails']??[] as $d)if(empty($d['Deleted']))$details[(int)$d['ProductId']][]=$d;
+          $titles=$wpdb->get_results("SELECT ID,post_title FROM {$wpdb->posts}
+            WHERE post_type='product' AND post_status IN ('publish','private','draft','pending','future')",ARRAY_A);
+          $names=[];foreach($titles as $r)$names[vesta_catalog_identity_normalize($r['post_title'])][]=(int)$r['ID'];
+          $result=['cloud_goods_checked'=>0,'no_exact_sku_owner'=>0,'safe_new_simple_candidates'=>[],
+             'excluded_ambiguous'=>[]];
+          foreach($cat['Products']??[] as $g) {
+            if(!empty($g['Deleted']))continue;
+            $result['cloud_goods_checked']++;
+            $code=(string)($g['ProductCode']??'');$gid=(int)($g['ProductId']??0);
+            if(!$code||!$gid||wc_get_product_id_by_sku($code))continue;
+            $result['no_exact_sku_owner']++;
+            $reason='';$ds=$details[$gid]??[];
+            $name=(string)($g['Name']??'');
+            if(count($ds)!==1)$reason='not_one_detail';
+            elseif(!is_numeric($ds[0]['Price1']??null)||(float)$ds[0]['Price1']<=0)$reason='no_price';
+            elseif(isset($names[vesta_catalog_identity_normalize($name)]))$reason='same_title_exists';
+            elseif(!empty(get_posts(['post_type'=>'product','post_status'=>['publish','draft','private'],
+              'meta_key'=>'mahak_id','meta_value'=>(string)$gid,'fields'=>'ids','numberposts'=>1])))$reason='erp_id_already_linked';
+            elseif(ctype_digit($code)){
+               $post=get_post((int)$code);
+               if($post&&in_array($post->post_type,['product','product_variation'],true))$reason='numeric_code_is_woo_id';
+            }
+            if(!$reason) {
+              $asset=$wpdb->get_row($wpdb->prepare("SELECT StoreId,Count1 FROM {$wpdb->prefix}bazara_product_assets
+                WHERE ProductDetailId=%d AND Deleted=0", (int)$ds[0]['ProductDetailId']),ARRAY_A);
+              if(!$asset)$reason='no_warehouse_asset';
+            }
+            $row=['code'=>$code,'erp_good_id'=>$gid,'name'=>$name,'reason'=>$reason,
+                 'erp_detail_id'=>count($ds)===1?(int)$ds[0]['ProductDetailId']:null];
+            if(!$reason)$result['safe_new_simple_candidates'][]=$row;
+            elseif(count($result['excluded_ambiguous'])<12)$result['excluded_ambiguous'][]=$row;
+          }
+          echo 'NEVER_IMPORTED_SIMPLE_GOOD_DISCOVERY='.json_encode($result,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'UNIMPORTED_GOOD_DISCOVERY_READ_ONLY=yes'.PHP_EOL;
+          PHP
