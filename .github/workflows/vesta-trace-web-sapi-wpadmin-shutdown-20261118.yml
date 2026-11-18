@@ -1,0 +1,56 @@
+name: Vesta urgent pinpoint admin PHP fatal via temporary removed shutdown reporter
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-trace-web-sapi-wpadmin-shutdown-20261118.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Report fatal source from real HTTP request, uninstall the temporary observer
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          umask 077
+          exec 9>/run/lock/vesta-wp-admin-fatal-diag.lock
+          flock -n 9
+          www=/srv/vestacutella/runtime/vesta/wp-content
+          diag="$www/mu-plugins/zz-vesta-temp-admin-fatal-diagnostic-20261118.php"
+          if test -e "$diag";then echo 'DIAGNOSTIC_PATH_ALREADY_USED_ABORT=yes';exit 5;fi
+          trap 'rm -f "$diag"; echo "TEMPORARY_PHP_OBSERVER_REMOVED=yes"' EXIT
+          cat > "$diag" <<'PHP'
+          <?php
+          if(PHP_SAPI!=='cli' && isset($_SERVER['REQUEST_URI']) &&
+             preg_match('#^/(wp-login\.php|wp-admin(?:/|$))#', (string)$_SERVER['REQUEST_URI'])){
+            register_shutdown_function(static function () {
+              $e=error_get_last();
+              if(!is_array($e))return;
+              if(!in_array((int)$e['type'],[E_ERROR,E_PARSE,E_COMPILE_ERROR,E_CORE_ERROR,E_USER_ERROR],true))return;
+              $msg=preg_replace('/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/','<email>',(string)$e['message']);
+              $msg=preg_replace('/(password|token|secret|api.?key|authorization)[^[:space:]]{0,10}=[^[:space:]]+/i','$1=<redacted>',$msg);
+              $data=['type'=>$e['type'],'file'=>$e['file'],'line'=>$e['line'],'message'=>substr($msg,0,1200)];
+              @file_put_contents('/tmp/vesta-admin-crash-reason-20261118.log',json_encode($data,JSON_UNESCAPED_UNICODE)."\n",FILE_APPEND|LOCK_EX);
+            });
+          }
+          PHP
+          chmod 0644 "$diag"
+          echo 'PHP_OBSERVER_INSTALLED_TEMPORARILY=yes'
+          docker exec -i vc-vesta php -l < "$diag"
+          for path in /wp-login.php /wp-admin/ /wp-admin/admin-ajax.php;do
+            code=$(curl -kLsS --connect-timeout 7 --max-time 19 --resolve vesta-cosmetics.ir:443:127.0.0.1 -o /dev/null -w '%{http_code}' "https://vesta-cosmetics.ir$path" || true)
+            echo "ADMIN_DIAG_ROUTE=$path HTTP=$code"
+          done
+          echo 'CAPTURED_PHP_FATAL_LINES_BEGIN'
+          docker exec vc-vesta sh -c 'test -f /tmp/vesta-admin-crash-reason-20261118.log && tail -n 12 /tmp/vesta-admin-crash-reason-20261118.log || echo WP_FATAL_OBSERVER_FILE_NOT_CREATED' | cut -c 1-1800
+          echo 'CAPTURED_PHP_FATAL_LINES_END'
+          echo 'DO_NOT_CHANGE_ORDER_STOCK_OR_PAYMENT_DATA=yes'
+          REMOTE
