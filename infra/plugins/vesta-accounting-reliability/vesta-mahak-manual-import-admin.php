@@ -47,6 +47,17 @@ function vesta_mhi_identity_guard($woo_id,$erp_id,$expected_code='') {
         throw new RuntimeException('عکس‌های کالای دارای تنوع باید به محصول مادر وارد شوند؛ تنوع با شناسه محصول مستقل محک همگام نمی‌شود.');
     if ($expected_code!=='' && (string)($source['ProductCode']??'')!==$expected_code)
         throw new RuntimeException('کد کالای محک با نتیجه جست‌وجو متفاوت است.');
+    if (!function_exists('vesta_catalog_bazara_policy'))
+        throw new RuntimeException('محافظ هویت کد کالا نصب نیست؛ انتقال متوقف شد.');
+    $policy=vesta_catalog_bazara_policy([
+        'ProductCode'=>(string)($source['ProductCode']??''),
+        'ProductId'=>$erp_id,
+        'name'=>(string)($source['Name']??''),
+        'type'=>$p->is_type('variable')?'variable':'simple',
+        'vars'=>$p->is_type('variable')?[1]:[],
+    ]);
+    if (empty($policy['allow']))
+        throw new RuntimeException('کد محصول در بازارا هنوز مالک تأییدشده ندارد؛ ابتدا مغایرت شناسه‌ها رفع شود: '.($policy['reason']??'unknown'));
     if (!vesta_mhi_name_compatible($p->get_name(),$source['Name']??'')) {
         throw new RuntimeException('تعارض هویت محصول: نام کالای محک با نام محصول سایت متفاوت است. انتقال عکس متوقف شد؛ اتصال شناسه‌ها باید بررسی شود.');
     }
@@ -251,12 +262,21 @@ function vesta_mhi_admin_page() {
         if ($woo) echo 'موجود در سایت ('.(int)$woo.')';
         else echo $count===1?'قابل ایجاد به‌صورت پیش‌نویس':'نیازمند بررسی تنوع‌ها';
         echo '</td><td>';
-        $identityConflict=false;
+        $identityConflict=false;$sourceBlocked=false;
         if ($woo) {
             $wp=wc_get_product($woo);
             $identityConflict=(!$wp || !vesta_mhi_name_compatible($wp->get_name(),$item['name']));
         }
-        if ($identityConflict) {echo '<strong style="color:#b91c1c">تعارض شناسه: نام سایت و محک متفاوت است؛ انتقال ممنوع</strong>';}
+        if (function_exists('vesta_catalog_bazara_policy')) {
+            $policy=vesta_catalog_bazara_policy([
+                'ProductCode'=>$code,'ProductId'=>$id,'name'=>(string)$item['name'],
+                'type'=>$count>1?'variable':'simple','vars'=>$count>1?[1]:[],
+            ]);
+            $sourceBlocked=empty($policy['allow']);
+        } else $sourceBlocked=true;
+        if ($identityConflict || $sourceBlocked) {
+            echo '<strong style="color:#b91c1c">این کد به محصول سایت درست متصل نشده؛ انتقال تا رفع مغایرت مسدود است</strong>';
+        }
         elseif (!$woo && $count!==1) {echo 'انتقال خودکار متوقف: جزئیات کالا یکتا نیست';}
         else {
             echo '<form method="post" action="'.esc_url(admin_url('admin-post.php')).'">';
