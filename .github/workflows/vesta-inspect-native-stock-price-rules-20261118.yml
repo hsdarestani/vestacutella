@@ -1,0 +1,66 @@
+name: Vesta inspect Bazara native price and stock derivation for safe draft enrichment
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-inspect-native-stock-price-rules-20261118.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read native stock and price behavior, compare existing cloud details against Woo
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          root=Path('/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara/classes')
+          patt=re.compile(r'function\s+(get_.*quantity|.*stock.*|.*price.*)|set_stock_quantity|set_regular_price|get_post_meta.*mahak_product_detail_id|Count1|Count2|qty.*ProductDetailId',re.I)
+          for name in ['functions.php','class.bazara.api.php']:
+            p=root/name; lines=p.read_text(errors='replace').splitlines()
+            found=0
+            for i,line in enumerate(lines):
+              if not patt.search(line):continue
+              s=line.strip()
+              if re.search('(?i)(password|secret|token|authorization|api.?key|http://|https://)',s):continue
+              print('NATIVE_PRICE_STOCK_SOURCE',name,i+1,s[:210])
+              found+=1
+              if found>=95:break
+          PY
+          docker exec -i vc-vesta php -d memory_limit=1536M -d display_errors=0 <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);set_time_limit(0);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $cat=vmb_catalog(vmb_api());$source=[];
+          foreach($cat['ProductDetails']??[] as $d)if(empty($d['Deleted']))$source[(int)($d['ProductDetailId']??0)]=$d;
+          $res=[];$known=0;$zero=0;$positive=0;
+          $posts=$wpdb->get_results("SELECT p.ID,p.post_type,p.post_status,m.meta_value detail_id
+            FROM {$wpdb->posts} p JOIN {$wpdb->postmeta} m ON m.post_id=p.ID
+            AND m.meta_key='mahak_product_detail_id'
+            WHERE p.post_type IN ('product','product_variation') AND p.post_status='publish' AND m.meta_value<>'' ORDER BY p.ID DESC LIMIT 800",ARRAY_A);
+          foreach($posts as $p){
+            $id=(int)$p['ID'];$d=$source[(int)$p['detail_id']]??null;if(!$d)continue;
+            $w=wc_get_product($id);if(!$w)continue;
+            $count1=$d['Count1']??null;$count2=$d['Count2']??null;
+            if(!is_numeric($count1)||!is_numeric($count2))continue;
+            $known++;
+            if((float)$count1===0.0)$zero++;else $positive++;
+            if(count($res)<16)$res[]=['woo'=>$id,'sku'=>$w->get_sku(),'type'=>$w->get_type(),
+              'woo_price'=>$w->get_regular_price(),'cloud_Price1'=>$d['Price1']??null,
+              'woo_qty'=>$w->get_stock_quantity(),'cloud_Count1'=>$count1,'cloud_Count2'=>$count2,
+              'woo_manage_stock'=>$w->get_manage_stock(),'woo_stock_status'=>$w->get_stock_status()];
+          }
+          echo 'NATIVE_PRICE_STOCK_COMPARISON='.json_encode(['known'=> $known,'cloud_count1_zero'=>$zero,'cloud_count1_positive'=>$positive,'samples'=>$res],JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'NATIVE_STOCK_AUDIT_READ_ONLY=yes'.PHP_EOL;
+          PHP
+          REMOTE
