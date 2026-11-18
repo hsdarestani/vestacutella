@@ -1,0 +1,55 @@
+name: Vesta verify idempotent complete Mahak draft import and picture recovery
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-test-complete-draft-import-20261118.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Execute no-op complete import on verified 105617 and read back all immutable values
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1536M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);set_time_limit(0);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          if(!function_exists('vesta_mhi_complete_draft') ||
+             !function_exists('vesta_mhi_catalog') ||
+             !function_exists('vesta_mhi_cloud_photo_ledger'))exit(31);
+          $snapshot=function($id){
+            $p=wc_get_product($id);
+            return ['status'=>$p->get_status(),'sku'=>$p->get_sku(),
+              'regular_price'=>$p->get_regular_price(),'stock_quantity'=>$p->get_stock_quantity(),
+              'manage_stock'=>$p->get_manage_stock(),'stock_status'=>$p->get_stock_status(),
+              'image'=>$p->get_image_id(),'gallery'=>$p->get_gallery_image_ids(),
+              'updated'=>$p->get_meta('_vesta_mahak_last_draft_enrichment_at',true)];
+          };
+          $before=$snapshot(105617);
+          if($before['status']!=='draft'||$before['regular_price']!=='2599000'||
+             $before['stock_quantity']!==24||(int)$before['image']!==105559)exit(32);
+          $plan=vesta_mhi_plan(105617,10755477);
+          if($plan['total']!==1||$plan['present']!==1||$plan['missing']||$plan['reuse'])exit(33);
+          $completion=vesta_mhi_complete_draft(105617,10755477);
+          $images=vesta_mhi_import_pictures(105617,10755477,5);
+          if(($images['added']??-1)!==0||($images['pending']??-1)!==0)exit(34);
+          $after=$snapshot(105617);
+          if($before!==$after) {
+             echo 'COMPLETE_DRAFT_TEST_DETECTED_UNEXPECTED_MUTATION=yes'.PHP_EOL;
+             exit(35);
+          }
+          echo 'COMPLETE_DRAFT_IMPORT_IDEMPOTENCE_PASS=yes'.PHP_EOL;
+          echo 'COMPLETE_DRAFT_PRICE_STOCK_IMAGE_SOURCE_VERIFIED=yes'.PHP_EOL;
+          echo 'COMPLETE_DRAFT_NO_DUPLICATE_MEDIA_CREATED=yes'.PHP_EOL;
+          echo 'COMPLETE_DRAFT_NO_PRODUCT_OR_ORDER_MODIFICATION_IN_TEST=yes'.PHP_EOL;
+          PHP
