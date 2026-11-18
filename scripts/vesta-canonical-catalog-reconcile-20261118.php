@@ -232,7 +232,7 @@ try{
    $draft=wc_get_product((int)$oldPlan['draft_id']);
    if(!$fresh||!$draft||
      (string)get_post_meta($oldPlan['parent_id'],'_sku',true)!=='' ||
-     (string)get_post_meta($oldPlan['draft_id'],'_sku',true)!==$code)
+     (string)get_post_meta($oldPlan['draft_id'],'_sku',true)!==(string)$code)
        throw new RuntimeException('concurrent_sku_owner_change');
    vci_write($oldPlan);$done++;
  }
