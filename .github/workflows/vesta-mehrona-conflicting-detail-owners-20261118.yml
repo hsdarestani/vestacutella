@@ -1,0 +1,45 @@
+name: Vesta audit colliding Mehrona Mahak detail owners and product status
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-mehrona-conflicting-detail-owners-20261118.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 13
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Identify all other Woo records holding Mehrona detail ids read-only
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1024M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          foreach([12183947,12183543] as $detail){
+            $ids=$wpdb->get_col($wpdb->prepare("SELECT post_id FROM {$wpdb->postmeta}
+              WHERE meta_key='mahak_product_detail_id' AND meta_value=%s",strval($detail)));
+            $owners=[];
+            foreach($ids as $id){
+              $p=wc_get_product((int)$id);$post=get_post((int)$id);
+              $cnt=(int)$wpdb->get_var($wpdb->prepare(
+                 "SELECT COUNT(DISTINCT order_item_id) FROM {$wpdb->prefix}woocommerce_order_itemmeta
+                  WHERE meta_key='_variation_id' AND meta_value=%s",strval($id)));
+              $owners[]=['woo_id'=>(int)$id,'type'=>$post?$post->post_type:null,
+                'post_status'=>$post?$post->post_status:null,'name'=>$p?$p->get_name():null,
+                'sku'=>$p?$p->get_sku():null,'parent_woo_id'=>$p?$p->get_parent_id():null,
+                'mahak_id'=>(int)get_post_meta((int)$id,'mahak_id',true),
+                'mahak_detail'=>(int)get_post_meta((int)$id,'mahak_product_detail_id',true),
+                'historic_order_lines'=>$cnt];
+            }
+            echo 'MEHRONA_DETAIL_OWNER_'.$detail.'='.json_encode($owners,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          }
+          echo 'READ_ONLY_DUPLICATE_DETAIL_OWNERS=yes'.PHP_EOL;
+          PHP
