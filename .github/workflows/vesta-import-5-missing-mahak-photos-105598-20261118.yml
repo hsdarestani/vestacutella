@@ -1,0 +1,89 @@
+name: Vesta safely import five Mahak Cloud pictures to verified Woo 105598
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-import-5-missing-mahak-photos-105598-20261118.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-image-import-105598
+  cancel-in-progress: false
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 17
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Inspect remote pictures, backup and import only exact verified Mahak ID
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          umask 077
+          exec 9>/run/lock/vesta-five-photos-105598.lock;flock -n 9
+          dir=/srv/backups/vesta-five-photos-105598-$(date -u +%Y%m%dT%H%M%SZ)
+          mkdir -m 0700 -p "$dir"
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1280M <<'PHP' | tee "$dir/preflight.log"
+          <?php
+          error_reporting(E_ERROR|E_PARSE);set_time_limit(0);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          $w=wc_get_product(105598);$plan=vesta_mhi_plan(105598,10755484);
+          if(!$w||$plan['total']!==5||$plan['present']!==0||
+             count($plan['missing'])!==5||$plan['reuse'])exit(35);
+          $base=vesta_mhi_photo_base_url();$files=[];
+          foreach($plan['missing'] as $photo){
+            $filename=basename((string)$photo['Url']);
+            if(!preg_match('/^[a-zA-Z0-9_.-]+\.jpe?g$/i',$filename))exit(36);
+            $response=wp_safe_remote_head($base.'/'.$filename,['timeout'=>20,'redirection'=>2,'sslverify'=>true]);
+            $status=is_wp_error($response)?0:wp_remote_retrieve_response_code($response);
+            $type=is_wp_error($response)?'':wp_remote_retrieve_header($response,'content-type');
+            if((int)$status!==200||stripos((string)$type,'image/jpeg')!==0)exit(37);
+            $files[]=(int)$photo['PictureId'];
+          }
+          echo 'FIVE_MAHAK_PICTURES_PREFLIGHT='.json_encode([
+            'woo_product'=>105598,'mahak_good_id'=>10755484,'picture_ids'=>$files,
+            'status'=>$w->get_status(),'price'=>$w->get_regular_price(),
+            'stock'=>$w->get_stock_quantity(),
+            'featured'=>$w->get_image_id(),'previous_gallery'=>$w->get_gallery_image_ids()]).PHP_EOL;
+          echo 'FIVE_PICTURES_REMOTE_HEADS_ALL_200_JPEG=yes'.PHP_EOL;
+          PHP
+          grep -Fq 'FIVE_PICTURES_REMOTE_HEADS_ALL_200_JPEG=yes' "$dir/preflight.log"
+          docker exec vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb-dump -uroot --single-transaction --quick "$MARIADB_DATABASE" wp_posts wp_postmeta wp_wc_product_meta_lookup' | gzip -1 > "$dir/woo_media_before.sql.gz"
+          gzip -t "$dir/woo_media_before.sql.gz"
+          (cd "$dir";sha256sum woo_media_before.sql.gz > SHA256SUMS;sha256sum -c SHA256SUMS)
+          echo 'FIVE_PICTURES_DATABASE_BACKUP_VERIFIED=yes'
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1280M <<'PHP' | tee "$dir/import.log"
+          <?php
+          error_reporting(E_ERROR|E_PARSE);set_time_limit(0);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          $old=wc_get_product(105598);
+          $before=['sku'=>$old->get_sku(),'status'=>$old->get_status(),
+            'price'=>$old->get_regular_price(),'stock'=>$old->get_stock_quantity(),
+            'manage_stock'=>$old->get_manage_stock(),'featured'=>$old->get_image_id(),
+            'gallery'=>$old->get_gallery_image_ids()];
+          $r=vesta_mhi_import_pictures(105598,10755484,5);
+          $p=wc_get_product(105598);
+          if(($r['added']??0)!==5 || ($r['pending']??100)!==0 ||
+            !$p||$p->get_sku()!==$before['sku']||
+            $p->get_status()!==$before['status']||
+            $p->get_regular_price()!==$before['price']||
+            $p->get_stock_quantity()!==$before['stock']||
+            $p->get_manage_stock()!==$before['manage_stock']||
+            ($before['featured'] && $p->get_image_id()!==$before['featured'])){
+            echo 'FIVE_MAHAK_PICTURES_INCOMPLETE='.json_encode($r,JSON_UNESCAPED_UNICODE).PHP_EOL;
+            exit(41);
+          }
+          $plan=vesta_mhi_plan(105598,10755484);
+          if($plan['present']!==5||$plan['missing']||$plan['reuse'])exit(42);
+          echo 'FIVE_MAHAK_PICTURES_IMPORTED_VERIFIED=yes'.PHP_EOL;
+          echo 'FIVE_MAHAK_PICTURES_NO_PRICE_STOCK_OR_OLD_IMAGE_CHANGES=yes'.PHP_EOL;
+          PHP
+          grep -Fq 'FIVE_MAHAK_PICTURES_IMPORTED_VERIFIED=yes' "$dir/import.log"
+          echo 'FIVE_MAHAK_PICTURES_PRODUCTION_SUCCESS=yes'
+          REMOTE
