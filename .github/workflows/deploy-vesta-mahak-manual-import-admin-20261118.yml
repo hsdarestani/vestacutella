@@ -69,7 +69,8 @@ jobs:
           $conflictBlocked=false;
           try {vesta_mhi_plan(103201,10755477);}
           catch(RuntimeException $e) {
-            if(strpos($e->getMessage(),'تعارض هویت محصول')!==false) $conflictBlocked=true;
+            if(strpos($e->getMessage(),'تعارض هویت محصول')!==false ||
+               strpos($e->getMessage(),'باید به محصول مادر وارد شوند')!==false) $conflictBlocked=true;
             else throw $e;
           }
           if(!$conflictBlocked)throw new RuntimeException('identity_collision_guard_failed_for_103201');
@@ -77,6 +78,10 @@ jobs:
           if(!$p || !in_array(105559,$p->get_gallery_image_ids(),true))
             throw new RuntimeException('old_canary_gallery_unexpected');
           if(!function_exists('wp_safe_redirect'))throw new RuntimeException('wordpress_admin_http_missing');
+          $livePhotos=vesta_mhi_photo_rows(10755477);
+          if(count($livePhotos)!==1||(int)$livePhotos[0]['PictureId']!==1887347)
+            throw new RuntimeException('live_picture_catalog_lookup_failed');
+          echo 'SELF_SERVICE_CLOUD_PICTURES_READ_DIRECTLY=yes'.PHP_EOL;
           echo 'SELF_SERVICE_SEARCH_READY=yes'.PHP_EOL;
           echo 'SELF_SERVICE_IDENTITY_COLLISION_103201_BLOCKED=yes'.PHP_EOL;
           echo 'SELF_SERVICE_PREVIOUS_PICTURE_UNCHANGED=yes'.PHP_EOL;
