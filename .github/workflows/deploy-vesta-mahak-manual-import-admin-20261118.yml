@@ -66,12 +66,20 @@ jobs:
           if(!function_exists('vesta_mhi_plan'))throw new RuntimeException('image_plan_not_loaded');
           $r=vms_search(['query'=>'103201']);
           if(!is_array($r)||empty($r['items']))throw new RuntimeException('existing_catalog_search_failed');
-          $plan=vesta_mhi_plan(103201,10755477);
-          if($plan['total']<1||$plan['present']<1)throw new RuntimeException('existing_photo_canary_not_verified');
+          $conflictBlocked=false;
+          try {vesta_mhi_plan(103201,10755477);}
+          catch(RuntimeException $e) {
+            if(strpos($e->getMessage(),'تعارض هویت محصول')!==false) $conflictBlocked=true;
+            else throw $e;
+          }
+          if(!$conflictBlocked)throw new RuntimeException('identity_collision_guard_failed_for_103201');
+          $p=wc_get_product(103201);
+          if(!$p || !in_array(105559,$p->get_gallery_image_ids(),true))
+            throw new RuntimeException('old_canary_gallery_unexpected');
           if(!function_exists('wp_safe_redirect'))throw new RuntimeException('wordpress_admin_http_missing');
           echo 'SELF_SERVICE_SEARCH_READY=yes'.PHP_EOL;
-          echo 'SELF_SERVICE_CANARY_PHOTO_ALREADY_PRESENT=yes'.PHP_EOL;
-          echo 'SELF_SERVICE_PENDING_PHOTOS='.(int)count($plan['missing']).PHP_EOL;
+          echo 'SELF_SERVICE_IDENTITY_COLLISION_103201_BLOCKED=yes'.PHP_EOL;
+          echo 'SELF_SERVICE_PREVIOUS_PICTURE_UNCHANGED=yes'.PHP_EOL;
           echo 'SELF_SERVICE_ADMIN_TOOL_DEPLOY_NO_CATALOG_OR_FINANCIAL_WRITES=yes'.PHP_EOL;
           PHP
           for host in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
