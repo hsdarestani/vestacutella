@@ -1,0 +1,84 @@
+name: Vesta audit all Mahak code ownership by raw Woo SKU and canonical parent ID
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-canonical-sku-ownership-20261118.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 14
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Determine exact code owner and recoverable published parent candidates read-only
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1400M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);set_time_limit(0);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $catalog=vmb_catalog(vmb_api());
+          $goods=[];$details=[];
+          foreach($catalog['Products']??[] as $g)if(empty($g['Deleted']))$goods[(string)($g['ProductCode']??'')]=$g;
+          foreach($catalog['ProductDetails']??[] as $d)if(empty($d['Deleted']))$details[(int)$d['ProductId']][]=$d;
+          $rows=$wpdb->get_results("SELECT p.ID,p.post_status,p.post_type,p.post_parent,p.post_title,m.meta_value AS sku
+             FROM {$wpdb->posts} p JOIN {$wpdb->postmeta} m ON m.post_id=p.ID AND m.meta_key='_sku'
+             WHERE p.post_type IN ('product','product_variation') AND p.post_status IN ('publish','draft','private','future','pending')
+               AND m.meta_value<>''",ARRAY_A);
+          $by=[];foreach($rows as $row)$by[(string)$row['sku']][]=$row;
+          $norm=function($x){$x=strtr((string)$x,['ي'=>'ی','ك'=>'ک','آ'=>'ا','‌'=>' ','۰'=>'0','۱'=>'1','۲'=>'2','۳'=>'3','۴'=>'4','۵'=>'5','۶'=>'6','۷'=>'7','۸'=>'8','۹'=>'9']);return preg_replace('/[^\p{L}\p{N}]+/u','',mb_strtolower($x,'UTF-8'));};
+          $s=['cloud_good_codes'=>count($goods),'single_raw_sku_owner'=>0,'zero_raw_sku_owner'=>0,'multiple_raw_sku_owner'=>0,
+              'raw_sku_owner_draft_product'=>0,'raw_sku_owner_published_product'=>0,'raw_sku_owner_published_variation'=>0,
+              'raw_sku_owner_nonmatching_name'=>0,'raw_sku_owner_matches_name'=>0,
+              'published_parent_equal_to_code_exact_name'=>0,
+              'published_parent_equal_to_code_but_sku_empty'=>0,
+              'published_parent_equal_to_code_conflicting_draft_sku'=>0,
+              'recoverable_duplicate_draft_examples'=>[],'nonmatching_owner_examples'=>[],'missing_examples'=>[],
+              'multi_detail_with_live_parent_exact_title'=>0,'multi_detail_with_live_parent_and_draft_owner'=>0];
+          foreach($goods as $code=>$good){
+             $own=$by[$code]??[];$count=count($own);$n=$norm($good['Name']??'');
+             $parentPost=ctype_digit((string)$code)?get_post((int)$code):null;
+             $live=$parentPost && $parentPost->post_type==='product' && $parentPost->post_status==='publish'
+                  && $norm($parentPost->post_title)===$n;
+             $multi=count($details[(int)($good['ProductId']??0)]??[])>1;
+             if($live){
+               $s['published_parent_equal_to_code_exact_name']++;
+               $liveSku=(string)get_post_meta($parentPost->ID,'_sku',true);
+               if($liveSku==='')$s['published_parent_equal_to_code_but_sku_empty']++;
+               if($multi)$s['multi_detail_with_live_parent_exact_title']++;
+             }
+             if($count===0){
+               $s['zero_raw_sku_owner']++;if(count($s['missing_examples'])<10)$s['missing_examples'][]=['code'=>$code,'name'=>$good['Name']];
+               continue;
+             }
+             if($count>1){$s['multiple_raw_sku_owner']++;continue;}
+             $s['single_raw_sku_owner']++;
+             $owner=$own[0];
+             if($owner['post_type']==='product_variation')$title=get_the_title((int)$owner['post_parent']);
+             else $title=$owner['post_title'];
+             $match=$norm($title)===$n;
+             $s[$match?'raw_sku_owner_matches_name':'raw_sku_owner_nonmatching_name']++;
+             if($owner['post_type']==='product'&&$owner['post_status']==='draft')$s['raw_sku_owner_draft_product']++;
+             if($owner['post_type']==='product'&&$owner['post_status']==='publish')$s['raw_sku_owner_published_product']++;
+             if($owner['post_type']==='product_variation'&&$owner['post_status']==='publish')$s['raw_sku_owner_published_variation']++;
+             if($live && $owner['post_type']==='product' && $owner['post_status']==='draft' && (int)$owner['ID']!==$parentPost->ID &&
+                $norm($owner['post_title'])===$n){
+               $s['published_parent_equal_to_code_conflicting_draft_sku']++;
+               if($multi)$s['multi_detail_with_live_parent_and_draft_owner']++;
+               if(count($s['recoverable_duplicate_draft_examples'])<15)$s['recoverable_duplicate_draft_examples'][]=[
+                 'code'=>$code,'published_woo'=>(int)$parentPost->ID,'draft_woo'=>(int)$owner['ID'],
+                 'erp_id'=>(int)$good['ProductId'],'detail_count'=>count($details[(int)$good['ProductId']]??[])];
+             }
+             if(!$match&&count($s['nonmatching_owner_examples'])<20)$s['nonmatching_owner_examples'][]=[
+               'code'=>$code,'erp_name'=>$good['Name'],'owner_id'=>(int)$owner['ID'],
+               'owner_status'=>$owner['post_status'],'owner_type'=>$owner['post_type'],
+               'owner_name'=>$title,'live_parent_equal_code_name'=>$live];
+          }
+          echo 'CANONICAL_SKU_OWNER_AUDIT='.json_encode($s,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'NO_SKU_OR_PRODUCT_WRITES=yes'.PHP_EOL;
+          PHP
