@@ -1,0 +1,89 @@
+name: Vesta diagnose missing product pictures 105604 and code 103260
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-photo-diag-105604-20261119.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnostic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 14
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read current Mahak Cloud picture list and exact Woo product links
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1536M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);set_time_limit(0);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          echo 'DIAG_105604_UTC='.gmdate('c').PHP_EOL;
+          $id=105604;$p=wc_get_product($id);
+          if(!$p){echo 'DIAG_105604_MISSING=yes'.PHP_EOL;exit(20);}
+          $erp=(int)$p->get_meta('mahak_id',true);
+          $code=(string)$p->get_sku();
+          $children=[];
+          if(method_exists($p,'get_children'))foreach($p->get_children() as $cid){
+             $v=wc_get_product($cid);if(!$v)continue;
+             $children[]=['woo'=>$cid,'sku'=>$v->get_sku(),
+               'detail'=>(int)$v->get_meta('mahak_product_detail_id',true),
+               'erp'=>(int)$v->get_meta('mahak_id',true),'image'=>$v->get_image_id(),
+               'price'=>$v->get_regular_price(),'quantity'=>$v->get_stock_quantity()];
+          }
+          echo 'DIAG_105604_WOO='.wp_json_encode([
+            'woo_id'=>$id,'type'=>$p->get_type(),'status'=>$p->get_status(),
+            'name'=>$p->get_name(),'sku'=>$code,'erp_id'=>$erp,
+            'image_id'=>$p->get_image_id(),'gallery_ids'=>$p->get_gallery_image_ids(),
+            'price'=>$p->get_regular_price(),'quantity'=>$p->get_stock_quantity(),
+            'children'=>$children
+          ],JSON_UNESCAPED_UNICODE).PHP_EOL;
+          $catalog=vesta_mhi_catalog();$goods=[];$details=[];
+          foreach($catalog['Products']??[] as $g)if(!empty($g['Deleted']))continue;else
+            if((int)($g['ProductId']??0)===$erp || (string)($g['ProductCode']??'')==='103260')
+            $goods[]=['id'=>(int)$g['ProductId'],'code'=>(string)$g['ProductCode'],'name'=>$g['Name']];
+          foreach($catalog['ProductDetails']??[] as $d)if(empty($d['Deleted'])&&(int)$d['ProductId']===$erp)
+             $details[]=['detail_id'=>(int)$d['ProductDetailId'],'price1'=>$d['Price1']??null,
+              'properties'=>$d['Properties']??null];
+          echo 'DIAG_105604_MAHAK_SOURCE='.wp_json_encode(['goods'=>$goods,'detail_count'=>count($details),'details'=>array_slice($details,0,15)],JSON_UNESCAPED_UNICODE).PHP_EOL;
+          $ledger=vesta_mhi_cloud_photo_ledger();$ids=[];$links=[];$tot=0;
+          foreach($ledger['Pictures']??[] as $pic)if(empty($pic['Deleted'])){$ids[(int)$pic['PictureId']]=$pic;$tot++;}
+          foreach($ledger['PhotoGalleries']??[] as $rel)if(empty($rel['Deleted'])&&(int)($rel['ItemCode']??0)===$erp){
+             $pic=(int)($rel['PictureId']??0);
+             $links[]=['picture_id'=>$pic,'file_available'=>isset($ids[$pic]),'filename'=>$ids[$pic]['Url']??''];
+          }
+          echo 'DIAG_105604_CLOUD_PHOTOS='.wp_json_encode([
+             'cloud_active_picture_count'=>$tot,'image_relations_for_this_good'=>$links],JSON_UNESCAPED_UNICODE).PHP_EOL;
+          $tables=[];foreach(['bazara_pictures','bazara_photo_gallery'] as $table){
+             $full=$wpdb->prefix.$table;
+             $schema=$wpdb->get_col("SHOW COLUMNS FROM $full",0);
+             $count=(int)$wpdb->get_var("SELECT COUNT(*) FROM $full");
+             $byGood=$table==='bazara_photo_gallery'?(array)$wpdb->get_results(
+                 $wpdb->prepare("SELECT * FROM $full WHERE ItemCode=%d",$erp),ARRAY_A):[];
+             $tables[$table]=['rows'=>$count,'for_good'=>$byGood];
+          }
+          echo 'DIAG_105604_BAZARA_CACHE='.wp_json_encode($tables,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          try {
+             $plan=vesta_mhi_plan($id,$erp);
+             echo 'DIAG_105604_IMAGE_PLAN='.wp_json_encode([
+               'total'=>$plan['total'],'present'=>$plan['present'],
+               'missing'=>count($plan['missing']),'reusable'=>count($plan['reuse'])
+             ],JSON_UNESCAPED_UNICODE).PHP_EOL;
+          }catch(Throwable $e){
+             echo 'DIAG_105604_IMAGE_BLOCK='.get_class($e).':'.mb_substr($e->getMessage(),0,230).PHP_EOL;
+          }
+          $last=get_option('vesta_mhi_auto_last_report');
+          echo 'DIAG_105604_AUTOMATION='.wp_json_encode([
+             'completed_at'=>$last['completed_at']??null,
+             'blocked'=>$last['blocked']??null,
+             'variable_or_no_detail'=>$last['variable_or_no_detail']??null,
+             'errors'=>$last['errors']??null,
+             'added'=>$last['images_added']??null
+          ],JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'DIAG_105604_READ_ONLY=yes'.PHP_EOL;
+          PHP
