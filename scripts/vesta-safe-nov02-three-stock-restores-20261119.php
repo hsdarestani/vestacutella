@@ -2,7 +2,7 @@
 /**
  * Narrow, reversible Woo stock correction derived from the user's Nov 2
  * 2026 in-stock snapshot and all live Woo stock-reduced order items since then.
- * Only eligible rows have independent corroboration from the unique live
+ * One candidate (Woo 69849) was explicitly excluded because its ERP detail\n * is shared with another live product. Only eligible rows have independent corroboration from the unique live
  * Bazara warehouse asset for the exact Mahak ProductDetailId.
  *
  * Does not change invoices, ERP warehouse data, Woo orders or product mappings.
@@ -21,7 +21,6 @@ global $wpdb;
 $apply=in_array('--apply',$argv??[],true);
 $targets=[
   102492=>['source_baseline'=>5,'expected'=>4,'old'=>3,'mahak'=>10685154,'detail'=>12183557,'parent'=>102488,'type'=>'variation'],
-  69849=>['source_baseline'=>23,'expected'=>20,'old'=>19,'mahak'=>10685036,'detail'=>12183925,'parent'=>69843,'type'=>'variation'],
   24102=>['source_baseline'=>50,'expected'=>48,'old'=>46,'mahak'=>10685387,'detail'=>12182963,'parent'=>0,'type'=>'simple'],
 ];
 $origin='2026-11-02 09:06:00';
