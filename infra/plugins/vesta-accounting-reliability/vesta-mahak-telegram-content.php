@@ -43,25 +43,6 @@ function vesta_mcb_state($p) {
         'price_and_stock_are_accounting_controlled'=>true,
     ];
 }
-/** HMAC-authenticated, read-only diagnostic for early WooCommerce initialization. */
-function vesta_mcb_diag($data) {
-    $code=trim((string)($data['code']??''));
-    $erp=(int)($data['product_id']??0);
-    $id=(int)($data['woo_id']??0);
-    $p=$id?wc_get_product($id):false;
-    $look=$code && $erp?(int)vms_existing_woo($code,$erp):0;
-    return [
-        'requested_woo_id'=>$id,'matched_woo_id'=>$look,
-        'requested_code'=>$code,'requested_erp_id'=>$erp,
-        'resolved_type'=>$p?$p->get_type():null,
-        'resolved_status'=>$p?$p->get_status():null,
-        'resolved_sku'=>$p?$p->get_sku():null,
-        'resolved_erp_id'=>$p?(int)$p->get_meta('mahak_id',true):null,
-        'post_type_registered'=>post_type_exists('product'),
-        'wp_init_run'=>did_action('init'),
-        'woocommerce_init_run'=>did_action('woocommerce_init')
-    ];
-}
 function vesta_mcb_status($data) {
     return vesta_mcb_state(vesta_mcb_verified_product($data));
 }
@@ -170,22 +151,21 @@ function vesta_mcb_save($data) {
 add_action('plugins_loaded',function(){
     if(!isset($_GET['vbb'])||(string)$_GET['vbb']!=='2')return;
     $op=sanitize_key((string)($_GET['o']??''));
-    if(!in_array($op,['mahak_content_status','mahak_content_save','mahak_content_diag'],true))return;
+    if(!in_array($op,['mahak_content_status','mahak_content_save'],true))return;
     remove_action('plugins_loaded','vbb_handle_v2_request',PHP_INT_MAX);
     add_action('init','vesta_mcb_authenticated_dispatch_after_woo_init',PHP_INT_MAX-4);
 },PHP_INT_MAX-4);
 
 function vesta_mcb_authenticated_dispatch_after_woo_init() {
     $op=sanitize_key((string)($_GET['o']??''));
-    if(!in_array($op,['mahak_content_status','mahak_content_save','mahak_content_diag'],true))return;
+    if(!in_array($op,['mahak_content_status','mahak_content_save'],true))return;
     if(!function_exists('vbb_v2_authorize') || !did_action('init') ||
        !post_type_exists('product') || !did_action('woocommerce_init'))
        vbb_fail('WooCommerce content editor is not initialized.',503);
     list($verified,$data)=vbb_v2_authorize();
     if($verified!==$op)vbb_fail('Invalid operation.',400);
     try{
-        $result=$op==='mahak_content_diag'?vesta_mcb_diag($data):
-            ($op==='mahak_content_status'?vesta_mcb_status($data):vesta_mcb_save($data));
+        $result=$op==='mahak_content_status'?vesta_mcb_status($data):vesta_mcb_save($data);
         vbb_no_cache();
         wp_send_json_success($result);
     }catch(Throwable $e){vbb_fail($e->getMessage(),400);}
