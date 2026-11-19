@@ -1,0 +1,43 @@
+name: Vesta read-only Mahak variation and warehouse write feasibility
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-telegram-erp-variation-stock-readonly-20261119.yml]
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Inspect active Mahak product variants and warehouse mapping without writes
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1200M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php'; global $wpdb;
+          $catalog=vmb_catalog(vmb_api());$ids=[10755492,10684982];
+          foreach ($ids as $pid){
+            $p=null;$details=[];
+            foreach($catalog['Products']??[] as $x)if((int)($x['ProductId']??0)===$pid)$p=$x;
+            foreach($catalog['ProductDetails']??[] as $x)if((int)($x['ProductId']??0)===$pid&&!($x['Deleted']??false)){
+               $did=(int)$x['ProductDetailId'];
+               $assets=$wpdb->get_results($wpdb->prepare("SELECT StoreId,Count1,Count2 FROM {$wpdb->prefix}bazara_product_assets WHERE ProductDetailId=%d AND Deleted=0",$did),ARRAY_A);
+               $details[]=['detailId'=>$did,'code'=>$x['ProductDetailCode']??null,
+                 'properties'=>$x['Properties']??null,'properties2'=>$x['Properties2']??null,
+                 'price1'=>$x['Price1']??null,'count1'=>$x['Count1']??null,
+                 'assets'=>$assets];
+            }
+            echo 'MAHAK_VARIANT_READONLY='.wp_json_encode(['product_id'=>$pid,
+              'sku'=>$p['ProductCode']??null,'name'=>$p['Name']??null,
+              'total_details'=>count($details),'samples'=>array_slice($details,0,7)
+            ],JSON_UNESCAPED_UNICODE).PHP_EOL;
+          }
+          echo 'MAHAK_VARIANT_STOCK_AUDIT_NO_WRITES=yes'.PHP_EOL;
+          PHP
