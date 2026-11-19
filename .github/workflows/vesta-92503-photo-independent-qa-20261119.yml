@@ -1,0 +1,49 @@
+name: Verify pencil 92503 three Woo photos after automatic Mahak import
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-92503-photo-independent-qa-20261119.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 11
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read independent final Woo state and cloud photo linkage without writes
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1280M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);set_time_limit(0);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          $p=wc_get_product(103417);$child=wc_get_product(105273);
+          if(!$p||!$child)exit(19);
+          $plan=vesta_mhi_plan(103417,10684982);
+          $imageIds=array_merge([(int)$p->get_image_id()],$p->get_gallery_image_ids());
+          $picIds=[];foreach($imageIds as $id)$picIds[]=(int)get_post_meta($id,'mahak_picture_id',true);
+          sort($picIds);
+          $data=['woo_id'=>103417,'name'=>$p->get_name(),'status'=>$p->get_status(),
+            'sku'=>$p->get_sku(),'featured_image_id'=>(int)$p->get_image_id(),
+            'gallery_image_ids'=>$p->get_gallery_image_ids(),
+            'mahak_picture_ids'=>$picIds,
+            'cloud_photo_total'=>$plan['total'],'cloud_photo_present'=>$plan['present'],
+            'cloud_photo_missing'=>count($plan['missing']),'cloud_photo_reuse'=>count($plan['reuse']),
+            'variation_woo_id'=>105273,'variation_qty'=>$child->get_stock_quantity(),
+            'variation_price'=>$child->get_regular_price()];
+          echo 'PENCIL_92503_FINAL_QA='.wp_json_encode($data,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          if($p->get_status()!=='draft'||(string)$p->get_sku()!=='92503'||
+             $plan['total']!==3||$plan['present']!==3||
+             count($plan['missing'])||count($plan['reuse'])||
+             $picIds!==[1895464,1895465,1895466]||
+             $child->get_stock_quantity()!==36||$child->get_regular_price()!=='0')exit(25);
+          echo 'PENCIL_92503_THREE_PICTURES_INDEPENDENT_VERIFIED=yes'.PHP_EOL;
+          echo 'PENCIL_92503_QA_NO_WRITES=yes'.PHP_EOL;
+          PHP
