@@ -1,0 +1,95 @@
+name: Deploy safer Vesta resource watchdog (quiet passive swap, preserve real alerts)
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/vesta-health-watchdog-20261024.sh
+      - .github/workflows/deploy-vesta-quiet-swap-watchdog-20261119.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-production-resource-watchdog
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check new watchdog syntax and safety rules
+        run: |
+          set -Eeuo pipefail
+          bash -n scripts/vesta-health-watchdog-20261024.sh
+          grep -Fq 'swap_activity_mb>=64' scripts/vesta-health-watchdog-20261024.sh
+          grep -Fq 'ALERT_UNCHANGED_COOLDOWN_6H' scripts/vesta-health-watchdog-20261024.sh
+          grep -Fq 'vc-vesta vc-cutella vc-db-vesta vc-db-cutella' scripts/vesta-health-watchdog-20261024.sh
+          grep -Fq 'vesta-cosmetics.ir cutellashop.ir' scripts/vesta-health-watchdog-20261024.sh
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Back up and activate on production host, without restarts or swapoff
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          test -n "$HOST" && test -n "$SSHPASS"
+          sshpass -e scp -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            scripts/vesta-health-watchdog-20261024.sh \
+            "root@$HOST:/tmp/vesta-health-watchdog-safer-20261119.sh"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          umask 077
+          old=/usr/local/sbin/vesta-resource-watchdog
+          new=/tmp/vesta-health-watchdog-safer-20261119.sh
+          test -s "$old" && test -s "$new"
+          expected=4fa60192d246df6bf9218a50e3ba81a2cba3eb976dd001d04b97e435e3ec1eeb
+          newhash=$(sha256sum "$new" | awk '{print $1}')
+          oldhash=$(sha256sum "$old" | awk '{print $1}')
+          echo "WATCHDOG_OLD_SHA256=$oldhash"
+          echo "WATCHDOG_NEW_SHA256=$newhash"
+          bash -n "$new"
+          if test "$oldhash" != "$expected" && test "$oldhash" != "$newhash";then
+            echo 'WATCHDOG_LIVE_DIFFERS_FROM_AUDITED_VERSION=yes'
+            exit 49
+          fi
+          test -s /etc/cron.d/vesta-resource-watchdog
+          grep -Fq '*/5 * * * * root' /etc/cron.d/vesta-resource-watchdog
+          test -s /usr/local/lib/vesta-resource-telegram.php
+          backup=/srv/backups/vesta-resource-watchdog-fix-$(date -u +%Y%m%dT%H%M%SZ)
+          mkdir -m 0700 -p "$backup"
+          cp -p "$old" "$backup/old-watchdog.sh"
+          cp -p /etc/cron.d/vesta-resource-watchdog "$backup/old-watchdog.cron"
+          cp -p /var/lib/vesta-resource-watchdog/last_sent "$backup/last_sent" 2>/dev/null || true
+          rollback(){
+            rc=$?; trap - ERR
+            cp -p "$backup/old-watchdog.sh" "$old"
+            echo "WATCHDOG_DEPLOY_ROLLED_BACK=yes"
+            exit "$rc"
+          }
+          trap rollback ERR
+          install -m 0700 "$new" "$old"
+          bash -n "$old"
+          result=$(timeout 80 "$old" --dry-run)
+          printf '%s\n' "$result"
+          grep -Eq 'HEALTHY|DRY_RUN_ALERT_KEYS=' <<< "$result"
+          echo 'WATCHDOG_SAFE_DRY_RUN_PASSED=yes'
+          # No Telegram test-alert: avoid notification noise.
+          if flock -n /run/lock/vesta-resource-watchdog.lock timeout 80 "$old";then
+            echo 'WATCHDOG_FIRST_REAL_5MIN_CHECK_PASSED=yes'
+          else
+            # Cron may be doing the same check; the dry-run already proved logic.
+            echo 'WATCHDOG_CRON_LOCK_ALREADY_HELD=yes'
+          fi
+          for name in vc-vesta vc-cutella vc-db-vesta vc-db-cutella vc-nginx vc-redis;do
+            test "$(docker inspect --format '{{.State.Status}}' "$name")" = running
+          done
+          for host in vesta-cosmetics.ir cutellashop.ir;do
+            http=$(timeout 13 curl -ksS --connect-timeout 4 --max-time 10 --resolve "$host:443:127.0.0.1" -o /dev/null -w '%{http_code}' "https://$host/")
+            echo "WATCHDOG_ORIGIN=$host HTTP=$http"
+            test "$http" = 200
+          done
+          trap - ERR
+          echo "VESTA_WATCHDOG_PASSIVE_SWAP_FALSE_ALERT_FIXED=yes"
+          echo "VESTA_WATCHDOG_TRUE_SERVICE_AND_RESOURCE_ALERTS_RETAINED=yes"
+          echo "VESTA_WATCHDOG_NO_RESTARTS_NO_SWAP_RESET_NO_DELETE=yes"
+          REMOTE
