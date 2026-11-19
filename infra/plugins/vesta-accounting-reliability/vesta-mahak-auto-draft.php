@@ -32,7 +32,8 @@ function vesta_mhi_auto_schedule($force=false,$delay=100) {
         catch(Throwable $e) {error_log('VESTA_MHI_AUTO_FINGERPRINT_ERROR '.get_class($e));return false;}
         $last=(string)get_option('vesta_mhi_auto_completed_fingerprint','');
         $lastPhoto=(int)get_option('vesta_mhi_auto_last_photo_scan_at',0);
-        if($last===$fingerprint && $lastPhoto>0 && $now-$lastPhoto<7200)
+        $backlog=(bool)get_option('vesta_mhi_auto_pending_backlog',false);
+        if(!$backlog && $last===$fingerprint && $lastPhoto>0 && $now-$lastPhoto<7200)
             return false;
         if($now-(int)get_option('vesta_mhi_auto_last_schedule_at',0)<900)
             return false;
@@ -244,7 +245,9 @@ function vesta_mhi_auto_run($dryRun=false,$limit=6) {
         update_option('vesta_mhi_auto_last_report',$stats,false);
         update_option('vesta_mhi_auto_completed_fingerprint',vesta_mhi_auto_fingerprint(),false);
         update_option('vesta_mhi_auto_last_photo_scan_at',time(),false);
-        if($stats['remaining_candidates']>0)vesta_mhi_auto_schedule(true,240);
+        update_option('vesta_mhi_auto_pending_backlog',$stats['remaining_candidates']>0,false);
+        // The next native product-sync event continues any bounded backlog
+        // without launching a nested action while the current one is running.
         return $stats;
     } finally {
         $wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)',$lock));
