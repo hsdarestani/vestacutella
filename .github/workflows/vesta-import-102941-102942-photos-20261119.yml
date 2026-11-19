@@ -1,0 +1,97 @@
+name: Attach verified Mahak photos to corrected GAGK codes 102941 and 102942
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-import-102941-102942-photos-20261119.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-gagk-102941-102942-photos
+  cancel-in-progress: false
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Check authenticated product identity and add-only Mahak picture import
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          umask 077
+          exec 9>/run/lock/vesta-gagk-102941-102942-photos.lock;flock -n 9
+          backup=/srv/backups/vesta-gagk-images-$(date -u +%Y%m%dT%H%M%SZ)
+          mkdir -m 0700 -p "$backup"
+          docker exec vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb-dump -uroot --single-transaction --quick "$MARIADB_DATABASE" wp_posts wp_postmeta wp_wc_product_meta_lookup' | gzip -1 > "$backup/before-photo-import.sql.gz"
+          gzip -t "$backup/before-photo-import.sql.gz"
+          (cd "$backup";sha256sum before-photo-import.sql.gz > SHA256SUMS;sha256sum -c SHA256SUMS)
+          echo 'GAGK_IMAGES_BACKUP_VERIFIED=yes'
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1536M <<'PHP' | tee "$backup/photo-transfer.log"
+          <?php
+          error_reporting(E_ERROR|E_PARSE);set_time_limit(780);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          $cases=[
+            ['code'=>'102941','erp'=>10755481,'woo'=>105592,'unitprice'=>'550000','qty'=>7],
+            ['code'=>'102942','erp'=>10755480,'woo'=>105649,'unitprice'=>'648000','qty'=>7],
+          ];
+          foreach($cases as $a){
+            $p=wc_get_product($a['woo']);
+            if(!$p||!$p->is_type('variable')||$p->get_status()!=='draft'||
+               $p->get_sku()!==$a['code']||
+               (int)$p->get_meta('mahak_id',true)!==$a['erp'] ||
+               count($p->get_children())!==4)exit(31);
+            foreach($p->get_children() as $cid){
+              $v=wc_get_product($cid);
+              if(!$v||$v->get_regular_price()!==$a['unitprice']||
+                 (int)$v->get_stock_quantity()!==$a['qty'])exit(32);
+            }
+            $before=vesta_mhi_plan($a['woo'],$a['erp']);
+            echo 'GAGK_IMAGE_PLAN='.wp_json_encode([
+               'code'=>$a['code'],'woo'=>$a['woo'],'total'=>$before['total'],
+               'present'=>$before['present'],'missing'=>count($before['missing']),
+               'reusable'=>count($before['reuse']),'elsewhere'=>$before['elsewhere']
+            ],JSON_UNESCAPED_UNICODE).PHP_EOL;
+            $runs=[];$errors=0;
+            for($round=0;$round<3;$round++){
+              $plan=vesta_mhi_plan($a['woo'],$a['erp']);
+              if(!$plan['missing']&&!$plan['reuse'])break;
+              $result=vesta_mhi_import_pictures($a['woo'],$a['erp'],5);
+              $runs[]=$result;
+              $errors+=(int)($result['errors']??0);
+              if(!empty($result['errors']) || (int)($result['added']??0)===0)break;
+            }
+            $after=vesta_mhi_plan($a['woo'],$a['erp']);
+            $now=wc_get_product($a['woo']);
+            if(!$now||$now->get_status()!=='draft'||$now->get_sku()!==$a['code']||
+                $now->get_meta('mahak_id',true)!=$a['erp'])exit(33);
+            foreach($now->get_children() as $cid){
+              $v=wc_get_product($cid);
+              if(!$v||$v->get_regular_price()!==$a['unitprice']||
+                 (int)$v->get_stock_quantity()!==$a['qty'])exit(34);
+            }
+            echo 'GAGK_IMAGE_RESULT='.wp_json_encode([
+               'code'=>$a['code'],'total'=>$after['total'],'present'=>$after['present'],
+               'pending'=>count($after['missing'])+count($after['reuse']),
+               'featured'=>(int)$now->get_image_id(),'gallery_count'=>count($now->get_gallery_image_ids()),
+               'attempts'=>$runs,'errors'=>$errors,'price_and_stock_unchanged'=>true
+            ],JSON_UNESCAPED_UNICODE).PHP_EOL;
+            if($errors || $after['present']!==$after['total'] || $after['missing'] || $after['reuse'])
+               exit(35);
+          }
+          echo 'GAGK_BOTH_PRODUCTS_ALL_CLOUD_PHOTOS_ATTACHED=yes'.PHP_EOL;
+          echo 'GAGK_PHOTO_IMPORT_NO_STOCK_OR_PRICE_WRITES=yes'.PHP_EOL;
+          PHP
+          grep -Fq 'GAGK_BOTH_PRODUCTS_ALL_CLOUD_PHOTOS_ATTACHED=yes' "$backup/photo-transfer.log"
+          for d in vesta-cosmetics.ir cutellashop.ir;do
+             h=$(curl --noproxy '*' -ksS --connect-timeout 8 --max-time 20 --resolve "$d:443:127.0.0.1" -o /dev/null -w '%{http_code}' "https://$d/")
+             echo "GAGK_SITE_$d=$h";test "$h" = 200
+          done
+          echo 'GAGK_IMAGE_SYNC_DEPLOY_VERIFIED=yes'
+          REMOTE
