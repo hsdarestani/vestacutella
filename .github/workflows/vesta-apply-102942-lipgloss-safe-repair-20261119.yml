@@ -1,0 +1,98 @@
+name: Safely import 102942 GAGK lip gloss and preserve legacy LUCKGO order
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/vesta-safe-repair-102942-lipgloss-20261119.php
+      - .github/workflows/vesta-apply-102942-lipgloss-safe-repair-20261119.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-production-catalog-102942
+  cancel-in-progress: false
+jobs:
+  create:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq php-cli sshpass
+      - name: Strict read-only Mahak and old Woo order preflight
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          php -l scripts/vesta-safe-repair-102942-lipgloss-20261119.php
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" \
+            'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1536M /dev/stdin' \
+            < scripts/vesta-safe-repair-102942-lipgloss-20261119.php | tee audit.txt
+          grep -Fq 'LIPGLOSS_102942_DRY_RUN_PASS=yes' audit.txt
+          echo 'LIPGLOSS_102942_SOURCE_AND_ORDER_PREFLIGHT_PASS=yes'
+      - name: Backup Woo database, repair stale SKU, create verified GAGK draft
+        env:
+          HOST: __HOST__
+          SSHPASS: __PASS__
+        run: |
+          set -Eeuo pipefail
+          sshpass -e scp -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+             scripts/vesta-safe-repair-102942-lipgloss-20261119.php \
+             "root@$HOST:/tmp/vesta-safe-repair-102942-lipgloss.php"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          umask 077
+          exec 9>/run/lock/vesta-product-102942-repair.lock;flock -n 9
+          file=/tmp/vesta-safe-repair-102942-lipgloss.php
+          backup=/srv/backups/vesta-102942-new-gagk-$(date -u +%Y%m%dT%H%M%SZ)
+          mkdir -m 0700 -p "$backup"
+          cp "$file" "$backup/repair-source.php"
+          docker exec -i vc-vesta php -l /dev/stdin < "$file"
+          docker exec vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb-dump -uroot --single-transaction --quick "$MARIADB_DATABASE" wp_posts wp_postmeta wp_wc_product_meta_lookup wp_term_relationships wp_terms wp_term_taxonomy wp_options' | gzip -1 > "$backup/before-source-product.sql.gz"
+          gzip -t "$backup/before-source-product.sql.gz"
+          (cd "$backup";sha256sum before-source-product.sql.gz > SHA256SUMS;sha256sum -c SHA256SUMS)
+          echo 'LIPGLOSS_102942_PRECHANGE_DB_BACKUP_VERIFIED=yes'
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1536M /dev/stdin --apply < "$file" | tee "$backup/change.log"
+          grep -Fq 'LIPGLOSS_102942_VERIFIED_DRAFT_WITH_FOUR_VARIANTS=yes' "$backup/change.log"
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=512M <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          $journal=get_option('vesta_102942_verified_gagk_creation_20261119_v1',null);
+          if(!is_array($journal)||count($journal['variation_ids']??[])!==4)exit(51);
+          $id=(int)$journal['new_woo_id'];$p=wc_get_product($id);
+          if(!$p||$p->get_status()!=='draft'||$p->get_sku()!=='102942'||
+             !$p->is_type('variable')||(int)$p->get_meta('mahak_id',true)!==10755480 ||
+             (int)wc_get_product_id_by_sku('102942')!==$id)exit(52);
+          $vars=[];
+          foreach($p->get_children() as $cid){
+             $v=wc_get_product($cid);
+             if(!$v||$v->get_regular_price()!=='648000'||(int)$v->get_stock_quantity()!==7)exit(53);
+             $vars[$cid]=(int)$v->get_meta('mahak_product_detail_id',true);
+          }
+          if(count($vars)!==4||count(array_unique($vars))!==4)exit(54);
+          $old=wc_get_product(102942);$o=wc_get_order(105545);
+          if(!$old||$old->get_parent_id()!==102940||$old->get_sku()!==''||
+             (int)$old->get_meta('mahak_id',true)!==10685130 ||
+             (int)$old->get_meta('mahak_product_detail_id',true)!==12183539 ||
+             !$o||$o->get_status()!=='processing')exit(55);
+          $found=0;foreach($o->get_items() as $it)
+              if((int)$it->get_variation_id()===102942&&(int)$it->get_product_id()===102940)
+              $found++;
+          if($found!==1)exit(56);
+          echo 'LIPGLOSS_102942_INDEPENDENT_FINAL='.wp_json_encode([
+            'new_parent'=>$id,'name'=>$p->get_name(),'status'=>$p->get_status(),
+            'sku'=>$p->get_sku(),'erp'=>10755480,'child_details'=>$vars,
+            'price_toman'=>648000,'stock_per_variation'=>7,
+            'legacy_woo_variation'=>102942,'legacy_order_unchanged'=>105545
+          ],JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'LIPGLOSS_102942_INDEPENDENT_READBACK_PASS=yes'.PHP_EOL;
+          PHP
+          for d in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
+             code=$(curl --noproxy '*' -ksS --connect-timeout 8 --max-time 20 --resolve "$d:443:127.0.0.1" -o /dev/null -w '%{http_code}' "https://$d/")
+             echo "STORE_$d=$code";test "$code" = 200
+          done
+          echo 'LIPGLOSS_NO_MAHAK_INVOICE_OR_ORDER_WRITES=yes'
+          REMOTE
