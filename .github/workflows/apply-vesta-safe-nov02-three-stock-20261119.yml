@@ -36,8 +36,8 @@ jobs:
           grep -Fq 'NOV02_SAFE_WOO_STOCK_DRY_RUN_PASS=yes' preflight.txt
       - name: Back up affected tables, verify and execute only exact three Woo adjustments
         env:
-          HOST: __HOST__
-          SSHPASS: __PASS__
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
         run: |
           set -Eeuo pipefail
           sshpass -e scp -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
