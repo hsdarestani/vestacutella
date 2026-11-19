@@ -1,0 +1,84 @@
+name: Repair verified Vesta 102941 lipstick title and variant prices (no stock changes)
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/vesta-safe-repair-102941-lipstick-20261119.php
+      - .github/workflows/vesta-apply-102941-lipstick-safe-repair-20261119.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-production-catalog-102941
+  cancel-in-progress: false
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 17
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq php-cli sshpass
+      - name: Validate PHP script and inspect production without writes
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          php -l scripts/vesta-safe-repair-102941-lipstick-20261119.php
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" \
+            'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1536M /dev/stdin' \
+            < scripts/vesta-safe-repair-102941-lipstick-20261119.php | tee preflight.txt
+          grep -Fq '102941_DRY_RUN_PASS=yes' preflight.txt
+          echo 'LIPSTICK_102941_PREFLIGHT_VERIFIED=yes'
+      - name: Backup and apply exact Woo parent title and four variation prices
+        env:
+          HOST: __HOST__
+          SSHPASS: __PASS__
+        run: |
+          set -Eeuo pipefail
+          sshpass -e scp -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+             scripts/vesta-safe-repair-102941-lipstick-20261119.php \
+             "root@$HOST:/tmp/vesta-safe-repair-102941-lipstick.php"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          umask 077
+          exec 9>/run/lock/vesta-product-102941-repair.lock; flock -n 9
+          backup=/srv/backups/vesta-102941-name-price-$(date -u +%Y%m%dT%H%M%SZ)
+          mkdir -m 0700 -p "$backup"
+          file=/tmp/vesta-safe-repair-102941-lipstick.php
+          cp "$file" "$backup/applied-source.php"
+          docker exec -i vc-vesta php -l /dev/stdin < "$file"
+          docker exec vc-db-vesta sh -c 'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb-dump -uroot --single-transaction --quick "$MARIADB_DATABASE" wp_posts wp_postmeta wp_wc_product_meta_lookup wp_term_relationships' | gzip -1 > "$backup/before-product-repair.sql.gz"
+          gzip -t "$backup/before-product-repair.sql.gz"
+          (cd "$backup"; sha256sum before-product-repair.sql.gz > SHA256SUMS; sha256sum -c SHA256SUMS)
+          echo 'LIPSTICK_BEFORE_DB_BACKUP_VERIFIED=yes'
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1536M /dev/stdin --apply < "$file" | tee "$backup/apply.log"
+          grep -Fq '102941_SAFE_NAME_AND_FOUR_VARIATION_PRICES_REPAIRED=yes' "$backup/apply.log"
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=256M <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          $p=wc_get_product(105592);
+          if(!$p||$p->get_status()!=='draft'||$p->get_sku()!=='102941'||
+             !str_contains($p->get_name(),'رژ لب جامد'))exit(61);
+          if(count($p->get_children())!==4)exit(62);
+          $ids=[];foreach($p->get_children() as $id) {
+            $v=wc_get_product($id);
+            if(!$v||$v->get_regular_price()!=='550000'||$v->get_stock_quantity()!==7)exit(63);
+            $ids[$id]=(int)$v->get_meta('mahak_product_detail_id',true);
+          }
+          if(count(array_unique($ids))!==4)exit(64);
+          echo 'LIPSTICK_FINAL_WOO='.wp_json_encode([
+             'id'=>$p->get_id(),'name'=>$p->get_name(),'status'=>$p->get_status(),
+             'variation_details'=>$ids,'price_toman'=>550000,'stock_per_variation'=>7
+          ],JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'LIPSTICK_102941_INDEPENDENT_READBACK_PASS=yes'.PHP_EOL;
+          PHP
+          for d in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
+             code=$(curl --noproxy '*' -ksS --connect-timeout 8 --max-time 20 --resolve "$d:443:127.0.0.1" -o /dev/null -w '%{http_code}' "https://$d/")
+             echo "STORE_$d=$code";test "$code" = 200
+          done
+          echo 'LIPSTICK_NO_MAHAK_ORDER_STOCK_WRITES=yes'
+          REMOTE
