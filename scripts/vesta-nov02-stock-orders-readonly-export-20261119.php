@@ -8,7 +8,9 @@ $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmet
 $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
 require '/var/www/html/wp-load.php';
 global $wpdb;
-$dir='/tmp/vesta-reconcile-nov02';
+$auditId=(string)getenv('VESTA_AUDIT_RUN_ID');
+if(!preg_match('/^[0-9]{6,20}$/D',$auditId))exit(21);
+$dir='/tmp/vesta-reconcile-nov02-'.$auditId;
 if(!is_dir($dir))mkdir($dir,0700,true);
 $base='2026-11-02 09:06:00';
 $pm=$wpdb->prefix;
