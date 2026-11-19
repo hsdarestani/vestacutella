@@ -1,0 +1,83 @@
+name: Deep identity audit before safely repairing 102941/102942 Woo mapping
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-102941-102942-identity-deep-audit-20261119.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 14
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Audit Woo product identity, variation ownership, sales and original Bazara links
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1536M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);set_time_limit(210);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          foreach([105592,102940,102941,102942] as $id) {
+            $p=wc_get_product($id);
+            if(!$p)continue;
+            $kids=[];if($p->is_type('variable'))foreach($p->get_children() as $cid) {
+                $c=wc_get_product($cid);if(!$c)continue;
+                $kids[]=['id'=>$cid,'name'=>$c->get_name(),'sku'=>$c->get_sku(),'type'=>$c->get_type(),
+                 'attr'=>$c->get_attributes(),'erp'=>$c->get_meta('mahak_id',true),
+                 'detail'=>$c->get_meta('mahak_product_detail_id',true),
+                 'price'=>$c->get_regular_price(),'qty'=>$c->get_stock_quantity(),
+                 'status'=>$c->get_status()];
+            }
+            echo 'DEEP_WOO='.wp_json_encode([
+              'id'=>$id,'type'=>$p->get_type(),'status'=>$p->get_status(),'name'=>$p->get_name(),
+              'sku'=>$p->get_sku(),'parent'=>$p->get_parent_id(),
+              'erp'=>$p->get_meta('mahak_id',true),'detail'=>$p->get_meta('mahak_product_detail_id',true),
+              'other_erp'=>$p->get_meta('_vesta_mahak_product_id',true),
+              'meta_code'=>$p->get_meta('_vesta_mahak_product_code',true),
+              'price'=>$p->get_regular_price(),'manage'=>$p->get_manage_stock(),
+              'qty'=>$p->get_stock_quantity(),'attrs'=>$p->get_attributes(),
+              'image'=>$p->get_image_id(),'gallery_count'=>count($p->get_gallery_image_ids()),
+              'children'=>$kids
+            ],JSON_UNESCAPED_UNICODE).PHP_EOL;
+          }
+          $skus=$wpdb->get_results("SELECT p.ID,p.post_type,p.post_status,p.post_parent,p.post_title,m.meta_value
+           FROM {$wpdb->postmeta} m JOIN {$wpdb->posts} p ON p.ID=m.post_id
+           WHERE m.meta_key='_sku' AND m.meta_value IN ('102941','102942')
+           ORDER BY p.ID",ARRAY_A);
+          echo 'DEEP_SKUS='.wp_json_encode($skus,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          $maps=[];
+          $baz=$wpdb->prefix.'bazara_products';
+          foreach(['102941','102942','102940'] as $code){
+             $rows=$wpdb->get_results($wpdb->prepare(
+               "SELECT ProductCode,ProductId,ProductName,Post_ID,new,stockSync,detailSync,priceSync,queue,qty,RowVersion
+                FROM $baz WHERE ProductCode=%s",$code),ARRAY_A);
+             $maps[$code]=$rows;
+          }
+          echo 'DEEP_BAZARA_MAPS='.wp_json_encode($maps,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          $catalog=vesta_mhi_catalog();
+          $ids=[10755480,10755481,10685130];
+          foreach(($catalog['Products']??[]) as $p)if(in_array((int)($p['ProductId']??0),$ids,true))
+            echo 'DEEP_MAHAK_PRODUCT='.wp_json_encode([
+              'id'=>$p['ProductId'],'code'=>$p['ProductCode'],'name'=>$p['Name'],
+              'deleted'=>$p['Deleted']??null
+            ],JSON_UNESCAPED_UNICODE).PHP_EOL;
+          // Lifetime paid orders referencing ambiguous old variation: read only.
+          $orderItems=$wpdb->get_results("SELECT oi.order_id,oi.order_item_id,
+              MAX(CASE WHEN m.meta_key='_product_id' THEN m.meta_value END) as product_id,
+              MAX(CASE WHEN m.meta_key='_variation_id' THEN m.meta_value END) as variation_id,
+              MAX(CASE WHEN m.meta_key='_qty' THEN m.meta_value END) as qty
+              FROM {$wpdb->prefix}woocommerce_order_items oi
+              JOIN {$wpdb->prefix}woocommerce_order_itemmeta m ON m.order_item_id=oi.order_item_id
+              WHERE oi.order_item_type='line_item'
+              GROUP BY oi.order_item_id
+              HAVING product_id IN (102940,105592) OR variation_id IN (102941,102942)
+              ORDER BY oi.order_id DESC LIMIT 60",ARRAY_A);
+          echo 'DEEP_OLD_VARIATION_ORDER_REFERENCES='.wp_json_encode($orderItems,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'DEEP_NO_WRITES=yes'.PHP_EOL;
+          PHP
