@@ -120,7 +120,34 @@ function vesta_mhi_auto_run($dryRun=false,$limit=6) {
             $code=trim((string)$p['ProductCode']);$gid=(int)$p['ProductId'];
             if(($codeCounts[$code]??0)!==1) { $blocked['duplicate_cloud_code']=($blocked['duplicate_cloud_code']??0)+1;continue;}
             $ds=$details[$gid]??[];
-            if(count($ds)!==1){$stats['variable_or_no_detail']++;continue;}
+            if(count($ds)!==1) {
+                // Multi-detail Mahak goods correspond to variable Woo parents.
+                // Never create or remap variations here; only transfer photos to
+                // an existing parent whose code, name and Mahak ID are verified.
+                $stats['variable_or_no_detail']++;
+                if(empty($photos[$gid]))continue;
+                $parentId=(int)vms_existing_woo($code,$gid);
+                if(!$parentId)continue;
+                $parent=wc_get_product($parentId);
+                if(!$parent || !$parent->is_type('variable') ||
+                   $parent->get_sku()!==$code ||
+                   (int)$parent->get_meta('mahak_id',true)!==$gid) {
+                    $blocked['variable_parent_identifier_mismatch']=($blocked['variable_parent_identifier_mismatch']??0)+1;
+                    continue;
+                }
+                try {
+                    $plan=vesta_mhi_plan($parentId,$gid);
+                    if(count($plan['missing'])+count($plan['reuse'])>0) {
+                        $candidates[]=['kind'=>'variable-photo','woo_id'=>$parentId,
+                            'code'=>$code,'erp_id'=>$gid,'needs_fields'=>false,
+                            'needs_photos'=>true];
+                        $stats['eligible_enrich_existing']++;
+                    }else $stats['skipped_unchanged']++;
+                }catch(Throwable $e) {
+                    $blocked['variable_photo_identity_guard']=($blocked['variable_photo_identity_guard']??0)+1;
+                }
+                continue;
+            }
             $d=$ds[0];$did=(int)($d['ProductDetailId']??0);
             if(!$did)continue;
             $wooId=(int)vms_existing_woo($code,$gid);
