@@ -1,0 +1,64 @@
+name: Inspect Bazara identifier usage for old LUCKGO variant and order 105545
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-102942-legacy-order-sku-risk-20261119.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read native Bazara price/stock and order variation identity mapping without writes
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          root=/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara
+          python3 - <<'PY'
+          from pathlib import Path
+          import re,json
+          root=Path('/srv/vestacutella/runtime/vesta/wp-content/plugins/bazara')
+          keys=['bazara_get_product_by_sku','mahak_product_detail_id','product_detail_id','ProductDetailId','get_product_by_mahakID']
+          for path in [root/'classes/functions.php',root/'classes/product/import.php',root/'classes/order/export.php',root/'classes/order/import.php']:
+            if not path.exists():continue
+            lines=path.read_text(encoding='utf8',errors='replace').splitlines()
+            found=[]
+            for n,line in enumerate(lines):
+              if not any(k in line for k in keys):continue
+              if re.search(r'password|token|api_key|secret',line,re.I):continue
+              found.append({'line':n+1,'code':line.strip()[:210],
+                'prev':lines[n-1].strip()[:140] if n>0 else '',
+                'next':lines[n+1].strip()[:140] if n+1<len(lines) else ''})
+            print('BAZARA_CODE_IDENTITY_REFERENCES='+json.dumps({
+              'file':str(path.relative_to(root)),'matches':found[:100]
+            },ensure_ascii=False))
+          print('BAZARA_SOURCE_READ_ONLY=yes')
+          PY
+          docker exec -i vc-vesta php -d display_errors=0 <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          $o=wc_get_order(105545);
+          echo 'ORDER_105545_OLD_LUCKGO='.wp_json_encode($o?[
+              'id'=>$o->get_id(),'status'=>$o->get_status(),
+              'date'=>$o->get_date_created()?$o->get_date_created()->date('Y-m-d H:i:s'):null,
+              'erp_invoice_id'=>$o->get_meta('mahak_id',true),
+              'items'=>array_map(function($i){return ['name'=>$i->get_name(),'id'=>$i->get_product_id(),'variation'=>$i->get_variation_id(),'qty'=>$i->get_quantity(),'reduced'=>$i->get_meta('_reduced_stock',true)];},$o->get_items('line_item'))
+          ]:null,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          global $wpdb;
+          $table=$wpdb->prefix.'vesta_accounting_outbox';
+          $cols=$wpdb->get_col("SHOW COLUMNS FROM $table",0);
+          $r=$wpdb->get_row("SELECT * FROM $table WHERE order_id=105545",ARRAY_A);
+          $keep=[];foreach(['order_id','state','reason','remote_id','attempts','last_error'] as $k)if(isset($r[$k]))$keep[$k]=$r[$k];
+          echo 'ORDER_105545_OUTBOX='.wp_json_encode($keep,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'OLD_VARIATION_SKU_RISK_READONLY=yes'.PHP_EOL;
+          PHP
+          REMOTE
