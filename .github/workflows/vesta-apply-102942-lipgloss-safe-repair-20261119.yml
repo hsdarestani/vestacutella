@@ -32,8 +32,8 @@ jobs:
           echo 'LIPGLOSS_102942_SOURCE_AND_ORDER_PREFLIGHT_PASS=yes'
       - name: Backup Woo database, repair stale SKU, create verified GAGK draft
         env:
-          HOST: __HOST__
-          SSHPASS: __PASS__
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
         run: |
           set -Eeuo pipefail
           sshpass -e scp -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
