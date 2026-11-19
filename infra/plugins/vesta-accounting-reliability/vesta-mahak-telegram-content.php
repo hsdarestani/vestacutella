@@ -264,7 +264,17 @@ function vesta_mcb_apply_pending_worker() {
                 continue;
             }
             try{
-                $mahak=vmb_status(['request_key'=>$request]);
+                // Use the previous verified cloud ID when available.
+                // Never fetch the complete ERP catalog again on every 5-minute
+                // retry just to check whether Woo/Bazara has created its draft.
+                $known=get_option(vmb_request_key($request),null);
+                $mahak=(is_array($known) &&
+                         ($known['status']??'')==='visible_in_cloud_export' &&
+                         (int)($known['mahak_product_id']??0)>0)?
+                    ['status'=>'visible_in_cloud_export',
+                     'mahak_product_id'=>(int)$known['mahak_product_id'],
+                     'name'=>(string)($known['name']??'')]:
+                    vmb_status(['request_key'=>$request]);
                 if(($mahak['status']??'')!=='visible_in_cloud_export' ||
                    empty($mahak['mahak_product_id'])) {
                     $stage['status']='waiting_mahak';
