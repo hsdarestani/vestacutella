@@ -211,9 +211,23 @@ function vesta_mhi_auto_run($dryRun=false,$limit=6) {
             $assets=$wpdb->get_results($wpdb->prepare(
                 "SELECT StoreId,Count1 FROM {$assetTable}
                  WHERE ProductDetailId=%d AND Deleted=0 LIMIT 3",$did),ARRAY_A);
-            if(count($assets)!==1 || (int)$assets[0]['StoreId']<=0 ||
-               !is_numeric($assets[0]['Count1']) ||
-               (float)$assets[0]['Count1']<0) {
+            $warehouseVerified=count($assets)===1 &&
+                (int)($assets[0]['StoreId']??0)>0 &&
+                is_numeric($assets[0]['Count1']??null) &&
+                (float)$assets[0]['Count1']>=0;
+            // The verified Telegram Mahak creation wizard creates a new good
+            // with zero inventory and no warehouse asset row until desktop
+            // has imported it. A safe Woo DRAFT may exist without stock;
+            // never infer stock=0 or auto-publish from absent asset data.
+            $originKey=get_option('vmb_code_'.hash('sha256',$code),'');
+            $originRecord=(is_string($originKey) &&
+                preg_match('/^[a-f0-9]{32}$/D',$originKey))?
+                get_option('vmb_req_'.hash('sha256',$originKey),null):null;
+            $botSourceVerified=is_array($originRecord) &&
+                in_array(($originRecord['status']??''),['accepted_pending_sync','visible_in_cloud_export'],true) &&
+                (string)($originRecord['code']??'')===$code &&
+                vesta_catalog_identity_normalize((string)($originRecord['name']??''))===$title;
+            if(!$warehouseVerified && !(count($assets)===0 && $botSourceVerified)) {
                 $blocked['new_warehouse_asset_unverified']=($blocked['new_warehouse_asset_unverified']??0)+1;
                 continue;
             }
