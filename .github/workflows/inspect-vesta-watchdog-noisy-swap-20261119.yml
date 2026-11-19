@@ -1,0 +1,55 @@
+name: Inspect Vesta resource watchdog noisy swap messages and actual memory pressure
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/inspect-vesta-watchdog-noisy-swap-20261119.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 11
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read current host monitor script and real resource pressure safely
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          echo "WD_AUDIT_UTC=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          if test -s /usr/local/sbin/vesta-resource-watchdog;then
+            sha256sum /usr/local/sbin/vesta-resource-watchdog | sed 's/^/WD_LIVE_SHA256=/'
+            grep -nE 'Swap in use|swap_used|swap_total|mem_kb|disk|load|last_sent|previous|cron|test-alert|ALERT_COOLDOWN|ACTIVE|STATE=' /usr/local/sbin/vesta-resource-watchdog | head -55 | sed 's/^/WD_LIVE_RULE=/'
+          else echo 'WD_LIVE_SCRIPT_MISSING=yes';fi
+          echo 'WD_HOST_MEM='
+          free -m
+          echo 'WD_HOST_SWAP_ACTIVITY_1S_4='
+          vmstat 1 4 | tail -5
+          echo 'WD_HOST_MEMORY_PSI='
+          cat /proc/pressure/memory
+          echo 'WD_HOST_IO_PSI='
+          cat /proc/pressure/io
+          echo 'WD_HOST_VMSTAT_TOTALS='
+          awk '/^pswp(in|out) /{print}' /proc/vmstat
+          echo 'WD_HOST_DISK='
+          df -hT / /srv /var /tmp 2>/dev/null
+          echo 'WD_HOST_DISK_INODES='
+          df -i / | tail -2
+          echo 'WD_DOCKER_STATUS='
+          timeout 10 docker ps --format '{{.Names}} {{.Status}}' | head -24
+          echo 'WD_DOCKER_RESOURCE_SUMMARY='
+          timeout 12 docker stats --no-stream --format '{{.Name}} {{.MemUsage}} {{.CPUPerc}}' | head -18 || true
+          echo 'WD_RECENT_MONITOR='
+          tail -n 18 /var/log/vesta-resource-watchdog.log 2>/dev/null | cut -c1-260 || true
+          echo 'WD_ALERT_LAST_SENT='
+          if test -s /var/lib/vesta-resource-watchdog/last_sent;then
+            cat /var/lib/vesta-resource-watchdog/last_sent
+          fi
+          echo 'WD_CRON='
+          cat /etc/cron.d/vesta-resource-watchdog 2>/dev/null | head -5
+          echo 'WD_ALERTS_AUDIT_READONLY=yes'
+          REMOTE
