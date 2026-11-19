@@ -49,7 +49,7 @@ jobs:
           exec 9>/run/lock/vesta-production-nov02-stock.lock
           flock -n 9
           file=/tmp/vesta-safe-nov02-three-stock-restores.php
-          php -l "$file"
+          docker exec -i vc-vesta php -l /dev/stdin < "$file"
           backups=/srv/backups/vesta-nov02-safe-stock-$(date -u +%Y%m%dT%H%M%SZ)
           mkdir -m 0700 -p "$backups"
           cp "$file" "$backups/applied-verified-logic.php"
