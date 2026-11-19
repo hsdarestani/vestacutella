@@ -1,0 +1,42 @@
+name: Check single 69849 variant's shared-parent ERP detail identity
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-69849-erp-variation-detail-verify-20261119.yml]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Read exact ERP variant property and Woo parent/child stock ownership
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1G' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          foreach([69843,69849] as $id){
+            $p=wc_get_product($id);if(!$p)exit(11);
+            echo 'CANDIDATE_69849_WOO='.wp_json_encode([
+              'woo_id'=>$id,'type'=>$p->get_type(),'sku'=>$p->get_sku(),
+              'parent'=>$p->get_parent_id(),'erp'=>(int)$p->get_meta('mahak_id',true),
+              'detail'=>(int)$p->get_meta('mahak_product_detail_id',true),
+              'manage_stock'=>$p->get_manage_stock(),'stock'=>$p->get_stock_quantity(),
+              'attributes'=>$p->get_attributes(),
+              'name'=>$p->get_name()
+            ],JSON_UNESCAPED_UNICODE).PHP_EOL;
+          }
+          $rows=$wpdb->get_results($wpdb->prepare(
+            "SELECT ProductId,ProductDetailId,ProductDetailCode,Properties,Price1
+             FROM {$wpdb->prefix}bazara_product_details WHERE ProductDetailId=%d",12183925
+          ),ARRAY_A);
+          echo 'CANDIDATE_69849_ERP_DETAIL='.wp_json_encode($rows,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'CANDIDATE_69849_NO_MUTATION=yes'.PHP_EOL;
+          PHP
