@@ -1,0 +1,68 @@
+name: Audit all Vesta paid-order accounting states since Nov 2 (no invoice writes)
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-nov02-outbox-state-audit-20261119.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Check all Woo orders after 11 Aban against outbox and local ERP IDs
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1G' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);set_time_limit(160);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          $after='2026-11-02 09:06:00';
+          $states=[];$unlinked=[];$paid=0;$orders=0;$linked=0;$confirmed=0;
+          $sql=$wpdb->prepare(
+            "SELECT p.ID,p.post_status,COALESCE(b.state,'absent') AS outbox_state,
+               COALESCE(b.reason,'') AS reason,COALESCE(b.remote_id,0) AS remote_id,
+               COALESCE(b.attempts,0) AS attempts
+             FROM {$wpdb->posts} p
+             LEFT JOIN {$wpdb->prefix}vesta_accounting_outbox b ON b.order_id=p.ID
+             WHERE p.post_type='shop_order' AND p.post_date_gmt >= %s ORDER BY p.ID",$after);
+          $rows=$wpdb->get_results($sql,ARRAY_A);
+          foreach($rows as $r){
+             $o=wc_get_order((int)$r['ID']);if(!$o)continue;
+             $orders++;
+             $state=(string)$r['outbox_state'];
+             $states[$state]=($states[$state]??0)+1;
+             $isPaid=$o->has_status(['completed','processing']);
+             $erp=(int)$o->get_meta('mahak_id',true);
+             if($isPaid){
+                $paid++;
+                if($erp>0)$linked++;
+                if($state==='confirmed')$confirmed++;
+                if(!$erp || in_array($state,['blocked','uncertain','conflict','cloud_mismatch'],true)){
+                   $unlinked[]=['woo_order'=>(int)$r['ID'],'status'=>$o->get_status(),
+                      'erp_invoice_id'=>$erp,'outbox_state'=>$state,
+                      'reason'=>(string)$r['reason'],'remote_id'=>(int)$r['remote_id'],
+                      'attempts'=>(int)$r['attempts']];
+                }
+             }
+          }
+          $reasons=[];
+          foreach($unlinked as $row){
+            $r=$row['outbox_state'].':'.$row['reason'];
+            $reasons[$r]=($reasons[$r]??0)+1;
+          }
+          echo 'NOV02_OUTBOX_COUNTS='.wp_json_encode([
+            'orders'=>$orders,'paid'=>$paid,'paid_with_woo_erp_invoice_id'=>$linked,
+            'paid_with_outbox_confirmed'=>$confirmed,'states_all'=>$states,
+            'paid_exceptions'=>count($unlinked),'exception_reasons'=>$reasons
+          ],JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'NOV02_PAID_ORDER_EXCEPTION_LIST='.wp_json_encode($unlinked,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'NOV02_OUTBOX_READONLY_NO_RESEND=yes'.PHP_EOL;
+          PHP
