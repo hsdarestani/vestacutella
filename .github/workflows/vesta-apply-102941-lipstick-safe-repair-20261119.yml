@@ -32,8 +32,8 @@ jobs:
           echo 'LIPSTICK_102941_PREFLIGHT_VERIFIED=yes'
       - name: Backup and apply exact Woo parent title and four variation prices
         env:
-          HOST: __HOST__
-          SSHPASS: __PASS__
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
         run: |
           set -Eeuo pipefail
           sshpass -e scp -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
