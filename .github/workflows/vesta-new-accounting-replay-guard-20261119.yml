@@ -1,0 +1,84 @@
+name: Vesta new accounting epoch - deploy legacy replay guard
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/vesta-new-accounting-replay-guard-20261119.yml
+      - tests/accounting-cutover-test.php
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-accounting-outbox-production
+  cancel-in-progress: false
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test finance and new-epoch guard before any production change
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq php-cli sshpass
+          php -l infra/plugins/vesta-accounting-reliability/vesta-accounting-reliability.php
+          php tests/accounting-cutover-test.php infra/plugins/vesta-accounting-reliability/vesta-accounting-reliability.php
+          php tests/accounting-policy-test.php infra/plugins/vesta-accounting-reliability/vesta-accounting-policy.php
+      - name: Deploy only protected accounting guard with bounded rollback
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          stage="/tmp/vesta-cutover-guard-${GITHUB_SHA}.php"
+          opts="-o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+          sshpass -e scp $opts infra/plugins/vesta-accounting-reliability/vesta-accounting-reliability.php "root@$HOST:$stage"
+          sshpass -e ssh $opts "root@$HOST" "STAGE='$stage' RUN_ID='$GITHUB_RUN_ID' bash -s" <<'REMOTE'
+          set -Eeuo pipefail
+          target=/srv/vestacutella/runtime/vesta/wp-content/mu-plugins/vesta-accounting-reliability.php
+          test -s "$target"
+          test -s "$STAGE"
+          docker exec -i vc-vesta php -l < "$STAGE"
+          docker exec -i vc-vesta php -d display_errors=0 <<'PHP'
+          <?php
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          $e=get_option('vcar_new_accounting_epoch',[]);
+          if(empty($e['epoch_utc']) || get_option('vcar_sender_enabled',true))
+            throw new RuntimeException('new_epoch_must_be_active_and_sender_paused');
+          echo "NEW_EPOCH_GUARD_PREFLIGHT=yes".PHP_EOL;
+          PHP
+          # Single-file rollback copy, not a new site/database backup.
+          cp -p "$target" "$target.epoch-rollback-$RUN_ID"
+          rollback(){
+            rc=$?
+            trap - ERR
+            cp -p "$target.epoch-rollback-$RUN_ID" "$target"
+            echo CUTOVER_GUARD_ROLLED_BACK=yes
+            exit "$rc"
+          }
+          trap rollback ERR
+          install -m 0644 -o "$(stat -c %u "$target")" -g "$(stat -c %g "$target")" "$STAGE" "$target.next"
+          mv -f "$target.next" "$target"
+          docker exec vc-vesta php -l /var/www/html/wp-content/mu-plugins/vesta-accounting-reliability.php
+          docker exec -i vc-vesta php -d display_errors=0 <<'PHP'
+          <?php
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          $cutoff=Vesta_Accounting_Reliability::epoch_min_order();
+          if($cutoff!==105648 || get_option('vcar_sender_enabled',true) ||
+             get_option('vcar_new_accounting_target_ready',false) ||
+             Vesta_Accounting_Reliability::cutover_allows_order($cutoff,wc_get_order($cutoff)))
+            throw new RuntimeException('epoch_guard_runtime_validation_failed');
+          echo "CUTOVER_LAST_LEGACY_ORDER=$cutoff".PHP_EOL;
+          echo "OLD_ORDERS_EXCLUDED_FROM_NEW_ACCOUNTING=yes".PHP_EOL;
+          echo "NEW_LEDGER_REMAINS_PAUSED_PENDING_NEW_MAHAK_TARGET=yes".PHP_EOL;
+          PHP
+          for host in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
+            code=$(curl --noproxy '*' -ksS --connect-timeout 8 --max-time 25 --resolve "$host:443:127.0.0.1" -o /dev/null -w '%{http_code}' "https://$host/")
+            echo "SITE=$host HTTP=$code";test "$code" = 200
+          done
+          trap - ERR
+          echo CUTOVER_GUARD_DEPLOY_SUCCESS=yes
+          REMOTE
