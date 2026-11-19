@@ -12,7 +12,10 @@ if (!defined('ABSPATH')) exit;
 function vesta_mhi_auto_fingerprint() {
     global $wpdb;
     $data=[];
-    foreach(['bazara_products','bazara_product_details','bazara_product_assets'] as $name) {
+    // Pictures and their good-to-picture links must trigger a new scan, too.
+    // Otherwise a photo-only F2 import is invisible until the periodic fallback.
+    foreach(['bazara_products','bazara_product_details','bazara_product_assets',
+             'bazara_pictures','bazara_photo_gallery'] as $name) {
         $table=$wpdb->prefix.$name;
         $value=$wpdb->get_row("SELECT COUNT(*) AS n, COALESCE(MAX(RowVersion),0) AS v
             FROM {$table}",ARRAY_A);
@@ -35,7 +38,8 @@ function vesta_mhi_auto_schedule($force=false,$delay=100) {
         $backlog=(bool)get_option('vesta_mhi_auto_pending_backlog',false);
         if(!$backlog && $last===$fingerprint && $lastPhoto>0 && $now-$lastPhoto<7200)
             return false;
-        if($now-(int)get_option('vesta_mhi_auto_last_schedule_at',0)<900)
+        // Changed rows: throttle to 3 minutes; unchanged rows never call the API.
+        if($now-(int)get_option('vesta_mhi_auto_last_schedule_at',0)<180)
             return false;
     }
     if(function_exists('as_has_scheduled_action') &&
@@ -53,7 +57,7 @@ function vesta_mhi_auto_schedule($force=false,$delay=100) {
 }
 // This fires only *after* the native product-sync callback has run. It schedules
 // a separate bounded worker, never expensive Cloud calls in the native job.
-add_action('bazara_run_product_sync',function(){vesta_mhi_auto_schedule(false,100);},PHP_INT_MAX);
+add_action('bazara_run_product_sync',function(){vesta_mhi_auto_schedule(false,35);},PHP_INT_MAX);
 
 function vesta_mhi_auto_run($dryRun=false,$limit=6) {
     global $wpdb;
@@ -120,34 +124,36 @@ function vesta_mhi_auto_run($dryRun=false,$limit=6) {
             $code=trim((string)$p['ProductCode']);$gid=(int)$p['ProductId'];
             if(($codeCounts[$code]??0)!==1) { $blocked['duplicate_cloud_code']=($blocked['duplicate_cloud_code']??0)+1;continue;}
             $ds=$details[$gid]??[];
-            if(count($ds)!==1) {
-                // Multi-detail Mahak goods correspond to variable Woo parents.
-                // Never create or remap variations here; only transfer photos to
-                // an existing parent whose code, name and Mahak ID are verified.
-                $stats['variable_or_no_detail']++;
-                if(empty($photos[$gid]))continue;
+            // Independently of how many details Mahak currently exposes, an
+            // existing verified variable Woo parent can receive product-level
+            // photographs. Never create children or remap its variant IDs here.
+            if(!empty($ds) && !empty($photos[$gid])) {
                 $parentId=(int)vms_existing_woo($code,$gid);
-                if(!$parentId)continue;
-                $parent=wc_get_product($parentId);
-                if(!$parent || !$parent->is_type('variable') ||
-                   $parent->get_sku()!==$code ||
-                   (int)$parent->get_meta('mahak_id',true)!==$gid) {
-                    $blocked['variable_parent_identifier_mismatch']=($blocked['variable_parent_identifier_mismatch']??0)+1;
-                    continue;
+                if($parentId) {
+                    $parent=wc_get_product($parentId);
+                    if($parent && $parent->is_type('variable')) {
+                        $stats['variable_or_no_detail']++;
+                        if($parent->get_sku()!==$code ||
+                           (int)$parent->get_meta('mahak_id',true)!==$gid) {
+                            $blocked['variable_parent_identifier_mismatch']=($blocked['variable_parent_identifier_mismatch']??0)+1;
+                            continue;
+                        }
+                        try {
+                            $plan=vesta_mhi_plan($parentId,$gid);
+                            if(count($plan['missing'])+count($plan['reuse'])>0) {
+                                $candidates[]=['kind'=>'variable-photo','woo_id'=>$parentId,
+                                    'code'=>$code,'erp_id'=>$gid,'needs_fields'=>false,
+                                    'needs_photos'=>true];
+                                $stats['eligible_enrich_existing']++;
+                            }else $stats['skipped_unchanged']++;
+                        }catch(Throwable $e) {
+                            $blocked['variable_photo_identity_guard']=($blocked['variable_photo_identity_guard']??0)+1;
+                        }
+                        continue;
+                    }
                 }
-                try {
-                    $plan=vesta_mhi_plan($parentId,$gid);
-                    if(count($plan['missing'])+count($plan['reuse'])>0) {
-                        $candidates[]=['kind'=>'variable-photo','woo_id'=>$parentId,
-                            'code'=>$code,'erp_id'=>$gid,'needs_fields'=>false,
-                            'needs_photos'=>true];
-                        $stats['eligible_enrich_existing']++;
-                    }else $stats['skipped_unchanged']++;
-                }catch(Throwable $e) {
-                    $blocked['variable_photo_identity_guard']=($blocked['variable_photo_identity_guard']??0)+1;
-                }
-                continue;
             }
+            if(count($ds)!==1){$stats['variable_or_no_detail']++;continue;}
             $d=$ds[0];$did=(int)($d['ProductDetailId']??0);
             if(!$did)continue;
             $wooId=(int)vms_existing_woo($code,$gid);
