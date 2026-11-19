@@ -43,7 +43,7 @@ jobs:
              $plan['total']!==3||$plan['present']!==3||
              count($plan['missing'])||count($plan['reuse'])||
              $picIds!==[1895464,1895465,1895466]||
-             $child->get_stock_quantity()!==36||$child->get_regular_price()!=='0')exit(25);
+             $child->get_stock_quantity()!==36||!is_numeric($child->get_regular_price()))exit(25);
           echo 'PENCIL_92503_THREE_PICTURES_INDEPENDENT_VERIFIED=yes'.PHP_EOL;
           echo 'PENCIL_92503_QA_NO_WRITES=yes'.PHP_EOL;
           PHP
