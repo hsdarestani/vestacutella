@@ -28,6 +28,10 @@ jobs:
             'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1536M' \
             < scripts/vesta-nov02-stock-orders-readonly-export-20261119.php | tee audit/live_log.txt
           grep -Fq 'VESTA_NOV02_READONLY_EXPORT_SUCCESS=yes' audit/live_log.txt
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" \
+             'docker cp vc-vesta:/tmp/vesta-reconcile-nov02/products.csv /tmp/vesta-reconcile-nov02/products.csv
+              docker cp vc-vesta:/tmp/vesta-reconcile-nov02/orders.csv /tmp/vesta-reconcile-nov02/orders.csv
+              docker cp vc-vesta:/tmp/vesta-reconcile-nov02/summary.json /tmp/vesta-reconcile-nov02/summary.json'
           for name in products.csv orders.csv summary.json;do
             sshpass -e scp -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
              "root@$HOST:/tmp/vesta-reconcile-nov02/$name" "audit/$name"
