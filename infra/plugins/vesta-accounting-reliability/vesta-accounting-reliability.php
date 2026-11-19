@@ -9,6 +9,21 @@ require_once __DIR__.'/vesta-accounting-policy.php';
 require_once __DIR__.'/vesta-accounting-identity.php';
 class Vesta_Accounting_Reliability {
     public static $dispatching = false;
+    // Separate the new accounting epoch from preserved legacy Woo and outbox records.
+    static function epoch_min_order() {
+        $epoch=get_option('vcar_new_accounting_epoch',array());
+        return is_array($epoch)?max(0,(int)($epoch['last_legacy_order_id']??0)):0;
+    }
+    static function cutover_allows_order($id,$order=null) {
+        $epoch=get_option('vcar_new_accounting_epoch',array());
+        if(!is_array($epoch)||empty($epoch['epoch_utc']))return true;
+        if((int)$id<=self::epoch_min_order())return false;
+        if(!$order)$order=wc_get_order($id);
+        $created=$order?$order->get_date_created():null;
+        $cutoff=strtotime($epoch['epoch_utc']);
+        // Imported/backdated pre-epoch orders are not part of the new ledger.
+        return $created && $cutoff && $created->getTimestamp()>=$cutoff;
+    }
     static function table() { global $wpdb; return $wpdb->prefix.'vesta_accounting_outbox'; }
     static function install() {
         global $wpdb;
@@ -44,7 +59,7 @@ class Vesta_Accounting_Reliability {
     static function enqueue($id) {
         global $wpdb;
         if (get_option('vcar_schema')!=='1') return;
-        $o=wc_get_order($id); if(!vcar_eligible($o)) return;
+        $o=wc_get_order($id); if(!vcar_eligible($o) || !self::cutover_allows_order($id,$o)) return;
         $t=self::table(); $now=time();
         $wpdb->query($wpdb->prepare("INSERT IGNORE INTO $t (order_id,request_key,created_at,updated_at) VALUES (%d,%s,%d,%d)",
             $id,hash('sha256','vesta-cosmetics.ir:woo:'.$id),$now,$now));
@@ -76,9 +91,10 @@ class Vesta_Accounting_Reliability {
         global $wpdb;$t=self::table();$now=time();
         $statuses=array('wc-processing','wc-completed','wc-processing5','wc-pws-packaged','wc-pws-shipping','wc-arrival-shipment','wc-pws-courier','wc-pws-post');
         $st="'".implode("','",$statuses)."'";
+        $cutoffWhere=" AND p.ID>".self::epoch_min_order();
         $n=$wpdb->query("INSERT IGNORE INTO $t (order_id,request_key,created_at,updated_at)
           SELECT ID,SHA2(CONCAT('vesta-cosmetics.ir:woo:',ID),256),$now,$now FROM {$wpdb->posts} p
-          WHERE post_type='shop_order' AND post_status IN ($st) AND EXISTS(
+          WHERE post_type='shop_order' $cutoffWhere AND post_status IN ($st) AND EXISTS(
             SELECT 1 FROM {$wpdb->postmeta} m WHERE m.post_id=p.ID AND
             ((m.meta_key='_date_paid' AND CAST(m.meta_value AS UNSIGNED)>0) OR (m.meta_key='_paid_date' AND m.meta_value<>'')))");
         if($n===false)throw new RuntimeException('full_history_seed_failed');
@@ -131,12 +147,12 @@ class Vesta_Accounting_Reliability {
             else self::seed(150);
             $api=new BazaraApi(true);$cloud=self::cloud($api);
             $settings=get_option('bazara_visitor_settings',array());
-            $t=self::table();$now=time();$sent=0;
+            $t=self::table();$now=time();$sent=0;$min=self::epoch_min_order();
             // A delayed cloud acknowledgement is reconciled on every pass, independently of retry delay.
-            foreach($wpdb->get_results("SELECT * FROM $t WHERE state IN ('sending','uncertain') LIMIT 60",ARRAY_A) as $q){
+            foreach($wpdb->get_results("SELECT * FROM $t WHERE state IN ('sending','uncertain') AND order_id>$min LIMIT 60",ARRAY_A) as $q){
                 $id=(int)$q['order_id'];
                 $o=wc_get_order($id);
-                if(!vcar_eligible($o))continue;
+                if(!vcar_eligible($o) || !self::cutover_allows_order($id,$o))continue;
                 $bank=vcar_bank($settings,$o->get_payment_method());
                 if(!empty($cloud['orders'][$id]))self::verify($id,$o,$cloud,$bank);
                 elseif($q['state']==='uncertain'&&(int)$q['attempts']<5&&!(int)$o->get_meta('mahak_id')&&
@@ -145,9 +161,10 @@ class Vesta_Accounting_Reliability {
                     self::set($id,'retry','remote_deadlock_transaction_rolled_back',array('submitted_at'=>0,'failures'=>$failures,'next_attempt'=>time()+min(600,30*pow(2,min($failures,4)))));
                 }
             }
-            $rows=$wpdb->get_results($wpdb->prepare("SELECT * FROM $t WHERE state<>'verified' AND next_attempt<=%d ORDER BY submitted_at DESC,order_id DESC LIMIT 60",$now),ARRAY_A);
+            $rows=$wpdb->get_results($wpdb->prepare("SELECT * FROM $t WHERE state<>'verified' AND order_id>%d AND next_attempt<=%d ORDER BY submitted_at DESC,order_id DESC LIMIT 60",$min,$now),ARRAY_A);
             foreach($rows as $q) {
                 $id=(int)$q['order_id'];$o=wc_get_order($id);
+                if(!self::cutover_allows_order($id,$o))continue;
                 if(!vcar_eligible($o)){self::set($id,'ineligible','payment_or_status_changed',array('next_attempt'=>$now+3600));continue;}
                 $bank=vcar_bank($settings,$o->get_payment_method());
                 if(self::verify($id,$o,$cloud,$bank))continue;
@@ -163,7 +180,8 @@ class Vesta_Accounting_Reliability {
                 if($created && $created->getTimestamp()<strtotime('2026-11-08T00:00:00Z')) {
                     self::set($id,'blocked','historical_ledger_export_required',array('next_attempt'=>$now+3600));continue;
                 }
-                if($sent >= $maxSend || !get_option('vcar_sender_enabled',false))continue;
+                // A future activation must verify a distinct, initialized Mahak target first.
+                if($sent >= $maxSend || !get_option('vcar_sender_enabled',false) || ($min>0 && !get_option('vcar_new_accounting_target_ready',false)))continue;
                 // Persist BEFORE making a potentially ambiguous external mutation.
                 // Persist the outgoing unit before reservation; legacy/uncertain invoices retain their original unit.
                 $o->update_meta_data('_vcar_money_multiplier',1);
@@ -185,7 +203,7 @@ class Vesta_Accounting_Reliability {
             }
             update_option('vcar_read_failures',0,false);
             update_option('vcar_heartbeat',array('at'=>time(),'sent'=>$sent,'error'=>''),false);
-            $pending=(int)$wpdb->get_var("SELECT COUNT(*) FROM $t WHERE state<>'verified' AND state<>'ineligible'");
+            $pending=(int)$wpdb->get_var("SELECT COUNT(*) FROM $t WHERE state<>'verified' AND state<>'ineligible' AND order_id>$min");
             return array('success'=>$pending===0,'message'=>'Accounting outbox: '.$pending.' orders still require cloud verification. Desktop receipt is not verified.','sent'=>$sent);
         } catch(Throwable $e) {
             $n=(int)get_option('vcar_read_failures',0)+1;update_option('vcar_read_failures',$n,false);
@@ -217,7 +235,8 @@ class Vesta_Accounting_Reliability {
     static function dashboard() {
         if(!current_user_can('manage_woocommerce'))return;
         global $wpdb;$t=self::table();
-        $rows=$wpdb->get_results("SELECT state,reason,COUNT(*) n,MIN(created_at) oldest FROM $t GROUP BY state,reason",ARRAY_A);
+        $min=self::epoch_min_order();
+        $rows=$wpdb->get_results("SELECT state,reason,COUNT(*) n,MIN(created_at) oldest FROM $t WHERE order_id>$min GROUP BY state,reason",ARRAY_A);
         $hb=get_option('vcar_heartbeat',array());
         echo '<div class="wrap"><h1>وضعیت واقعی اتصال حسابداری</h1><p>تأیید ابر و تأیید محک ویندوزی مستقل‌اند. وضعیت نسخه ویندوز: تأیید نشده.</p>';
         echo '<p>آخرین اجرای کارگر: '.esc_html(!empty($hb['at'])?gmdate('c',$hb['at']):'هنوز اجرا نشده').'</p>';
@@ -228,7 +247,7 @@ class Vesta_Accounting_Reliability {
         echo '<table class="widefat"><tr><th>وضعیت</th><th>علت</th><th>تعداد</th><th>قدیمی‌ترین ورود به صف</th></tr>';
         foreach($rows as $r)echo '<tr><td>'.esc_html($r['state']).'</td><td>'.esc_html($r['reason']).'</td><td>'.(int)$r['n'].'</td><td>'.esc_html(gmdate('c',(int)$r['oldest'])).'</td></tr>';
         echo '</table><h2>سفارش‌های نیازمند بررسی</h2><table class="widefat"><tr><th>سفارش</th><th>وضعیت</th><th>علت</th><th>فاکتور ابر</th></tr>';
-        foreach($wpdb->get_results("SELECT order_id,state,reason,remote_id FROM $t WHERE state<>'verified' ORDER BY order_id DESC LIMIT 100",ARRAY_A) as $r)
+        foreach($wpdb->get_results("SELECT order_id,state,reason,remote_id FROM $t WHERE state<>'verified' AND order_id>$min ORDER BY order_id DESC LIMIT 100",ARRAY_A) as $r)
             echo '<tr><td>'.(int)$r['order_id'].'</td><td>'.esc_html($r['state']).'</td><td>'.esc_html($r['reason']).'</td><td>'.(int)$r['remote_id'].'</td></tr>';
         echo '</table></div>';
     }
@@ -238,7 +257,7 @@ add_action('woocommerce_order_status_changed',array('Vesta_Accounting_Reliabilit
 add_action('admin_menu',function(){add_submenu_page('woocommerce','اتصال واقعی محک','اتصال واقعی محک','manage_woocommerce','vesta-accounting',array('Vesta_Accounting_Reliability','dashboard'));});
 add_action('admin_notices',function(){
     if(!current_user_can('manage_woocommerce')||get_option('vcar_schema')!=='1')return;
-    global $wpdb;$t=Vesta_Accounting_Reliability::table();$n=(int)$wpdb->get_var("SELECT COUNT(*) FROM $t WHERE state<>'verified'");
+    global $wpdb;$t=Vesta_Accounting_Reliability::table();$min=Vesta_Accounting_Reliability::epoch_min_order();$n=(int)$wpdb->get_var("SELECT COUNT(*) FROM $t WHERE state<>'verified' AND order_id>$min");
     $hb=get_option('vcar_heartbeat',array());$stale=time()-(int)($hb['at']??0)>600;
     if($n||$stale)echo '<div class="notice notice-warning"><p>اتصال محک: '.(int)$n.' سفارش بدون تأیید کامل ابر. '.($stale?'اجرای خودکار نیازمند بررسی است. ':'').'<a href="'.esc_url(admin_url('admin.php?page=vesta-accounting')).'">جزئیات اتصال</a></p></div>';
 });
