@@ -19,10 +19,10 @@ jobs:
         run: |
           set -Eeuo pipefail
           curl -fsSL --retry 3 --connect-timeout 10 \
-             https://raw.githubusercontent.com/hsdarestani/ordersvesta/d85324c226e36fb6ac869bc77a296cbc1915342b/wordpress/mu-plugins/vesta-mahak-product-bridge.php \
+             https://raw.githubusercontent.com/hsdarestani/ordersvesta/cf6e01b019c2a38fcb0afd1b584547495fecfa60/wordpress/mu-plugins/vesta-mahak-product-bridge.php \
              -o /tmp/mahak-bridge-known-previous.php
           curl -fsSL --retry 3 --connect-timeout 10 \
-             https://raw.githubusercontent.com/hsdarestani/ordersvesta/cf6e01b019c2a38fcb0afd1b584547495fecfa60/wordpress/mu-plugins/vesta-mahak-product-bridge.php \
+             https://raw.githubusercontent.com/hsdarestani/ordersvesta/0fcff9ba77551681ab664a6ecc76255233d0fe79/wordpress/mu-plugins/vesta-mahak-product-bridge.php \
              -o /tmp/mahak-bridge-variable-reviewed.php
           php -l /tmp/mahak-bridge-variable-reviewed.php
           grep -Fq 'vmb_normalized_variants' /tmp/mahak-bridge-variable-reviewed.php
@@ -100,6 +100,17 @@ jobs:
           echo 'VARIABLE_MAHAK_GROUP_FROM_REAL_CLOUD_TEMPLATE=3'.PHP_EOL;
           echo 'VARIABLE_MAHAK_TWO_VARIANT_PRICES_AND_STOCK_INTENTS_VALIDATED=yes'.PHP_EOL;
           echo 'VARIABLE_MAHAK_WRONG_GROUP_BLOCKED=yes'.PHP_EOL;
+          if(!function_exists('vmb_requested_inventory_status'))exit(47);
+          $confirmed=vmb_requested_inventory_status([
+            'mahak_product_id'=>10684982,
+            'stock_intent_status'=>'warehouse_document_required',
+            'variant_spec'=>[
+              'group_code'=>'3',
+              'variants'=>[['option'=>'قهوه ای','stock_qty'=>'36']]
+            ]
+          ],$base);
+          if(($confirmed['status']??'')!=='warehouse_quantity_verified')exit(48);
+          echo 'MAHAK_VARIANT_REAL_WAREHOUSE_READBACK_36_VERIFIED=yes'.PHP_EOL;
           echo 'VARIABLE_MAHAK_NO_PRODUCT_OR_STOCK_WRITES=yes'.PHP_EOL;
           PHP
           for h in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
