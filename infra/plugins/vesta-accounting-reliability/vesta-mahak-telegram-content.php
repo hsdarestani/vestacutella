@@ -163,11 +163,24 @@ function vesta_mcb_save($data) {
     }finally{$wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)',$lock));}
 }
 
+// The stock Bot Bridge dispatches at plugins_loaded, before WooCommerce
+// registers the product CPT on init. WC products are NULL at that stage.
+// Defer ONLY our three signed editorial operations until after init, and
+// retain the core early route for every other operation.
 add_action('plugins_loaded',function(){
     if(!isset($_GET['vbb'])||(string)$_GET['vbb']!=='2')return;
     $op=sanitize_key((string)($_GET['o']??''));
     if(!in_array($op,['mahak_content_status','mahak_content_save','mahak_content_diag'],true))return;
-    if(!function_exists('vbb_v2_authorize'))return;
+    remove_action('plugins_loaded','vbb_handle_v2_request',PHP_INT_MAX);
+    add_action('init','vesta_mcb_authenticated_dispatch_after_woo_init',PHP_INT_MAX-4);
+},PHP_INT_MAX-4);
+
+function vesta_mcb_authenticated_dispatch_after_woo_init() {
+    $op=sanitize_key((string)($_GET['o']??''));
+    if(!in_array($op,['mahak_content_status','mahak_content_save','mahak_content_diag'],true))return;
+    if(!function_exists('vbb_v2_authorize') || !did_action('init') ||
+       !post_type_exists('product') || !did_action('woocommerce_init'))
+       vbb_fail('WooCommerce content editor is not initialized.',503);
     list($verified,$data)=vbb_v2_authorize();
     if($verified!==$op)vbb_fail('Invalid operation.',400);
     try{
@@ -176,4 +189,4 @@ add_action('plugins_loaded',function(){
         vbb_no_cache();
         wp_send_json_success($result);
     }catch(Throwable $e){vbb_fail($e->getMessage(),400);}
-},PHP_INT_MAX-4);
+}
