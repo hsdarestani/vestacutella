@@ -1,4 +1,4 @@
-name: Safely correct three verified Vesta 11-Aban Woo stock undercounts
+name: Safely correct two uniquely identified Vesta 11-Aban Woo stock undercounts
 on:
   push:
     branches: [main]
@@ -65,7 +65,7 @@ jobs:
           $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
           $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
           require '/var/www/html/wp-load.php';
-          $target=[102492=>4,69849=>20,24102=>48];
+          $target=[102492=>4,24102=>48];
           $seen=[];foreach($target as $id=>$qty){
              $p=wc_get_product($id);
              if(!$p||(int)$p->get_stock_quantity()!==$qty)exit(42);
@@ -73,9 +73,9 @@ jobs:
                'mahak_detail'=>$p->get_meta('mahak_product_detail_id',true)];
           }
           $j=get_option('vesta_11aban_stock_safe_repair_20261119_v1');
-          if(!is_array($j)||count($j['corrected']??[])!==3)exit(43);
+          if(!is_array($j)||count($j['corrected']??[])!==2)exit(43);
           echo 'NOV02_SAFE_WOO_STOCK_INDEPENDENT_READBACK='.wp_json_encode($seen).PHP_EOL;
-          echo 'NOV02_SAFE_WOO_STOCK_THREE_PRODUCT_ACCEPTANCE_PASS=yes'.PHP_EOL;
+          echo 'NOV02_SAFE_WOO_STOCK_TWO_PRODUCT_ACCEPTANCE_PASS=yes'.PHP_EOL;
           PHP
           for host in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
              http=$(curl --noproxy '*' -ksS --connect-timeout 6 --max-time 16 --resolve "$host:443:127.0.0.1" -o /dev/null -w '%{http_code}' "https://$host/")
