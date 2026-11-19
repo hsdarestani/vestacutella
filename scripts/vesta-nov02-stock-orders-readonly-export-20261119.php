@@ -57,7 +57,7 @@ $sql=$wpdb->prepare("SELECT ID,post_date_gmt FROM {$wpdb->posts}
  WHERE post_type='shop_order' AND post_date_gmt>=%s ORDER BY post_date_gmt,ID",$base);
 $orderRows=$wpdb->get_results($sql,ARRAY_A);
 $remoteIds=[];
-foreach($wpdb->get_results("SELECT OrderClientId,OrderId FROM {$pm}bazara_orders WHERE Deleted=0",ARRAY_A) as $remote) {
+foreach($wpdb->get_results("SELECT OrderClientId,OrderId FROM {$pm}bazara_orders",ARRAY_A) as $remote) {
   $id=(int)$remote['OrderClientId'];if($id<=0)continue;
   $remoteIds[$id][]=(int)$remote['OrderId'];
 }
@@ -96,7 +96,6 @@ $summary=[
  'warehouse_unique_details'=>$assetUnique,'warehouse_ambiguous_details'=>$assetAmbiguous,
  'orders'=>$orders,'paid_orders'=>$paid,
  'order_line_items'=>$items,'line_items_with_woo_stock_reduced_flag'=>$itemsStockReduced,
- 'order_statuses'=>array_count_values(array_map(fn($x)=>(string)$x['post_date_gmt']?$x['post_date_gmt']:'',array_filter($orderRows,fn($x)=>false))),
  'outbox_exists'=>(bool)$found,'outbox_columns'=>$outboxSchema,
  'accounting_storage'=>'posts',
  'stock_source'=>'wp_bazara_product_assets.Count1 per ProductDetailId+StoreId, never ProductDetails.Count1'
