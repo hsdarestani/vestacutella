@@ -1,0 +1,62 @@
+name: Vesta post-F2 auto-product-import verification 20261119
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-post-f2-auto-import-verification-20261119.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Check post-F2 Bazara received data, native jobs, Vesta automatic importer and latest Woo drafts
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1280M' <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);set_time_limit(0);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';global $wpdb;
+          echo 'POST_F2_SERVER_UTC='.gmdate('c').PHP_EOL;
+          echo 'POST_F2_AUTO_HOOK_REGISTERED='.(has_action('bazara_run_product_sync')&&has_action('vesta_mhi_auto_tick')?'yes':'no').PHP_EOL;
+          echo 'POST_F2_AUTO_LAST_REPORT='.wp_json_encode(get_option('vesta_mhi_auto_last_report',null),JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'POST_F2_AUTO_LAST_PHOTO_CHECK='.wp_json_encode(get_option('vesta_mhi_auto_last_photo_scan_at',null)).PHP_EOL;
+          echo 'POST_F2_AUTO_LAST_SCHEDULE='.wp_json_encode(get_option('vesta_mhi_auto_last_schedule_at',null)).PHP_EOL;
+          echo 'POST_F2_AUTO_BACKLOG='.wp_json_encode(get_option('vesta_mhi_auto_pending_backlog',null)).PHP_EOL;
+          echo 'POST_F2_AUTO_DISABLED='.wp_json_encode(get_option('vesta_mhi_auto_disabled',null)).PHP_EOL;
+          foreach(['bazara_products','bazara_product_details','bazara_product_assets','bazara_pictures','bazara_photo_gallery'] as $short){
+             $tbl=$wpdb->prefix.$short;
+             $schema=$wpdb->get_col("SHOW COLUMNS FROM $tbl",0);
+             $count=(int)$wpdb->get_var("SELECT COUNT(*) FROM $tbl");
+             $version=in_array('RowVersion',$schema,true)?$wpdb->get_var("SELECT MAX(RowVersion) FROM $tbl"):null;
+             echo 'POST_F2_LOCAL_BAZARA_'.strtoupper($short).'='.wp_json_encode(['count'=>$count,'max_row_version'=>$version]).PHP_EOL;
+          }
+          $act=$wpdb->prefix.'actionscheduler_actions';
+          foreach(['bazara_run_product_sync','vesta_mhi_auto_tick'] as $hook){
+             $rows=$wpdb->get_results($wpdb->prepare("SELECT action_id,status,scheduled_date_gmt,last_attempt_gmt,attempts FROM $act WHERE hook=%s ORDER BY action_id DESC LIMIT 8",$hook),ARRAY_A);
+             echo 'POST_F2_ACTION_'.strtoupper($hook).'='.wp_json_encode($rows).PHP_EOL;
+          }
+          $recent=$wpdb->get_results("SELECT p.ID,p.post_title,p.post_status,p.post_date_gmt
+            FROM {$wpdb->posts} p WHERE p.post_type='product' AND p.post_status IN ('draft','publish')
+            ORDER BY ID DESC LIMIT 12",ARRAY_A);
+          $samples=[];
+          foreach($recent as $item) {
+             $p=wc_get_product((int)$item['ID']);if(!$p)continue;
+             $samples[]=['id'=>(int)$item['ID'],'title'=>$item['post_title'],
+               'status'=>$item['post_status'],'created_gmt'=>$item['post_date_gmt'],
+               'sku'=>$p->get_sku(),'mahak_id'=>(int)$p->get_meta('mahak_id',true),
+               'detail_id'=>(int)$p->get_meta('mahak_product_detail_id',true),
+               'price'=>$p->get_regular_price(),
+               'qty'=>$p->get_stock_quantity(),
+               'featured'=>(int)$p->get_image_id()];
+          }
+          echo 'POST_F2_LATEST_SITE_GOODS='.wp_json_encode($samples,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'POST_F2_NO_DATA_CHANGES=yes'.PHP_EOL;
+          PHP
