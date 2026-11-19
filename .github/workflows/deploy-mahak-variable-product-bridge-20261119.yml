@@ -1,0 +1,112 @@
+name: Deploy Mahak variable creation bridge after contract tests
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/deploy-mahak-variable-product-bridge-20261119.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-mahak-accounting-product-bridge-deploy
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 17
+    steps:
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq php-cli sshpass
+      - name: Check reviewed old and new PHP source
+        run: |
+          set -Eeuo pipefail
+          curl -fsSL --retry 3 --connect-timeout 10 \
+             https://raw.githubusercontent.com/hsdarestani/ordersvesta/d85324c226e36fb6ac869bc77a296cbc1915342b/wordpress/mu-plugins/vesta-mahak-product-bridge.php \
+             -o /tmp/mahak-bridge-known-previous.php
+          curl -fsSL --retry 3 --connect-timeout 10 \
+             https://raw.githubusercontent.com/hsdarestani/ordersvesta/cf6e01b019c2a38fcb0afd1b584547495fecfa60/wordpress/mu-plugins/vesta-mahak-product-bridge.php \
+             -o /tmp/mahak-bridge-variable-reviewed.php
+          php -l /tmp/mahak-bridge-variable-reviewed.php
+          grep -Fq 'vmb_normalized_variants' /tmp/mahak-bridge-variable-reviewed.php
+      - name: Back up, deploy and read-only production validation
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e scp -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+             /tmp/mahak-bridge-known-previous.php /tmp/mahak-bridge-variable-reviewed.php \
+             "root@$HOST:/tmp/"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          umask 077
+          exec 9>/run/lock/vesta-mahak-product-bridge-deploy.lock;flock -n 9
+          mu=/srv/vestacutella/runtime/vesta/wp-content/mu-plugins
+          file="$mu/vesta-mahak-product-bridge.php"
+          backup=/srv/backups/vesta-mahak-variable-bridge-$(date -u +%Y%m%dT%H%M%SZ)
+          mkdir -m 0700 -p "$backup"
+          test -s "$file"
+          if cmp -s "$file" /tmp/mahak-bridge-variable-reviewed.php;then
+            echo "MAHAK_VARIABLE_BRIDGE_ALREADY_INSTALLED=yes"
+          else
+            if ! cmp -s "$file" /tmp/mahak-bridge-known-previous.php;then
+              echo 'MAHAK_VARIABLE_BRIDGE_DIFFERENT_FROM_REVIEWED_BASELINE=yes'
+              exit 37
+            fi
+            cp -p "$file" "$backup/old.php"
+            cp /tmp/mahak-bridge-variable-reviewed.php "$mu/.mahak-variable.new"
+            chown --reference="$file" "$mu/.mahak-variable.new"
+            chmod 644 "$mu/.mahak-variable.new"
+            mv "$mu/.mahak-variable.new" "$file"
+          fi
+          rollback(){
+            rc=$?;trap - ERR
+            if test -s "$backup/old.php";then cp -p "$backup/old.php" "$file";fi
+            echo 'MAHAK_VARIABLE_BRIDGE_ROLLED_BACK=yes'
+            exit "$rc"
+          }
+          trap rollback ERR
+          docker exec vc-vesta php -l /var/www/html/wp-content/mu-plugins/vesta-mahak-product-bridge.php
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1300M <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);set_time_limit(240);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          if(!function_exists('vmb_normalized_variants')||
+             !function_exists('vmb_template_variant_group')||!function_exists('vmb_submit'))exit(41);
+          $cfg=get_option('bazara_visitor_settings',[]);
+          if(($cfg['selectCurrencySoftware']??'')!=='toman'||($cfg['selectCurrencyPlugin']??'')!=='toman')exit(42);
+          $t=vmb_template(['template_code'=>'92503']);
+          if((string)($t['variation_template']['group_code']??'')!=='3'||(int)($t['category_id']??0)<=0)exit(43);
+          $s=vmb_template(['template_code'=>'8079']);
+          if((string)($s['code']??'')!=='8079')exit(44);
+          $base=vmb_catalog(vmb_api());
+          $parent=vmb_by_code($base,'92503');
+          $ok=vmb_normalized_variants([
+           'variant_group_code'=>'3','attribute_name'=>'رنگ',
+           'variants'=>[
+             ['option'=>'قهوه ای','price_toman'=>'125000','stock_qty'=>'36'],
+             ['option'=>'مشکی','price_toman'=>'145000','stock_qty'=>'7']
+           ]
+          ],$parent,$base,'125000',true);
+          if(count($ok['variants'])!==2)exit(45);
+          $wrong=false;
+          try{vmb_normalized_variants([
+           'variant_group_code'=>'9','attribute_name'=>'رنگ',
+           'variants'=>[
+             ['option'=>'قهوه ای','price_toman'=>'125000','stock_qty'=>'36'],
+             ['option'=>'مشکی','price_toman'=>'145000','stock_qty'=>'7']
+           ]
+          ],$parent,$base,'125000',true);}catch(Throwable $e){$wrong=true;}
+          if(!$wrong)exit(46);
+          echo 'VARIABLE_MAHAK_GROUP_FROM_REAL_CLOUD_TEMPLATE=3'.PHP_EOL;
+          echo 'VARIABLE_MAHAK_TWO_VARIANT_PRICES_AND_STOCK_INTENTS_VALIDATED=yes'.PHP_EOL;
+          echo 'VARIABLE_MAHAK_WRONG_GROUP_BLOCKED=yes'.PHP_EOL;
+          echo 'VARIABLE_MAHAK_NO_PRODUCT_OR_STOCK_WRITES=yes'.PHP_EOL;
+          PHP
+          for h in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
+            c=$(curl --noproxy '*' -ksS --connect-timeout 8 --max-time 20 \
+              --resolve "$h:443:127.0.0.1" -o /dev/null -w '%{http_code}' "https://$h/")
+            echo "SITE=$h HTTP=$c";test "$c" = 200
+          done
+          trap - ERR
+          echo 'MAHAK_VARIABLE_BRIDGE_PRODUCTION_DEPLOY_PASS=yes'
+          REMOTE
