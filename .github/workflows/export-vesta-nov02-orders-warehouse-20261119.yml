@@ -6,6 +6,9 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: vesta-nov02-readonly-extract
+  cancel-in-progress: false
 jobs:
   export:
     runs-on: ubuntu-latest
@@ -20,23 +23,39 @@ jobs:
         run: |
           set -Eeuo pipefail
           mkdir -p audit
-          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'mkdir -p -m 0700 /tmp/vesta-reconcile-nov02'
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" "mkdir -p -m 0700 /tmp/vesta-reconcile-nov02-$GITHUB_RUN_ID"
           sshpass -e scp -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
             scripts/vesta-nov02-stock-orders-readonly-export-20261119.php \
-            "root@$HOST:/tmp/vesta-reconcile-nov02/export.php"
+            "root@$HOST:/tmp/vesta-reconcile-nov02-$GITHUB_RUN_ID/export.php"
           sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" \
-            'docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1536M' \
+            "docker exec -e VESTA_AUDIT_RUN_ID=$GITHUB_RUN_ID -i vc-vesta php -d display_errors=0 -d memory_limit=1536M" \
             < scripts/vesta-nov02-stock-orders-readonly-export-20261119.php | tee audit/live_log.txt
           grep -Fq 'VESTA_NOV02_READONLY_EXPORT_SUCCESS=yes' audit/live_log.txt
           sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" \
-             'docker cp vc-vesta:/tmp/vesta-reconcile-nov02/products.csv /tmp/vesta-reconcile-nov02/products.csv
-              docker cp vc-vesta:/tmp/vesta-reconcile-nov02/orders.csv /tmp/vesta-reconcile-nov02/orders.csv
-              docker cp vc-vesta:/tmp/vesta-reconcile-nov02/summary.json /tmp/vesta-reconcile-nov02/summary.json'
+             "docker cp vc-vesta:/tmp/vesta-reconcile-nov02-$GITHUB_RUN_ID/products.csv /tmp/vesta-reconcile-nov02-$GITHUB_RUN_ID/products.csv
+              docker cp vc-vesta:/tmp/vesta-reconcile-nov02-$GITHUB_RUN_ID/orders.csv /tmp/vesta-reconcile-nov02-$GITHUB_RUN_ID/orders.csv
+              docker cp vc-vesta:/tmp/vesta-reconcile-nov02-$GITHUB_RUN_ID/summary.json /tmp/vesta-reconcile-nov02-$GITHUB_RUN_ID/summary.json"
           for name in products.csv orders.csv summary.json;do
             sshpass -e scp -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-             "root@$HOST:/tmp/vesta-reconcile-nov02/$name" "audit/$name"
+             "root@$HOST:/tmp/vesta-reconcile-nov02-$GITHUB_RUN_ID/$name" "audit/$name"
             test -s "audit/$name"
           done
+          python3 - <<'PY'
+          import csv,json
+          from pathlib import Path
+          d=Path('audit')
+          summary=json.loads((d/'summary.json').read_text())
+          for kind,expected,width in [('products',summary['all_woo_products'],17),
+                                      ('orders',summary['order_line_items'],18)]:
+              raw=(d/f'{kind}.csv').read_bytes()
+              assert b'\x00' not in raw,(kind,'NUL bytes or concurrent corruption')
+              with (d/f'{kind}.csv').open(newline='',encoding='utf8') as f:
+                  rows=list(csv.reader(f))
+              assert len(rows)-1==expected,(kind,len(rows)-1,expected)
+              assert all(len(row)==width for row in rows[1:]),(kind,'bad CSV width')
+              print(f'RECON_{kind.upper()}_CSV_VALID={expected}')
+          print('RECON_DATA_INTEGRITY_VERIFIED=yes')
+          PY
           echo "VESTA_RECON_PRODUCTS_ROWS=$(($(wc -l < audit/products.csv)-1))"
           echo "VESTA_RECON_ORDER_ITEMS_ROWS=$(($(wc -l < audit/orders.csv)-1))"
           echo 'VESTA_RECON_NO_ORDER_PRODUCT_STOCK_MUTATION=yes'
