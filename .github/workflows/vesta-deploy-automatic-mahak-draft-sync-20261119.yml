@@ -1,0 +1,128 @@
+name: Deploy automatic Mahak to Woo draft, price, warehouse stock and photo import
+on:
+  push:
+    branches: [main]
+    paths:
+      - infra/plugins/vesta-accounting-reliability/vesta-mahak-auto-draft.php
+      - .github/workflows/vesta-deploy-automatic-mahak-draft-sync-20261119.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-auto-product-import-deploy
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 19
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint new worker and install SSH helper
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq php-cli sshpass
+          php -l infra/plugins/vesta-accounting-reliability/vesta-mahak-auto-draft.php
+      - name: Backed-up production deploy and safe automatic worker dry-run
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e scp -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            infra/plugins/vesta-accounting-reliability/vesta-mahak-auto-draft.php \
+            "root@$HOST:/tmp/vesta-mahak-auto-draft-20261119.php"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          umask 077
+          exec 9>/run/lock/vesta-auto-product-import-deploy.lock
+          flock -n 9
+          dir=/srv/vestacutella/runtime/vesta/wp-content/mu-plugins
+          target="$dir/vesta-mahak-auto-draft.php"
+          backup=/srv/backups/vesta-auto-draft-$(date -u +%Y%m%dT%H%M%SZ)
+          mkdir -m 0700 -p "$backup"
+          present=no
+          if test -f "$target";then cp -p "$target" "$backup/previous-auto-draft.php";present=yes;fi
+          test -s "$dir/vesta-mahak-manual-import-admin.php"
+          test -s "$dir/vesta-catalog-identity-guard.php"
+          docker exec -i vc-vesta php -l < /tmp/vesta-mahak-auto-draft-20261119.php
+          rollback() {
+            rc=$?
+            trap - ERR
+            if test "$present" = yes;then cp -p "$backup/previous-auto-draft.php" "$target"
+            else rm -f "$target";fi
+            echo 'AUTOMATIC_MAHAK_IMPORT_DEPLOY_ROLLED_BACK=yes'
+            exit "$rc"
+          }
+          trap rollback ERR
+          cp /tmp/vesta-mahak-auto-draft-20261119.php "$dir/.vesta-mahak-auto-draft.next"
+          chmod 0644 "$dir/.vesta-mahak-auto-draft.next"
+          chown --reference="$dir/vesta-mahak-manual-import-admin.php" "$dir/.vesta-mahak-auto-draft.next"
+          mv "$dir/.vesta-mahak-auto-draft.next" "$target"
+          docker exec vc-vesta php -l /var/www/html/wp-content/mu-plugins/vesta-mahak-auto-draft.php
+          timeout 280 docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1536M <<'PHP' | tee "$backup/auto-dry-run.log"
+          <?php
+          error_reporting(E_ERROR|E_PARSE);set_time_limit(280);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          if(!has_action('bazara_run_product_sync')||
+             !function_exists('vesta_mhi_auto_schedule')||
+             !function_exists('vesta_mhi_auto_run')||
+             !function_exists('as_schedule_single_action'))
+             throw new RuntimeException('native_hook_or_auto_worker_missing');
+          if(get_option('vesta_mhi_auto_disabled',false))throw new RuntimeException('auto_sync_disabled');
+          $r=vesta_mhi_auto_run(true,6);
+          if(!is_array($r)||empty($r['source_goods'])||!array_key_exists('eligible_new_drafts',$r))
+             throw new RuntimeException('dryrun_catalog_cannot_be_verified');
+          $book=wc_get_product(105617);$other=wc_get_product(105598);
+          if(!$book||$book->get_status()!=='draft'||$book->get_regular_price()!=='2599000'||
+             $book->get_stock_quantity()!==24 || !$other||
+             $other->get_regular_price()!=='777400'||$other->get_stock_quantity()!==8)
+             throw new RuntimeException('existing_product_parity_failed');
+          echo 'MAHAK_AUTO_IMPORT_DRY_RUN='.wp_json_encode($r,JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'MAHAK_AUTO_IMPORT_EXISTING_BOOK_SAFE=yes'.PHP_EOL;
+          echo 'MAHAK_AUTO_IMPORT_HOOK_REGISTERED=yes'.PHP_EOL;
+          echo 'MAHAK_AUTO_IMPORT_DRYRUN_NO_PRODUCT_OR_ACCOUNTING_WRITES=yes'.PHP_EOL;
+          PHP
+          grep -Fq 'MAHAK_AUTO_IMPORT_DRYRUN_NO_PRODUCT_OR_ACCOUNTING_WRITES=yes' "$backup/auto-dry-run.log"
+          # Run one bounded real scan; any new drafts are subject to strict
+          # SourceId + SKU + unique detail + title + warehouse + price guards.
+          timeout 280 docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1536M <<'PHP' | tee "$backup/first-auto-scan.log"
+          <?php
+          error_reporting(E_ERROR|E_PARSE);set_time_limit(280);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          $r=vesta_mhi_auto_run(false,6);
+          if(!is_array($r)||empty($r['source_goods'])||
+             !isset($r['completed_at']))throw new RuntimeException('first_worker_run_failed');
+          echo 'MAHAK_AUTO_IMPORT_FIRST_RUN='.wp_json_encode([
+             'new_drafts'=>$r['new_drafts']??0,
+             'completed_existing'=>$r['completed_existing']??0,
+             'images_added'=>$r['images_added']??0,
+             'remaining'=>$r['remaining_candidates']??0,
+             'errors'=>$r['errors']??[],
+             'completed_at'=>$r['completed_at']
+          ],JSON_UNESCAPED_UNICODE).PHP_EOL;
+          echo 'MAHAK_AUTO_IMPORT_FIRST_REAL_SCAN_VERIFIED=yes'.PHP_EOL;
+          PHP
+          grep -Fq 'MAHAK_AUTO_IMPORT_FIRST_REAL_SCAN_VERIFIED=yes' "$backup/first-auto-scan.log"
+          docker exec -i vc-vesta php -d display_errors=0 <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          $last=get_option('vesta_mhi_auto_last_report');
+          if(!is_array($last)||empty($last['completed_at']))exit(42);
+          if(!has_action('bazara_run_product_sync'))exit(43);
+          $finger=vesta_mhi_auto_fingerprint();
+          if(get_option('vesta_mhi_auto_completed_fingerprint')!==$finger)exit(44);
+          echo 'MAHAK_AUTO_IMPORT_HOOK_AND_LOCAL_CHANGE_DETECTION_ACTIVE=yes'.PHP_EOL;
+          echo 'MAHAK_AUTO_IMPORT_REPORT_PERSISTED=yes'.PHP_EOL;
+          PHP
+          for host in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
+            code=$(curl --noproxy '*' -ksS --connect-timeout 8 --max-time 25 --resolve "$host:443:127.0.0.1" -o /dev/null -w '%{http_code}' "https://$host/")
+            echo "SITE=$host HTTP=$code"
+            test "$code" = 200
+          done
+          trap - ERR
+          echo 'MAHAK_AUTO_PRODUCT_IMPORT_PRODUCTION_DEPLOY_SUCCESS=yes'
+          REMOTE
