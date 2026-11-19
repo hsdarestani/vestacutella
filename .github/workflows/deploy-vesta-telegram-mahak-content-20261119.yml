@@ -1,0 +1,105 @@
+name: Deploy Vesta Telegram verified Mahak product content editor
+on:
+  push:
+    branches: [main]
+    paths:
+      - infra/plugins/vesta-accounting-reliability/vesta-mahak-telegram-content.php
+      - .github/workflows/deploy-vesta-telegram-mahak-content-20261119.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-telegram-content-production
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate editor and SSH helper
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq php-cli sshpass
+          php -l infra/plugins/vesta-accounting-reliability/vesta-mahak-telegram-content.php
+      - name: Safe production deployment and PHP live integration tests
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e scp -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            infra/plugins/vesta-accounting-reliability/vesta-mahak-telegram-content.php \
+            "root@$HOST:/tmp/vesta-mahak-telegram-content-20261119.php"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          umask 077
+          exec 9>/run/lock/vesta-mahak-telegram-content.lock
+          flock -n 9
+          mu=/srv/vestacutella/runtime/vesta/wp-content/mu-plugins
+          dest="$mu/vesta-mahak-telegram-content.php"
+          backups=/srv/backups/vesta-mahak-telegram-content-$(date -u +%Y%m%dT%H%M%SZ)
+          mkdir -m 0700 -p "$backups"
+          exists=no
+          if test -s "$dest";then cp -p "$dest" "$backups/previous-content.php";exists=yes;fi
+          test -s "$mu/vesta-mahak-manual-import-admin.php"
+          test -s "$mu/vesta-catalog-identity-guard.php"
+          docker exec -i vc-vesta php -l < /tmp/vesta-mahak-telegram-content-20261119.php
+          rollback(){
+            rc=$?
+            trap - ERR
+            if [ "$exists" = yes ];then cp -p "$backups/previous-content.php" "$dest";else rm -f "$dest";fi
+            echo "CONTENT_EDITOR_DEPLOY_ROLLED_BACK=yes"
+            exit "$rc"
+          }
+          trap rollback ERR
+          cp /tmp/vesta-mahak-telegram-content-20261119.php "$mu/.vesta-mahak-content.next"
+          chown --reference="$mu/vesta-mahak-manual-import-admin.php" "$mu/.vesta-mahak-content.next"
+          chmod 644 "$mu/.vesta-mahak-content.next"
+          mv "$mu/.vesta-mahak-content.next" "$dest"
+          docker exec vc-vesta php -l /var/www/html/wp-content/mu-plugins/vesta-mahak-telegram-content.php
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=1300M <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);set_time_limit(220);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';
+          $_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          if(!function_exists('vesta_mcb_verified_product')||
+             !function_exists('vesta_mcb_save')||
+             !function_exists('vesta_mcb_status')||
+             !function_exists('vbb_v2_authorize'))exit(41);
+          foreach([
+            ['product_id'=>10755492,'code'=>'103260','woo_id'=>105604],
+            ['product_id'=>10755477,'code'=>'103201','woo_id'=>105617],
+            ['product_id'=>10684982,'code'=>'92503','woo_id'=>103417]
+          ] as $source){
+            $r=vesta_mcb_status($source);
+            if((int)$r['woo_id']!==(int)$source['woo_id']||
+                !in_array($r['type'],['simple','variable'],true)||empty($r['edit_url']))exit(42);
+            echo 'MAHAK_CONTENT_VALID_ID='.intval($r['woo_id']).
+                 ' TYPE='.$r['type'].' IMAGE='.intval($r['image_id']).PHP_EOL;
+          }
+          $rejected=false;
+          try{vesta_mcb_status(['product_id'=>10755492,'code'=>'103201','woo_id'=>105604]);}
+          catch(Throwable $e){$rejected=true;}
+          if(!$rejected)exit(43);
+          $rejected=false;
+          try{vesta_mcb_save([
+              'product_id'=>10755492,'code'=>'103260','woo_id'=>105604,
+              'request_key'=>'invalid','image_ids'=>[105631],
+          ]);}catch(Throwable $e){$rejected=true;}
+          if(!$rejected)exit(44);
+          $unit=get_option('woocommerce_weight_unit','kg');
+          echo 'MAHAK_TELEGRAM_SITE_WEIGHT_UNIT='.$unit.PHP_EOL;
+          echo 'MAHAK_CONTENT_WRONG_ID_BLOCKED=yes'.PHP_EOL;
+          echo 'MAHAK_CONTENT_UNVERIFIED_WRITE_BLOCKED=yes'.PHP_EOL;
+          echo 'MAHAK_CONTENT_PRODUCTION_READONLY_SMOKE_PASS=yes'.PHP_EOL;
+          PHP
+          for host in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir;do
+            code=$(curl --noproxy '*' -ksS --connect-timeout 8 --max-time 25 --resolve "$host:443:127.0.0.1" -o /dev/null -w '%{http_code}' "https://$host/")
+            echo "SITE=$host HTTP=$code";test "$code" = 200
+          done
+          trap - ERR
+          echo 'MAHAK_TELEGRAM_CONTENT_EDITOR_DEPLOYED=yes'
+          REMOTE
