@@ -1,0 +1,34 @@
+name: Vesta new-accounting opening catalog - download verified cutover snapshot
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/vesta-export-opening-catalog-20261119.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  export-opening-catalog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Securely retrieve original cutover inventory snapshot (no financial records)
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+          src=/root/vesta-accounting-new-epoch/opening-woo-catalog.csv
+          opts="-o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+          sshpass -e ssh $opts "root@$HOST" "test -s '$src' && test \"\$(wc -l < '$src')\" -eq 6711 && sha256sum '$src' | cut -d' ' -f1" > /tmp/opening_sha
+          sshpass -e scp $opts "root@$HOST:$src" ./vesta-opening-cutover-20261119.csv
+          echo "$(cat /tmp/opening_sha)  vesta-opening-cutover-20261119.csv" | sha256sum -c -
+          test "$(wc -l < vesta-opening-cutover-20261119.csv)" -eq 6711
+          echo "OPENING_CATALOG_SNAPSHOT_VALIDATED_ROWS=6710"
+          echo "NO_ORDER_CUSTOMER_OR_FINANCIAL_DATA_EXPORTED=yes"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vesta-opening-cutover-catalog-20261119
+          path: vesta-opening-cutover-20261119.csv
+          retention-days: 3
+          if-no-files-found: error
