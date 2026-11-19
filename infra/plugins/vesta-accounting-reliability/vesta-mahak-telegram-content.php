@@ -310,7 +310,18 @@ function vesta_mcb_apply_pending_worker() {
                 update_option($stageKey,$stage,false);$next[]=$request;
             }
         }
-        update_option('vesta_mcb_pending_index',$next,false);
+        // Merge new submissions that arrived during a slow cloud lookup.
+        // Stage writers use this same short index lock; never lose a newly
+        // queued product when an old worker finishes.
+        $indexLock='vesta_mcb_stage_index';
+        if((int)$wpdb->get_var($wpdb->prepare('SELECT GET_LOCK(%s,8)',$indexLock))!==1)
+            throw new RuntimeException('صف همگام‌سازی محتوا برای به‌روزرسانی مشغول است.');
+        try {
+            $current=(array)get_option('vesta_mcb_pending_index',[]);
+            $newDuringRun=array_values(array_diff($current,$pending));
+            $next=array_values(array_unique(array_merge($newDuringRun,$next)));
+            update_option('vesta_mcb_pending_index',$next,false);
+        }finally{$wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)',$indexLock));}
         if($next)vesta_mcb_schedule_pending(300);
     }finally{$wpdb->get_var($wpdb->prepare('SELECT RELEASE_LOCK(%s)',$lock));}
 }
