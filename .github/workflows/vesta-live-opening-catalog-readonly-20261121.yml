@@ -1,0 +1,43 @@
+name: Vesta live stock opening catalog - read only 20261121
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/vesta-live-opening-catalog-readonly-20261121.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-live-opening-catalog-readonly
+  cancel-in-progress: false
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Export current Woo products and quantity stock owners without site writes
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass php-cli
+          options="-o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+          php -l scripts/vesta-live-opening-catalog-readonly-20261121.php
+          sshpass -e ssh $options "root@$HOST" "docker exec -i vc-vesta php -d display_errors=0" \
+            < scripts/vesta-live-opening-catalog-readonly-20261121.php \
+            > vesta-live-catalog.csv 2> live-catalog-metadata.txt
+          head -1 vesta-live-catalog.csv | grep -q 'stock_owner_id'
+          test "$(wc -l < vesta-live-catalog.csv)" -gt 4000
+          echo "CSV_ROWS=$(($(wc -l < vesta-live-catalog.csv)-1))"
+          echo "SNAPSHOT_SHA256=$(sha256sum vesta-live-catalog.csv | cut -d' ' -f1)"
+          cat live-catalog-metadata.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vesta-live-opening-catalog-20261121
+          path: |
+            vesta-live-catalog.csv
+            live-catalog-metadata.txt
+          retention-days: 3
+          if-no-files-found: error
