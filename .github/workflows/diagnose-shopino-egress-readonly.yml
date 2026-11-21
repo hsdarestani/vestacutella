@@ -1,0 +1,49 @@
+name: Diagnose Shopino API egress from Vesta origin read-only
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/diagnose-shopino-egress-readonly.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - name: Check Shopino API format from existing Vesta origin
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.HOST }}
+          username: root
+          password: ${{ secrets.PASS }}
+          command_timeout: 4m
+          script: |
+            set -euo pipefail
+            python3 - <<'PY'
+            import urllib.request
+            import urllib.error
+            import re
+            url = 'https://api.shopino.app/api/v1/shop-panel/shops/7944/order-shippings/?page=1&page_size=1'
+            for host in ['api.shopino.app', 'api-go.shopino.app']:
+                try:
+                    request = urllib.request.Request(url.replace('api.shopino.app',host),headers={'Accept':'application/json'})
+                    try:
+                        r = urllib.request.urlopen(request,timeout=18)
+                    except urllib.error.HTTPError as exc:
+                        r = exc
+                    body = r.read(8000)
+                    text = body.decode('utf-8','replace')
+                    title = re.search(r'<title[^>]*>(.*?)</title>',text,re.I|re.S)
+                    print('HOST='+host)
+                    print('HTTP_STATUS='+str(r.status))
+                    print('CONTENT_TYPE='+str(r.headers.get('Content-Type',''))[:80])
+                    print('HTML_TITLE='+(title.group(1).strip()[:90] if title else 'none'))
+                    print('IS_VPN_BLOCK='+str('VPN را خاموش کنید' in text))
+                    print('IS_JSON='+str('json' in r.headers.get('Content-Type','').lower()))
+                except Exception as exc:
+                    print('HOST='+host+' ERROR='+type(exc).__name__)
+            PY
