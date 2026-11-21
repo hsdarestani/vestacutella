@@ -25,9 +25,17 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq sshpass php-cli
           options="-o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
           php -l scripts/vesta-live-opening-catalog-readonly-20261121.php
+          set +e
           sshpass -e ssh $options "root@$HOST" "docker exec -i vc-vesta php -d display_errors=0" \
             < scripts/vesta-live-opening-catalog-readonly-20261121.php \
             > vesta-live-catalog.csv 2> live-catalog-metadata.txt
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ]; then
+            echo "READ_ONLY_EXPORT_ERROR_CODE=$status"
+            tail -c 1100 live-catalog-metadata.txt | sed -E 's/(password|secret|token)=[^[:space:]]+/REDACTED/Ig'
+            exit "$status"
+          fi
           head -1 vesta-live-catalog.csv | grep -q 'stock_owner_id'
           test "$(wc -l < vesta-live-catalog.csv)" -gt 4000
           echo "CSV_ROWS=$(($(wc -l < vesta-live-catalog.csv)-1))"
