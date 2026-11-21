@@ -32,7 +32,7 @@ jobs:
           sshpass -e scp $opts scripts/vesta-live-opening-catalog-readonly-20261121.php "root@$HOST:$src"
           sshpass -e ssh $opts "root@$HOST" "SRC='$src' CSV='$csv' ERR='$err' bash -s" <<'REMOTE'
           set -u
-          docker exec -i vc-vesta php -d display_errors=stderr < "$SRC" > "$CSV" 2> "$ERR"
+          docker exec -i vc-vesta php -d display_errors=1 -d log_errors=1 -d error_log=/dev/stderr -d memory_limit=512M < "$SRC" > "$CSV" 2> "$ERR"
           status=$?
           if [ "$status" -ne 0 ]; then
             echo "EXPORT_EXIT=$status"
