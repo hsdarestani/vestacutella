@@ -1,0 +1,87 @@
+name: Deploy sealed Shopino proxy to Vesta origin
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'infra/plugins/vesta-shopino-relay/vesta-shopino-relay.php'
+      - '.github/workflows/deploy-vesta-shopino-relay-20261122.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-shopino-relay-deploy
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: PHP syntax preflight
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq php-cli sshpass
+          php -l infra/plugins/vesta-shopino-relay/vesta-shopino-relay.php
+      - name: Backup and deploy only Shopino relay MU plugin
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -euo pipefail
+          sshpass -e scp -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            infra/plugins/vesta-shopino-relay/vesta-shopino-relay.php \
+            "root@$HOST:/tmp/vesta-shopino-relay-20261122.php"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          umask 077
+          exec 9>/run/lock/vesta-shopino-relay.lock
+          flock -w 120 9
+          mu=/srv/vestacutella/runtime/vesta/wp-content/mu-plugins
+          test -d "$mu"
+          test -f "$mu/vesta-mahak-telegram-content.php"
+          dest="$mu/vesta-shopino-relay.php"
+          backup_dir="/srv/backups/vesta-shopino-relay-$(date -u +%Y%m%dT%H%M%SZ)"
+          mkdir -m 0700 -p "$backup_dir"
+          existed=no
+          if [ -f "$dest" ]; then cp -p "$dest" "$backup_dir/previous.php"; existed=yes; fi
+          docker exec -i vc-vesta php -l < /tmp/vesta-shopino-relay-20261122.php
+          rollback() {
+            rc=$?
+            trap - ERR
+            if [ "$existed" = yes ]; then cp -p "$backup_dir/previous.php" "$dest"; else rm -f "$dest"; fi
+            echo "SHOPINO_RELAY_ROLLED_BACK=yes"
+            exit "$rc"
+          }
+          trap rollback ERR
+          cp /tmp/vesta-shopino-relay-20261122.php "$mu/.vesta-shopino-relay.next"
+          chown --reference="$mu/vesta-mahak-telegram-content.php" "$mu/.vesta-shopino-relay.next"
+          chmod 644 "$mu/.vesta-shopino-relay.next"
+          mv "$mu/.vesta-shopino-relay.next" "$dest"
+          docker exec vc-vesta php -l /var/www/html/wp-content/mu-plugins/vesta-shopino-relay.php
+          docker exec -i vc-vesta php -d display_errors=0 <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';
+          $_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';
+          $_SERVER['SERVER_PORT']='443';
+          $_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          if (!function_exists('vesta_shr_dispatch') || !function_exists('vbb_v2_authorize'))
+            exit(42);
+          $pair=vesta_shr_keypair();
+          $key=sodium_crypto_box_publickey($pair);
+          $test=['action'=>'orders_list','session'=>'safe-mock-only','page'=>1,'page_size'=>1];
+          $cipher=sodium_crypto_box_seal(json_encode($test),$key);
+          $box=rtrim(strtr(base64_encode($cipher),'+/','-_'),'=');
+          $decoded=vesta_shr_unpack(['sealed'=>$box]);
+          if ($decoded!=$test) exit(43);
+          echo "SHOPINO_SIGNED_BRIDGE_PRESENT=yes".PHP_EOL;
+          echo "SHOPINO_SEALEDBOX_SELFTEST_PASS=yes".PHP_EOL;
+          PHP
+          code=$(curl --noproxy '*' -ksS --connect-timeout 8 --max-time 20 --resolve "vesta-cosmetics.ir:443:127.0.0.1" -o /dev/null -w '%{http_code}' "https://vesta-cosmetics.ir/")
+          test "$code" = 200
+          trap - ERR
+          echo "VESTA_SHOPINO_RELAY_DEPLOYED=yes"
+          REMOTE
