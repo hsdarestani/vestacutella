@@ -4,6 +4,7 @@ on:
     branches: [main]
     paths:
       - .github/workflows/vesta-live-opening-catalog-readonly-20261121.yml
+      - scripts/vesta-live-opening-catalog-readonly-20261121.php
   workflow_dispatch:
 permissions:
   contents: read
