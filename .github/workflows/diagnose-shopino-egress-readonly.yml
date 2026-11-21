@@ -47,3 +47,8 @@ jobs:
                 except Exception as exc:
                     print('HOST='+host+' ERROR='+type(exc).__name__)
             PY
+            echo 'PHP_CRYPTO_AND_CONTAINER_NETWORK:'
+            docker exec vc-vesta php -r 'echo "SODIUM=".(function_exists("sodium_crypto_box_seal_open")?"yes":"no").PHP_EOL; echo "CURL=".(function_exists("curl_init")?"yes":"no").PHP_EOL;'
+            docker exec vc-vesta sh -c "curl -sS -m 15 -o /dev/null -w 'SHOPINO_CONTAINER_HTTP=%{http_code}\\nCONTENT_TYPE=%{content_type}\\n' 'https://api.shopino.app/api/v1/shop-panel/shops/7944/order-shippings/?page=1&page_size=1'" || true
+            test -d /srv/vestacutella/runtime/vesta/wp-content/mu-plugins && echo MU_PLUGINS_PATH=present
+            docker exec vc-vesta sh -c "ls /var/www/html/wp-content/plugins | grep -E 'vesta-bot-bridge' || true"
