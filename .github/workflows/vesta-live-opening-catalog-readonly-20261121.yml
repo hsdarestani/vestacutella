@@ -17,31 +17,38 @@ jobs:
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
-      - name: Export current Woo products and quantity stock owners without site writes
+      - name: Read Woo stock and copy bounded temporary export from source host
         env:
           HOST: ${{ secrets.HOST }}
           SSHPASS: ${{ secrets.PASS }}
         run: |
           set -Eeuo pipefail
           sudo apt-get update -qq && sudo apt-get install -y -qq sshpass php-cli
-          options="-o ConnectTimeout=15 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
           php -l scripts/vesta-live-opening-catalog-readonly-20261121.php
-          set +e
-          sshpass -e ssh $options "root@$HOST" "docker exec -i vc-vesta php -d display_errors=0" \
-            < scripts/vesta-live-opening-catalog-readonly-20261121.php \
-            > vesta-live-catalog.csv 2> live-catalog-metadata.txt
+          opts="-o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+          src="/tmp/vesta-export-live-$GITHUB_RUN_ID.php"
+          csv="/tmp/vesta-export-live-$GITHUB_RUN_ID.csv"
+          err="/tmp/vesta-export-live-$GITHUB_RUN_ID.err"
+          sshpass -e scp $opts scripts/vesta-live-opening-catalog-readonly-20261121.php "root@$HOST:$src"
+          sshpass -e ssh $opts "root@$HOST" "SRC='$src' CSV='$csv' ERR='$err' bash -s" <<'REMOTE'
+          set -u
+          docker exec -i vc-vesta php -d display_errors=stderr < "$SRC" > "$CSV" 2> "$ERR"
           status=$?
-          set -e
           if [ "$status" -ne 0 ]; then
-            echo "READ_ONLY_EXPORT_ERROR_CODE=$status"
-            tail -c 1100 live-catalog-metadata.txt | sed -E 's/(password|secret|token)=[^[:space:]]+/REDACTED/Ig'
+            echo "EXPORT_EXIT=$status"
+            tail -c 3000 "$ERR" | sed -E 's/(password|secret|token)=[^[:space:]]+/REDACTED/Ig'
             exit "$status"
           fi
-          head -1 vesta-live-catalog.csv | grep -q 'stock_owner_id'
-          test "$(wc -l < vesta-live-catalog.csv)" -gt 4000
+          test -s "$CSV"
+          test "$(wc -l < "$CSV")" -gt 4000
+          echo "EXPORT_ROWS=$(($(wc -l < "$CSV")-1))"
+          tail -c 2000 "$ERR"
+          REMOTE
+          sshpass -e scp $opts "root@$HOST:$csv" vesta-live-catalog.csv
+          sshpass -e scp $opts "root@$HOST:$err" live-catalog-metadata.txt
+          sshpass -e ssh $opts "root@$HOST" "rm -f '$src' '$csv' '$err'"
           echo "CSV_ROWS=$(($(wc -l < vesta-live-catalog.csv)-1))"
           echo "SNAPSHOT_SHA256=$(sha256sum vesta-live-catalog.csv | cut -d' ' -f1)"
-          cat live-catalog-metadata.txt
       - uses: actions/upload-artifact@v4
         with:
           name: vesta-live-opening-catalog-20261121
