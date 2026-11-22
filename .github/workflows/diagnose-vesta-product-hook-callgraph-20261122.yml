@@ -68,4 +68,34 @@ jobs:
                 echo 'END_CALLBACK'.PHP_EOL;
               }
             }
+            echo '=== OTHER_PRODUCT_SAVE_HOOKS ==='.PHP_EOL;
+            foreach (['woocommerce_admin_process_product_object','woocommerce_process_product_meta','woocommerce_process_product_meta_simple','woocommerce_process_product_meta_variable','woocommerce_product_object_updated_props','woocommerce_product_quick_edit_save','rest_after_insert_product'] as $tag) {
+              if (empty($wp_filter[$tag])) continue;
+              foreach ($wp_filter[$tag]->callbacks as $priority=>$handlers) foreach ($handlers as $callback) {
+                $fn=$callback['function']??null;
+                $cls=is_array($fn)?(is_object($fn[0])?get_class($fn[0]):(string)$fn[0]):(is_string($fn)?$fn:'Closure');
+                $name=is_array($fn)?$fn[1]:'';
+                echo 'ADDITIONAL_CALLBACK='.$tag.' '.substr($cls.'::'.$name,0,160).PHP_EOL;
+              }
+            }
+            if (class_exists('Ssbhesabfa_Admin_Functions') && method_exists('Ssbhesabfa_Admin_Functions','setItems')) {
+              $ref=new ReflectionMethod('Ssbhesabfa_Admin_Functions','setItems');
+              $code=implode('',array_slice(file($ref->getFileName()),$ref->getStartLine()-1,$ref->getEndLine()-$ref->getStartLine()+1));
+              $sanitized='';
+              foreach (token_get_all('<?php '.$code) as $token) {
+                if (!is_array($token)) {$sanitized.=$token;continue;}
+                if (in_array($token[0],[T_OPEN_TAG,T_COMMENT,T_DOC_COMMENT],true)) continue;
+                if (in_array($token[0],[T_CONSTANT_ENCAPSED_STRING,T_ENCAPSED_AND_WHITESPACE],true)) {$sanitized.="'[str]'";continue;}
+                $sanitized.=$token[1];
+              }
+              echo 'BEGIN_HESABFA_SETITEMS'.PHP_EOL.substr($sanitized,0,9000).PHP_EOL.'END_HESABFA_SETITEMS'.PHP_EOL;
+            }
+            if (class_exists('Ssbhesabfa_Admin')) {
+              $ref=new ReflectionMethod('Ssbhesabfa_Admin','ssbhesabfa_hook_new_product');
+              $raw=implode('',array_slice(file($ref->getFileName()),$ref->getStartLine()-1,$ref->getEndLine()-$ref->getStartLine()+1));
+              if (preg_match('/get_option\\s*\\(\\s*\\x27([^\\x27]+)\\x27\\s*,\\s*\\x27([^\\x27]*)\\x27\\s*\\)\\s*===?\\s*\\x27([^\\x27]*)\\x27/',$raw,$m)) {
+                $val=get_option($m[1],$m[2]);
+                echo 'HESABFA_PRODUCT_SYNC_GUARD_ACTIVE='.($val===$m[3]?'no':'yes').PHP_EOL;
+              } else echo 'HESABFA_PRODUCT_SYNC_GUARD_ACTIVE=unknown'.PHP_EOL;
+            }
             PHP
