@@ -118,6 +118,20 @@ done
 grep -q 'data-vc-offer="all-sale"' "$tmp" || { echo 'Landing page missing all-sale shortcode output';exit 61; }
 grep -q 'id="vesta-bf-badge-css"' "$tmp" || { echo 'Badge CSS not emitted';exit 64; }
 grep -q 'id="vesta-bf-badge-js"' "$tmp" || { echo 'Badge JS not emitted';exit 65; }
+grep -q 'class="vc-offer-hero"' "$tmp" || { echo 'Premium Black Friday hero missing';exit 66; }
+grep -q 'vc-vesta-bf-number' "$tmp" || { echo 'Smaller corrected sale badge CSS missing';exit 67; }
+# Homepage hero is the only autoplay interval being changed; product carousels are unchanged.
+home_tmp=$(mktemp)
+home_ok=no
+for n in 1 2 3 4 5 6; do
+  curl --noproxy '*' -kLsS --max-time 60 --resolve vesta-cosmetics.ir:443:127.0.0.1 \
+    'https://vesta-cosmetics.ir/' -o "$home_tmp"
+  if grep -q 'id="vc-vesta-banner-timing"' "$home_tmp" && \
+     grep -q 'banners-carousel-wrapper' "$home_tmp"; then home_ok=yes; break; fi
+  sleep 3
+done
+rm -f "$home_tmp"
+[[ "$home_ok" == yes ]] || { echo 'Homepage banner timing script missing';exit 68; }
 for path in / /shop/ /my-account/; do
   status=$(curl --noproxy '*' -ksS --max-time 40 --resolve vesta-cosmetics.ir:443:127.0.0.1 -o /dev/null -w '%{http_code}' "https://vesta-cosmetics.ir$path")
   echo "AFTER $path $status"
