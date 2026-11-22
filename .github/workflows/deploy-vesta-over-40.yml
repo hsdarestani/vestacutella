@@ -1,4 +1,4 @@
-name: Deploy Vesta 40 percent deals safely
+name: Deploy Vesta all active sale offers and Black Friday badges
 on:
   push:
     branches: [main]
@@ -39,7 +39,9 @@ jobs:
         run: |
           set -euo pipefail
           curl -LfsS --max-time 60 https://vesta-cosmetics.ir/off-40/ -o /tmp/vesta-off-40-page.html
-          grep -q 'data-vc-offer="over40"' /tmp/vesta-off-40-page.html
+          grep -q 'data-vc-offer="all-sale"' /tmp/vesta-off-40-page.html
+          grep -q 'vesta-bf-badge-css' /tmp/vesta-off-40-page.html
+          grep -q 'vesta-bf-badge-js' /tmp/vesta-off-40-page.html
           if grep -q 'vc-offer-heading' /tmp/vesta-off-40-page.html; then
             echo "STALE_HEADING_DETECTED on canonical public URL"
             exit 68
