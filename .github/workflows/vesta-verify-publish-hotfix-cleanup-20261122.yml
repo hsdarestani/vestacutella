@@ -1,0 +1,53 @@
+name: Verify Vesta publish hotfix and protect rollback backup
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/vesta-verify-publish-hotfix-cleanup-20261122.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Verify setting, remove temporary webroot backup, and smoke-test store
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.HOST }}
+          username: root
+          password: ${{ secrets.PASS }}
+          command_timeout: 4m
+          script: |
+            set -Eeuo pipefail
+            backup=/srv/backups/vesta-hesabfa-product-autosync-20261122.json
+            artifact=/srv/vestacutella/runtime/vesta/wp-content/.vesta-hesabfa-autosync-backup-20261122.json
+            test -s "$backup"
+            chmod 600 "$backup"
+            if test -e "$artifact"; then
+              cmp -s "$backup" "$artifact"
+              rm -f "$artifact"
+            fi
+            test ! -e "$artifact"
+            echo "ROLLBACK_BACKUP_STORED_OUTSIDE_WEBROOT=yes"
+            docker exec -i vc-vesta php -d display_errors=0 <<'PHP'
+            <?php
+            error_reporting(E_ERROR|E_PARSE);
+            $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';
+            $_SERVER['HTTPS']='on';
+            $_SERVER['SERVER_PORT']='443';
+            $_SERVER['REQUEST_URI']='/';
+            require '/var/www/html/wp-load.php';
+            $ref=new ReflectionMethod('Ssbhesabfa_Admin','ssbhesabfa_hook_new_product');
+            $raw=implode('',array_slice(file($ref->getFileName()),$ref->getStartLine()-1,$ref->getEndLine()-$ref->getStartLine()+1));
+            if(!preg_match('/get_option\\s*\\(\\s*[\\x27"]([^\\x27"]+)[\\x27"]\\s*,\\s*[\\x27"]([^\\x27"]*)[\\x27"]\\s*\\)\\s*===\\s*[\\x27"]([^\\x27"]*)[\\x27"]/',$raw,$m))exit(21);
+            if($m[1]!=='ssbhesabfa_do_not_submit_product_automatically')exit(22);
+            if(get_option($m[1],$m[2])!==$m[3])exit(23);
+            echo 'LEGACY_HESABFA_AUTO_PRODUCT_SYNC=disabled'.PHP_EOL;
+            echo 'WOOCOMMERCE_ACTIVE='.(class_exists('WooCommerce')?'yes':'no').PHP_EOL;
+            echo 'ACTIVE_PLUGINS='.count((array)get_option('active_plugins',[])).PHP_EOL;
+            PHP
+            for path in / /shop/ /wp-json/; do
+              curl --noproxy '*' -ksS -m 20 --resolve 'vesta-cosmetics.ir:443:127.0.0.1' -o /dev/null -w "SMOKE_PATH=$path HTTP=%{http_code} total_seconds=%{time_total}\n" "https://vesta-cosmetics.ir$path"
+            done
+            echo 'VERIFICATION_COMPLETE=yes'
