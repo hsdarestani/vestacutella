@@ -1,0 +1,90 @@
+name: Diagnose Vesta Woo publish latency (read-only)
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/diagnose-vesta-publish-latency-20261122.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Collect sanitized server, PHP, database and Woo scheduler diagnostics
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.HOST }}
+          username: root
+          password: ${{ secrets.PASS }}
+          command_timeout: 7m
+          script: |
+            set +e
+            echo '=== HOST ==='
+            date -u '+UTC=%Y-%m-%dT%H:%M:%SZ'
+            uptime
+            free -m | head -4
+            df -h / /var/lib/docker | head -5
+            echo '=== CONTAINERS ==='
+            docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}'
+            docker stats --no-stream --format 'STAT {{.Name}} cpu={{.CPUPerc}} mem={{.MemUsage}} pids={{.PIDs}}' | head -20
+            echo '=== PROCESSES ==='
+            ps -eo comm,%cpu,%mem,etimes --sort=-%cpu | head -18
+            echo '=== ORIGIN LATENCY (no credentials) ==='
+            for path in / /wp-json/ /wp-admin/ /wp-admin/post-new.php?post_type=product; do
+              curl --noproxy '*' -k -sS -o /dev/null -m 18 --resolve 'vesta-cosmetics.ir:443:127.0.0.1' -w "PATH=$path HTTP=%{http_code} total=%{time_total} TTFB=%{time_starttransfer} size=%{size_download}\n" "https://vesta-cosmetics.ir$path"
+            done
+            echo '=== PHP/WEB ERRORS COUNTS (last 200, no user content) ==='
+            for name in vc-vesta vc-nginx vc-db vc-mysql vc-mariadb vc-redis; do
+              if docker inspect "$name" >/dev/null 2>&1; then
+                echo "CONTAINER=$name"
+                docker logs --since 4h "$name" 2>&1 | tail -200 | awk '
+                  BEGIN{f=0;w=0;t=0}
+                  /PHP Fatal error|Uncaught|Allowed memory size|Maximum execution time|SQLSTATE|MySQL server has gone away|Deadlock/{f++}
+                  /warning|error|timeout|504|502|503/{w++}
+                  END{printf "fatal_patterns=%d warning_patterns=%d lines=%d\n", f,w,NR}'
+              fi
+            done
+            echo '=== WORDPRESS READONLY ==='
+            docker exec -i vc-vesta php -d display_errors=0 <<'PHP'
+            <?php
+            error_reporting(E_ERROR|E_PARSE);
+            $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';
+            $_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+            $_SERVER['HTTPS']='on';
+            $_SERVER['SERVER_PORT']='443';
+            $_SERVER['REQUEST_URI']='/';
+            $start=microtime(true);
+            require '/var/www/html/wp-load.php';
+            $boot=microtime(true);
+            echo 'WP_BOOT_SECONDS='.round($boot-$start,3).PHP_EOL;
+            echo 'PHP_MEMORY_LIMIT='.ini_get('memory_limit').PHP_EOL;
+            echo 'WP_MEMORY_LIMIT='.(defined('WP_MEMORY_LIMIT')?WP_MEMORY_LIMIT:'none').PHP_EOL;
+            echo 'WP_MAX_MEMORY_LIMIT='.(defined('WP_MAX_MEMORY_LIMIT')?WP_MAX_MEMORY_LIMIT:'none').PHP_EOL;
+            echo 'WP_CRON_DISABLED='.(defined('DISABLE_WP_CRON')&&DISABLE_WP_CRON?'yes':'no').PHP_EOL;
+            global $wpdb;
+            $dbStart=microtime(true);
+            $table=$wpdb->prefix.'actionscheduler_actions';
+            $exists=$wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s',$table));
+            if ($exists===$table) {
+              $states=$wpdb->get_results("SELECT status,COUNT(*) AS n FROM `$table` GROUP BY status",ARRAY_A);
+              foreach ($states as $a) echo 'AS_STATUS='.$a['status'].' count='.$a['n'].PHP_EOL;
+              $hooks=$wpdb->get_results("SELECT hook,COUNT(*) AS n FROM `$table` WHERE status IN ('pending','in-progress') GROUP BY hook ORDER BY n DESC LIMIT 12",ARRAY_A);
+              foreach ($hooks as $a) echo 'AS_HOOK='.$a['hook'].' count='.$a['n'].PHP_EOL;
+            } else echo 'ACTION_SCHEDULER_TABLE=missing'.PHP_EOL;
+            $opt=$wpdb->options;
+            $autos=$wpdb->get_results("SELECT autoload,COUNT(*) AS n,SUM(LENGTH(option_value)) AS bytes FROM `$opt` GROUP BY autoload ORDER BY bytes DESC",ARRAY_A);
+            foreach ($autos as $a) echo 'WP_OPTIONS_AUTOLOAD='.$a['autoload'].' count='.$a['n'].' bytes='.$a['bytes'].PHP_EOL;
+            echo 'DB_QUERIES_SECONDS='.round(microtime(true)-$dbStart,3).PHP_EOL;
+            echo 'PLUGIN_COUNT='.count((array)get_option('active_plugins',[])).PHP_EOL;
+            foreach ((array)get_option('active_plugins',[]) as $name) echo 'PLUGIN='.sanitize_text_field($name).PHP_EOL;
+            foreach (['save_post','save_post_product','transition_post_status','woocommerce_update_product','woocommerce_new_product','wp_insert_post'] as $tag) {
+              global $wp_filter;
+              if (empty($wp_filter[$tag])) continue;
+              $hook=$wp_filter[$tag];
+              $entries=0;
+              foreach ($hook->callbacks as $priority=>$handlers) $entries+=count($handlers);
+              echo 'HOOK='.$tag.' callbacks='.$entries.PHP_EOL;
+            }
+            PHP
