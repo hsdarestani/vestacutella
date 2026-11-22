@@ -1,0 +1,61 @@
+name: Diagnose Vesta publish call chain and errors (read-only)
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/diagnose-vesta-product-hook-callgraph-20261122.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Inspect sanitized PHP hook call sites
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.HOST }}
+          username: root
+          password: ${{ secrets.PASS }}
+          command_timeout: 4m
+          script: |
+            set -euo pipefail
+            echo === PHP_ERROR_FILE_COUNTS ===
+            python3 - <<'PY'
+            import re, pathlib, collections
+            p=pathlib.Path('/srv/vestacutella/runtime/vesta/wp-content/debug.log')
+            if p.exists():
+                lines=p.read_text(errors='replace').splitlines()[-1600:]
+                tags=('PHP Fatal','Maximum execution time','Allowed memory size','Uncaught','PHP Warning','cURL error','Connection timed out','MySQL server has gone away')
+                for tag in tags:
+                    filtered=[x for x in lines if tag.lower() in x.lower()]
+                    print('PHP_TAG='+tag.replace(' ','_')+' count='+str(len(filtered)))
+                    for ln in filtered[-3:]:
+                        m=re.search(r'wp-content/(?:plugins|mu-plugins)/([^/\\s]+)',ln)
+                        date=re.match(r'^\\[([^]]+)\\]',ln)
+                        print('PHP_TAG_SOURCE='+tag.replace(' ','_')+' date='+(date.group(1)[:28] if date else 'unknown')+' plugin='+(m.group(1) if m else 'core/unknown'))
+            PY
+            echo === PRODUCT_HOOK_FUNCTION_BODIES_REDACTED ===
+            docker exec -i vc-vesta php -d display_errors=0 <<'PHP'
+            <?php
+            error_reporting(E_ERROR|E_PARSE);
+            $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+            require '/var/www/html/wp-load.php';
+            global $wp_filter;
+            foreach (['transition_post_status','post_updated','wp_after_insert_post','woocommerce_update_product','woocommerce_before_product_object_save','woocommerce_after_product_object_save'] as $tag) {
+              if (empty($wp_filter[$tag])) continue;
+              foreach ($wp_filter[$tag]->callbacks as $priority=>$handlers) foreach ($handlers as $callback) {
+                $fn=$callback['function']??null;
+                if (!is_array($fn)) continue;
+                $class=is_object($fn[0])?get_class($fn[0]):(string)$fn[0];
+                if (!preg_match('/Torob|Ssbhesabfa|triboon|pubjet/i',$class)) continue;
+                $ref=new ReflectionMethod($fn[0],$fn[1]);
+                $code=implode('',array_slice(file($ref->getFileName()),$ref->getStartLine()-1,$ref->getEndLine()-$ref->getStartLine()+1));
+                $code=preg_replace('/\\x27(?:[^\\x27\\\\]|\\\\.)*\\x27|"(?:[^"\\\\]|\\\\.)*"/s',"'[str]'",$code);
+                $code=preg_replace('/\\/\\*.*?\\*\\//s','/*comment*/',$code);
+                echo 'BEGIN_CALLBACK='.$tag.' '.substr($class,0,100).'::'.$fn[1].PHP_EOL;
+                echo substr($code,0,4500).PHP_EOL;
+                echo 'END_CALLBACK'.PHP_EOL;
+              }
+            }
+            PHP
