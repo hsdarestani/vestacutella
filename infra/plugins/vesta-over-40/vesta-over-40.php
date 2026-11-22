@@ -1,8 +1,8 @@
 <?php
 /**
- * Plugin Name: Vesta Automatic 40%+ Deals
- * Description: A live, paginated WooCommerce landing page for products discounted by strictly more than 40%.
- * Version: 1.0.0
+ * Plugin Name: Vesta Automatic Black Friday Deals
+ * Description: Live, paginated all-sale listing and dynamic Woodmart Black Friday product badges.
+ * Version: 1.1.0
  * Requires PHP: 7.4
  */
 defined('ABSPATH') || exit;
@@ -30,7 +30,7 @@ function vc_vesta_offers_item_pct($item) {
  * unrelated min/max variation prices.
  */
 function vc_vesta_offers_product_ids() {
-    $cached = get_transient('vc_vesta_offers_over40_v1');
+    $cached = get_transient('vc_vesta_offers_anysale_v2');
     if (is_array($cached)) {
         return $cached;
     }
@@ -56,7 +56,7 @@ function vc_vesta_offers_product_ids() {
                 continue;
             }
             $pct = vc_vesta_offers_item_pct($item);
-            if ($pct > 40.0 && (!isset($results[$parent_id]) || $results[$parent_id] < $pct)) {
+            if ($pct > 0.0 && (!isset($results[$parent_id]) || $results[$parent_id] < $pct)) {
                 $results[$parent_id] = $pct;
             }
             continue;
@@ -73,7 +73,7 @@ function vc_vesta_offers_product_ids() {
             foreach ($item->get_children() as $variation_id) {
                 $variation = wc_get_product($variation_id);
                 $pct = vc_vesta_offers_item_pct($variation);
-                if ($pct > 40.0 && (!isset($results[$id]) || $pct > $results[$id])) {
+                if ($pct > 0.0 && (!isset($results[$id]) || $pct > $results[$id])) {
                     $results[$id] = $pct;
                 }
             }
@@ -81,19 +81,19 @@ function vc_vesta_offers_product_ids() {
         }
 
         $pct = vc_vesta_offers_item_pct($item);
-        if ($pct > 40.0) {
+        if ($pct > 0.0) {
             $results[$id] = $pct;
         }
     }
 
     arsort($results, SORT_NUMERIC);
     $ids = array_map('intval', array_keys($results));
-    set_transient('vc_vesta_offers_over40_v1', $ids, 120);
+    set_transient('vc_vesta_offers_anysale_v2', $ids, 120);
     return $ids;
 }
 
 function vc_vesta_offers_invalidate() {
-    delete_transient('vc_vesta_offers_over40_v1');
+    delete_transient('vc_vesta_offers_anysale_v2');
 }
 add_action('woocommerce_update_product', 'vc_vesta_offers_invalidate');
 add_action('woocommerce_new_product', 'vc_vesta_offers_invalidate');
@@ -115,7 +115,7 @@ function vc_vesta_offers_shortcode() {
     $ids = array_slice($all, ($page - 1) * $size, $size);
 
     ob_start();
-    echo '<section class="vc-vesta-offer-40" dir="rtl" data-vc-offer="over40">';
+    echo '<section class="vc-vesta-offer-40" dir="rtl" data-vc-offer="all-sale">';
     if ($ids) {
         // Use native WooCommerce / Woodmart cards with their stock and variation actions.
         $loop = new WP_Query(array(
@@ -139,7 +139,7 @@ function vc_vesta_offers_shortcode() {
         }
         wp_reset_postdata();
     } else {
-        echo '<p class="vc-offer-empty">در حال حاضر محصول موجود با تخفیف بالای ۴۰٪ نداریم. به‌زودی دوباره سر بزنید.</p>';
+        echo '<p class="vc-offer-empty">در حال حاضر محصول موجود با تخفیف فعال نداریم. به‌زودی دوباره سر بزنید.</p>';
     }
 
     if ($pages > 1) {
@@ -176,3 +176,109 @@ add_action('wp_head', function () {
     echo '.vc-offer-empty{text-align:center;padding:45px 10px}';
     echo '</style>';
 }, 20);
+
+
+/**
+ * Preserve Woodmart's live sale percentage as the source of truth. The original
+ * label stays intact when JavaScript is disabled; on the frontend, only its
+ * visual representation becomes the requested Black Friday PNG plus the number.
+ * No prices, Woo product metadata or category assignments are modified.
+ */
+add_action('wp_head', function () {
+    if (is_admin()) {
+        return;
+    }
+    ?>
+    <style id="vesta-bf-badge-css">
+    .product-labels .onsale.product-label.vc-vesta-bf-badge {
+        width: 96px !important;
+        height: 88px !important;
+        min-width: 96px !important;
+        min-height: 88px !important;
+        max-width: none !important;
+        border: 0 !important;
+        border-radius: 0 !important;
+        box-shadow: none !important;
+        background-color: transparent !important;
+        background-image: url("https://vesta-cosmetics.ir/wp-content/uploads/2026/11/IMG_3921-1.png") !important;
+        background-repeat: no-repeat !important;
+        background-position: center center !important;
+        background-size: 100% 100% !important;
+        display: flex !important;
+        flex-direction: row !important;
+        align-items: flex-end !important;
+        justify-content: flex-start !important;
+        box-sizing: border-box !important;
+        padding: 0 0 15px 17px !important;
+        margin: 0 !important;
+        color: #fff !important;
+        font-size: 26px !important;
+        font-weight: 900 !important;
+        line-height: 1 !important;
+        white-space: nowrap !important;
+        text-align: left !important;
+        direction: ltr !important;
+        text-shadow: 0 1px 2px rgba(0,0,0,.35) !important;
+        letter-spacing: -1px !important;
+        position: relative;
+        z-index: 2;
+    }
+    @media (max-width: 767px) {
+        .product-labels .onsale.product-label.vc-vesta-bf-badge {
+            width: 76px !important;
+            height: 70px !important;
+            min-width: 76px !important;
+            min-height: 70px !important;
+            padding: 0 0 12px 14px !important;
+            font-size: 21px !important;
+        }
+    }
+    </style>
+    <?php
+}, 20);
+
+add_action('wp_footer', function () {
+    if (is_admin()) {
+        return;
+    }
+    ?>
+    <script id="vesta-bf-badge-js">
+    (function () {
+        "use strict";
+        var selector = ".product-labels .onsale.product-label";
+        function decorate(label) {
+            if (!label || !label.textContent) return;
+            var raw = label.textContent.replace(/[\s\u200e\u200f\u061c]/g, "");
+            var match = raw.match(/^[\u002d\u2212\u2013]?([0-9\u06f0-\u06f9\u0660-\u0669]{1,3})[%\u066a]$/);
+            if (!match) return;
+            var digits = match[1];
+            label.textContent = digits;
+            label.classList.add("vc-vesta-bf-badge");
+            label.setAttribute("aria-label", "تخفیف " + digits + " درصد");
+        }
+        function scan(root) {
+            if (!root || (root.nodeType !== 1 && root.nodeType !== 9)) return;
+            if (root.matches && root.matches(selector)) decorate(root);
+            if (root.querySelectorAll) {
+                var labels = root.querySelectorAll(selector);
+                for (var i = 0; i < labels.length; i++) decorate(labels[i]);
+            }
+        }
+        scan(document);
+        if (typeof MutationObserver !== "function" || !document.body) return;
+        new MutationObserver(function (changes) {
+            for (var i = 0; i < changes.length; i++) {
+                var mutation = changes[i];
+                if (mutation.target && mutation.target.nodeType === 1 &&
+                    mutation.target.matches && mutation.target.matches(selector)) {
+                    decorate(mutation.target);
+                }
+                for (var j = 0; j < mutation.addedNodes.length; j++) {
+                    scan(mutation.addedNodes[j]);
+                }
+            }
+        }).observe(document.body, {subtree: true, childList: true});
+    })();
+    </script>
+    <?php
+}, 30);
