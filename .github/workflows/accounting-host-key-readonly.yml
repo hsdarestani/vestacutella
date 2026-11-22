@@ -1,0 +1,21 @@
+name: Accounting deployment SSH host identity
+on:
+  push:
+    branches: ["audit/vesta-accounting-capacity-20261122-1230"]
+    paths: [".github/workflows/accounting-host-key-readonly.yml"]
+permissions:
+  contents: read
+jobs:
+  fingerprint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Read only the existing server's public SSH host-key fingerprint
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.HOST }}
+          username: root
+          password: ${{ secrets.PASS }}
+          command_timeout: 1m
+          script: |
+            ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256 | awk '{print "HOST_KEY_FINGERPRINT=" $2}'
