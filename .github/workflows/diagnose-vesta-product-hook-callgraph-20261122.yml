@@ -31,9 +31,13 @@ jobs:
                     filtered=[x for x in lines if tag.lower() in x.lower()]
                     print('PHP_TAG='+tag.replace(' ','_')+' count='+str(len(filtered)))
                     for ln in filtered[-3:]:
-                        m=re.search(r'wp-content/(?:plugins|mu-plugins)/([^/\\s]+)',ln)
-                        date=re.match(r'^\\[([^]]+)\\]',ln)
-                        print('PHP_TAG_SOURCE='+tag.replace(' ','_')+' date='+(date.group(1)[:28] if date else 'unknown')+' plugin='+(m.group(1) if m else 'core/unknown'))
+                        plugin='core/unknown'
+                        for kind in ('plugins','mu-plugins'):
+                            marker='wp-content/'+kind+'/'
+                            if marker in ln:
+                                plugin=ln.split(marker,1)[1].split('/',1)[0].split(' ',1)[0][:50]
+                        date=ln.split(']',1)[0][1:29] if ln.startswith('[') and ']' in ln else 'unknown'
+                        print('PHP_TAG_SOURCE='+tag.replace(' ','_')+' date='+date+' plugin='+plugin)
             PY
             echo === PRODUCT_HOOK_FUNCTION_BODIES_REDACTED ===
             docker exec -i vc-vesta php -d display_errors=0 <<'PHP'
@@ -51,8 +55,14 @@ jobs:
                 if (!preg_match('/Torob|Ssbhesabfa|triboon|pubjet/i',$class)) continue;
                 $ref=new ReflectionMethod($fn[0],$fn[1]);
                 $code=implode('',array_slice(file($ref->getFileName()),$ref->getStartLine()-1,$ref->getEndLine()-$ref->getStartLine()+1));
-                $code=preg_replace('/\\x27(?:[^\\x27\\\\]|\\\\.)*\\x27|"(?:[^"\\\\]|\\\\.)*"/s',"'[str]'",$code);
-                $code=preg_replace('/\\/\\*.*?\\*\\//s','/*comment*/',$code);
+                $sanitized='';
+                foreach (token_get_all('<?php '.$code) as $token) {
+                  if (!is_array($token)) {$sanitized.=$token;continue;}
+                  if (in_array($token[0],[T_OPEN_TAG,T_COMMENT,T_DOC_COMMENT],true)) continue;
+                  if (in_array($token[0],[T_CONSTANT_ENCAPSED_STRING,T_ENCAPSED_AND_WHITESPACE],true)) {$sanitized.="'[str]'";continue;}
+                  $sanitized.=$token[1];
+                }
+                $code=$sanitized;
                 echo 'BEGIN_CALLBACK='.$tag.' '.substr($class,0,100).'::'.$fn[1].PHP_EOL;
                 echo substr($code,0,4500).PHP_EOL;
                 echo 'END_CALLBACK'.PHP_EOL;
