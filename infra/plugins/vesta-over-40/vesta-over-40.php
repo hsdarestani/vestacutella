@@ -307,10 +307,10 @@ add_action('wp_head', function () {
     ?>
     <style id="vesta-bf-badge-css">
     .product-labels .onsale.product-label.vc-vesta-bf-badge {
-        width: 96px !important;
-        height: 88px !important;
-        min-width: 96px !important;
-        min-height: 88px !important;
+        width: 70px !important;
+        height: 64px !important;
+        min-width: 70px !important;
+        min-height: 64px !important;
         max-width: none !important;
         border: 0 !important;
         border-radius: 0 !important;
@@ -319,16 +319,16 @@ add_action('wp_head', function () {
         background-image: url("https://vesta-cosmetics.ir/wp-content/uploads/2026/11/IMG_3921-1.png") !important;
         background-repeat: no-repeat !important;
         background-position: center center !important;
-        background-size: 100% 100% !important;
+        background-size: contain !important;
         display: flex !important;
         flex-direction: row !important;
         align-items: flex-end !important;
         justify-content: flex-start !important;
         box-sizing: border-box !important;
-        padding: 0 0 15px 17px !important;
+        padding: 0 !important;
         margin: 0 !important;
         color: #fff !important;
-        font-size: 26px !important;
+        font-size: 0 !important;
         font-weight: 900 !important;
         line-height: 1 !important;
         white-space: nowrap !important;
@@ -339,14 +339,38 @@ add_action('wp_head', function () {
         position: relative;
         z-index: 2;
     }
+    .product-labels .onsale.product-label.vc-vesta-bf-badge .vc-vesta-bf-number {
+        position: absolute !important;
+        left: 16% !important;
+        top: 63% !important;
+        width: 43% !important;
+        height: 24% !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        padding: 0 !important;
+        margin: 0 !important;
+        font-family: Arial, sans-serif !important;
+        font-size: 24px !important;
+        font-weight: 900 !important;
+        line-height: 1 !important;
+        letter-spacing: -0.9px !important;
+        color: #fff !important;
+        direction: ltr !important;
+        text-shadow: 0 1px 2px rgba(0,0,0,.32) !important;
+        transform: none !important;
+    }
     @media (max-width: 767px) {
+        .product-labels .onsale.product-label.vc-vesta-bf-badge .vc-vesta-bf-number {
+            font-size: 19px !important;
+        }
         .product-labels .onsale.product-label.vc-vesta-bf-badge {
-            width: 76px !important;
-            height: 70px !important;
-            min-width: 76px !important;
-            min-height: 70px !important;
-            padding: 0 0 12px 14px !important;
-            font-size: 21px !important;
+            width: 56px !important;
+            height: 51px !important;
+            min-width: 56px !important;
+            min-height: 51px !important;
+            padding: 0 !important;
+            font-size: 0 !important;
         }
     }
     </style>
@@ -363,12 +387,16 @@ add_action('wp_footer', function () {
         "use strict";
         var selector = ".product-labels .onsale.product-label";
         function decorate(label) {
-            if (!label || !label.textContent) return;
+            if (!label || !label.textContent || label.classList.contains("vc-vesta-bf-badge")) return;
             var raw = label.textContent.replace(/[\s\u200e\u200f\u061c]/g, "");
             var match = raw.match(/^[\u002d\u2212\u2013]?([0-9\u06f0-\u06f9\u0660-\u0669]{1,3})[%\u066a]$/);
             if (!match) return;
             var digits = match[1];
-            label.textContent = digits;
+            label.textContent = "";
+            var number = document.createElement("span");
+            number.className = "vc-vesta-bf-number";
+            number.textContent = digits;
+            label.appendChild(number);
             label.classList.add("vc-vesta-bf-badge");
             label.setAttribute("aria-label", "تخفیف " + digits + " درصد");
         }
