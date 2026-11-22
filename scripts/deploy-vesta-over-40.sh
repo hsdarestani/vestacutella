@@ -29,7 +29,7 @@ fi
 changed=no
 page_created=no
 rollback() {
-  code=$?
+  code=${1:-$?}
   trap - EXIT
   if [[ "$changed" == yes ]]; then
     echo "ROLLBACK over40 rc=$code"
@@ -82,15 +82,33 @@ if [[ "$page_result" == created:* ]]; then page_created=yes; fi
 
 # Clear the landing page cache only; leave shop checkout/session caches untouched.
 docker exec vc-vesta php -r '
+  $_SERVER["HTTP_HOST"]="vesta-cosmetics.ir";
+  $_SERVER["SERVER_NAME"]="vesta-cosmetics.ir";
+  $_SERVER["HTTPS"]="on";
+  $_SERVER["SERVER_PORT"]="443";
   require "/var/www/html/wp-load.php";
   delete_transient("vc_vesta_offers_over40_v1");
   delete_transient("vc_vesta_offers_anysale_v2");
   $p=get_page_by_path("off-40",OBJECT,"page");
   if ($p && function_exists("rocket_clean_post")) rocket_clean_post($p->ID);
+  if (function_exists("rocket_clean_url")) {
+    rocket_clean_url("https://vesta-cosmetics.ir/off-40/");
+    rocket_clean_url("http://vesta-cosmetics.ir/off-40/");
+    rocket_clean_url("https://vesta-cosmetics.ir/");
+  }
   if (function_exists("rocket_clean_home")) rocket_clean_home();
 '
+# Clear only this landing's WP Rocket disk cache if PHP CLI purge left stale HTML.
+# Keep unrelated pages, images, cart, checkout, sessions and object cache intact.
+for domain in vesta-cosmetics.ir www.vesta-cosmetics.ir; do
+  landing_cache="$BASE/wp-content/cache/wp-rocket/$domain/off-40"
+  if [[ -d "$landing_cache" ]]; then
+    echo "REMOVE_STALE_OFFERS_CACHE $landing_cache"
+    find "$landing_cache" -maxdepth 2 -type f -name '*.html*' -delete
+  fi
+done
 tmp=$(mktemp)
-trap 'rm -f "$tmp";rollback' EXIT
+trap 'rc=$?; rm -f "$tmp"; rollback "$rc"' EXIT
 for n in 1 2 3; do
   curl --noproxy '*' -kLsS --max-time 60 --resolve vesta-cosmetics.ir:443:127.0.0.1 \
     'https://vesta-cosmetics.ir/off-40/' -o "$tmp"
