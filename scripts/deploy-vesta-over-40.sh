@@ -14,6 +14,11 @@ for path in / /shop/ /my-account/; do
   echo "BEFORE $path $status"
   [[ "$status" == 200 ]] || exit 31
 done
+# Do not activate a graphical badge whose hosted image is missing.
+asset_headers=$(curl --noproxy '*' -kLsSI --max-time 30 --resolve vesta-cosmetics.ir:443:127.0.0.1 \
+  'https://vesta-cosmetics.ir/wp-content/uploads/2026/11/IMG_3921-1.png')
+printf '%s\n' "$asset_headers" | grep -Eqi '^HTTP/[^ ]+ 200' || { echo 'Black Friday PNG not reachable'; exit 32; }
+printf '%s\n' "$asset_headers" | grep -Eqi '^content-type: image/' || { echo 'Badge asset is not an image'; exit 33; }
 docker exec vc-vesta php -r 'require "/var/www/html/wp-load.php"; if (!function_exists("wc_get_product_ids_on_sale")) exit(31); echo "WOOCOMMERCE_OK\n";'
 mkdir -m 0700 -p "$BACKUP"
 had_plugin=no
