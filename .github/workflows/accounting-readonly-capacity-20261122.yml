@@ -1,0 +1,38 @@
+name: Accounting host readiness (read-only)
+on:
+  push:
+    branches: ["audit/vesta-accounting-capacity-20261122-1230"]
+    paths: [".github/workflows/accounting-readonly-capacity-20261122.yml"]
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Read bounded resource and service headroom
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.HOST }}
+          username: root
+          password: ${{ secrets.PASS }}
+          command_timeout: 3m
+          script: |
+            set -eu
+            date -u '+audit_utc=%Y-%m-%dT%H:%M:%SZ'
+            nproc
+            uptime
+            free -m
+            df -hP / /srv /var/lib/docker 2>/dev/null || true
+            vmstat 1 4
+            cat /proc/pressure/memory /proc/pressure/io
+            docker stats --no-stream --format 'container={{.Name}} cpu={{.CPUPerc}} memory={{.MemUsage}} pids={{.PIDs}}' | head -25
+            docker ps --format 'container={{.Names}} state={{.Status}}' | head -25
+            if command -v iostat >/dev/null; then iostat -xz 1 2 | head -40; fi
+            printf 'backup_dirs='; test -d /srv/backups && echo available || echo unknown
+            printf 'font_asset_candidates='
+            find /srv/vestacutella/runtime/vesta/wp-content/themes -maxdepth 7 -type f \( -iname '*iranyekan*.woff*' -o -iname '*iran-yekan*.woff*' \) -printf '%f\n' 2>/dev/null | head -10 || true
+            for site in vesta-cosmetics.ir cutellashop.ir app.vesta-cosmetics.ir; do
+              curl --noproxy '*' -ksS -o /dev/null --max-time 12 --resolve "$site:443:127.0.0.1" -w "site=$site status=%{http_code} ttfb=%{time_starttransfer}\n" "https://$site/" || true
+            done
+            echo read_only_audit_complete
