@@ -109,12 +109,20 @@ for domain in vesta-cosmetics.ir www.vesta-cosmetics.ir; do
 done
 tmp=$(mktemp)
 trap 'rc=$?; rm -f "$tmp"; rollback "$rc"' EXIT
-for n in 1 2 3; do
+# Existing page already contains all-sale marker. Wait for this exact version's
+# hero and badge styles, rather than stopping on stale cached HTML.
+fresh=no
+for n in $(seq 1 15); do
   curl --noproxy '*' -kLsS --max-time 60 --resolve vesta-cosmetics.ir:443:127.0.0.1 \
     'https://vesta-cosmetics.ir/off-40/' -o "$tmp"
-  if grep -q 'data-vc-offer="all-sale"' "$tmp"; then break; fi
-  sleep 2
+  if grep -q 'data-vc-offer="all-sale"' "$tmp" && \
+     grep -q 'class="vc-offer-hero"' "$tmp" && \
+     grep -q 'vc-vesta-bf-number' "$tmp" && \
+     grep -q 'id="vesta-bf-badge-css"' "$tmp"; then fresh=yes;break;fi
+  echo "STALE_OFFERS_HTML attempt=$n"
+  sleep 3
 done
+[[ "$fresh" == yes ]] || { echo 'New premium design failed to appear on canonical landing';exit 69; }
 grep -q 'data-vc-offer="all-sale"' "$tmp" || { echo 'Landing page missing all-sale shortcode output';exit 61; }
 grep -q 'id="vesta-bf-badge-css"' "$tmp" || { echo 'Badge CSS not emitted';exit 64; }
 grep -q 'id="vesta-bf-badge-js"' "$tmp" || { echo 'Badge JS not emitted';exit 65; }
