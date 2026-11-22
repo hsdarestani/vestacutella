@@ -1,0 +1,70 @@
+name: Diagnose Vesta product edit sync settings (read-only)
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/diagnose-vesta-hesabfa-publish-20261122.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Inspect sync callback guards and runtime capacity
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.HOST }}
+          username: root
+          password: ${{ secrets.PASS }}
+          command_timeout: 4m
+          script: |
+            set -euo pipefail
+            echo 'CPU_COUNT='$(nproc)
+            echo === WEB_LOG_LOCATIONS ===
+            docker exec vc-vesta sh -c 'ls -l /var/log/apache2 2>/dev/null | head -12' || true
+            docker exec vc-nginx sh -c 'ls -l /var/log/nginx 2>/dev/null | head -12' || true
+            docker exec -i vc-vesta php -d display_errors=0 <<'PHP'
+            <?php
+            error_reporting(E_ERROR|E_PARSE);
+            $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+            require '/var/www/html/wp-load.php';
+            global $wp_filter;
+            foreach (['woocommerce_update_product','woocommerce_process_product_meta'] as $tag) {
+              foreach (($wp_filter[$tag]->callbacks ?? []) as $priority=>$handlers) foreach ($handlers as $c) {
+                $fn=$c['function']??null;
+                if (!is_array($fn)) continue;
+                $cls=is_object($fn[0])?get_class($fn[0]):(string)$fn[0];
+                if ($cls!=='Ssbhesabfa_Admin') continue;
+                $ref=new ReflectionMethod($fn[0],$fn[1]);
+                $code=implode('',array_slice(file($ref->getFileName()),$ref->getStartLine()-1,$ref->getEndLine()-$ref->getStartLine()+1));
+                echo 'HESABFA_HOOK='.$tag.' METHOD='.$fn[1].PHP_EOL;
+                if (preg_match_all('/get_option\\s*\\(\\s*[\\x27"]([^\\x27"]+)[\\x27"]\\s*,\\s*[\\x27"]([^\\x27"]*)[\\x27"]\\s*\\)\\s*(===|==|!==|!=)\\s*[\\x27"]([^\\x27"]*)[\\x27"]/',$code,$matches,PREG_SET_ORDER)) {
+                  foreach ($matches as $m) {
+                    $val=get_option($m[1],$m[2]);$equal=$val===$m[4];
+                    if($m[3]==='==')$equal=$val==$m[4];
+                    $guard=$m[3]==='==='||$m[3]==='=='?$equal:!$equal;
+                    echo 'HESABFA_GUARD_RETURN_CONDITION='.($guard?'true':'false').PHP_EOL;
+                    echo 'HESABFA_GUARD_OPTION_NAME='.$m[1].PHP_EOL;
+                    echo 'HESABFA_GUARD_OPTION_TYPE='.gettype($val).PHP_EOL;
+                  }
+                }
+                $sanitized='';
+                foreach(token_get_all('<?php '.$code) as $token){
+                  if(!is_array($token)){$sanitized.=$token;continue;}
+                  if(in_array($token[0],[T_OPEN_TAG,T_COMMENT,T_DOC_COMMENT],true))continue;
+                  if(in_array($token[0],[T_CONSTANT_ENCAPSED_STRING,T_ENCAPSED_AND_WHITESPACE],true)){$sanitized.="'[str]'";continue;}
+                  $sanitized.=$token[1];
+                }
+                echo 'HESABFA_METHOD_REDACTED='.substr(preg_replace('/\\s+/',' ',$sanitized),0,1600).PHP_EOL;
+              }
+            }
+            foreach (['saveItems'] as $method) {
+              if (class_exists('Ssbhesabfa_Admin_Functions') && method_exists('Ssbhesabfa_Admin_Functions',$method)) {
+                $ref=new ReflectionMethod('Ssbhesabfa_Admin_Functions',$method);
+                $code=implode('',array_slice(file($ref->getFileName()),$ref->getStartLine()-1,$ref->getEndLine()-$ref->getStartLine()+1));
+                echo 'HESABFA_SAVEITEMS_USES_REMOTE='.(preg_match('/curl_exec|wp_remote_(?:post|request)|ApiClient|ssbhesabfaService|HesabfaApi|apiRequest/i',$code)?'possibly':'unknown').PHP_EOL;
+                echo 'HESABFA_SAVEITEMS_METHOD_LINES='.($ref->getEndLine()-$ref->getStartLine()+1).PHP_EOL;
+              }
+            }
+            PHP
