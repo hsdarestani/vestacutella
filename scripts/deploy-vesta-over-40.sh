@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Narrow Vesta-only production rollout: MU plugin and a single public landing page.
+# Vesta-only safe all-sale landing + Black Friday badge rollout; original off-40 URL stays live.
 set -euo pipefail
 BASE=/srv/vestacutella/runtime/vesta
 SRC=/tmp/vc-vesta-over-40.php
@@ -14,6 +14,11 @@ for path in / /shop/ /my-account/; do
   echo "BEFORE $path $status"
   [[ "$status" == 200 ]] || exit 31
 done
+# Do not activate a graphical badge whose hosted image is missing.
+asset_headers=$(curl --noproxy '*' -kLsSI --max-time 30 --resolve vesta-cosmetics.ir:443:127.0.0.1 \
+  'https://vesta-cosmetics.ir/wp-content/uploads/2026/11/IMG_3921-1.png')
+printf '%s\n' "$asset_headers" | grep -Eqi '^HTTP/[^ ]+ 200' || { echo 'Black Friday PNG not reachable'; exit 32; }
+printf '%s\n' "$asset_headers" | grep -Eqi '^content-type: image/' || { echo 'Badge asset is not an image'; exit 33; }
 docker exec vc-vesta php -r 'require "/var/www/html/wp-load.php"; if (!function_exists("wc_get_product_ids_on_sale")) exit(31); echo "WOOCOMMERCE_OK\n";'
 mkdir -m 0700 -p "$BACKUP"
 had_plugin=no
@@ -48,10 +53,10 @@ docker exec vc-vesta php -l /var/www/html/wp-content/mu-plugins/vc-vesta-over-40
 docker exec vc-vesta php -r '
   require "/var/www/html/wp-load.php";
   if (!shortcode_exists("vc_vesta_over_40")) exit(42);
-  if (vc_vesta_offers_discount_pct(100, 60) > 40) exit(43);
-  if (vc_vesta_offers_discount_pct(100, 59) <= 40) exit(44);
+  if (vc_vesta_offers_discount_pct(100, 99) <= 0) exit(43);
+  if (vc_vesta_offers_discount_pct(100, 100) != 0) exit(44);
   if (vc_vesta_offers_discount_pct(0, 0) != 0) exit(45);
-  echo "SHORTCODE_AND_STRICT_THRESHOLD_OK\n";
+  echo "SHORTCODE_AND_ANY_ACTIVE_SALE_OK\n";
 '
 page_result=$(docker exec vc-vesta php -r '
   require "/var/www/html/wp-load.php";
@@ -79,18 +84,22 @@ if [[ "$page_result" == created:* ]]; then page_created=yes; fi
 docker exec vc-vesta php -r '
   require "/var/www/html/wp-load.php";
   delete_transient("vc_vesta_offers_over40_v1");
+  delete_transient("vc_vesta_offers_anysale_v2");
   $p=get_page_by_path("off-40",OBJECT,"page");
   if ($p && function_exists("rocket_clean_post")) rocket_clean_post($p->ID);
+  if (function_exists("rocket_clean_home")) rocket_clean_home();
 '
 tmp=$(mktemp)
 trap 'rm -f "$tmp";rollback' EXIT
 for n in 1 2 3; do
   curl --noproxy '*' -kLsS --max-time 60 --resolve vesta-cosmetics.ir:443:127.0.0.1 \
     'https://vesta-cosmetics.ir/off-40/' -o "$tmp"
-  if grep -q 'data-vc-offer="over40"' "$tmp"; then break; fi
+  if grep -q 'data-vc-offer="all-sale"' "$tmp"; then break; fi
   sleep 2
 done
-grep -q 'data-vc-offer="over40"' "$tmp" || { echo 'Landing page missing shortcode output';exit 61; }
+grep -q 'data-vc-offer="all-sale"' "$tmp" || { echo 'Landing page missing all-sale shortcode output';exit 61; }
+grep -q 'id="vesta-bf-badge-css"' "$tmp" || { echo 'Badge CSS not emitted';exit 64; }
+grep -q 'id="vesta-bf-badge-js"' "$tmp" || { echo 'Badge JS not emitted';exit 65; }
 for path in / /shop/ /my-account/; do
   status=$(curl --noproxy '*' -ksS --max-time 40 --resolve vesta-cosmetics.ir:443:127.0.0.1 -o /dev/null -w '%{http_code}' "https://vesta-cosmetics.ir$path")
   echo "AFTER $path $status"
