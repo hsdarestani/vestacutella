@@ -1,0 +1,61 @@
+name: Diagnose Vesta product publish external hooks (read-only)
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/diagnose-vesta-publish-hooks-20261122.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - name: Inspect callback HTTP behavior and PHP error counts without user data
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.HOST }}
+          username: root
+          password: ${{ secrets.PASS }}
+          command_timeout: 5m
+          script: |
+            set -euo pipefail
+            echo === PHP_ERRORS_RECENT_COUNTS ===
+            for p in /srv/vestacutella/runtime/vesta/wp-content/debug.log /srv/vestacutella/runtime/vesta/error_log /srv/vestacutella/runtime/vesta/wp-admin/error_log; do
+              if test -f "$p";then
+                echo "LOG_NAME=$(basename "$p") BYTES=$(stat -c %s "$p")"
+                tail -n 300 "$p" | grep -E 'PHP Fatal|Maximum execution time|memory exhausted|cURL error|connection timed out|Cannot modify header' | sed -E 's@(https?://)[^ /]+@\1[redacted-host]@g;s@(/[A-Za-z0-9_.-]+){3,}@/[redacted-path]@g;s@[[:alnum:]._+-]+@[[:alnum:]._+-]+@[redacted-email]@g' | tail -12 | cut -c 1-260 || true
+              fi
+            done
+            echo === WP_HOOKS_STATIC_BEHAVIOR ===
+            docker exec -i vc-vesta php -d display_errors=0 <<'PHP'
+            <?php
+            error_reporting(E_ERROR|E_PARSE);
+            $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';
+            $_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+            $_SERVER['HTTPS']='on';
+            $_SERVER['SERVER_PORT']='443';
+            $_SERVER['REQUEST_URI']='/';
+            require '/var/www/html/wp-load.php';
+            global $wp_filter;
+            foreach (['save_post','transition_post_status','post_updated','wp_after_insert_post','woocommerce_update_product','woocommerce_before_product_object_save','woocommerce_after_product_object_save'] as $tag) {
+              if (empty($wp_filter[$tag])) continue;
+              foreach ($wp_filter[$tag]->callbacks as $priority=>$handlers) {
+                foreach ($handlers as $callback) {
+                  $fn=$callback['function']??null;
+                  if (!is_array($fn)) continue;
+                  $instance=is_object($fn[0])?get_class($fn[0]):(string)$fn[0];
+                  $method=(string)$fn[1];
+                  $origin=$instance.'::'.$method;
+                  if (!preg_match('/Torob|Ssbhesabfa|triboon|pubjet|ProductChangeObserver|WSAL|WooCommerceSubscriber|WP_Rocket/i',$origin)) continue;
+                  $ref=new ReflectionMethod($fn[0],$method);
+                  $lines=@file($ref->getFileName());
+                  if (!$lines) continue;
+                  $code=implode('',array_slice($lines,$ref->getStartLine()-1,$ref->getEndLine()-$ref->getStartLine()+1));
+                  preg_match_all('/\\b(wp_remote_post|wp_remote_request|wp_remote_get|curl_exec|as_enqueue_async_action|as_schedule_single_action|wp_schedule_single_event|wp_safe_remote_post|do_action|wp_cache_flush|set_transient|delete_transient|wp_delete_post|wp_update_post|apiCall|sendRequest|request|sync|webhook)\\s*\\(/i',$code,$matches);
+                  $calls=array_count_values(array_map('strtolower',$matches[1]));
+                  echo 'SUSPECT_CALLBACK='.$tag.' '.$origin.' priority='.$priority.' line_count='.count(explode("\n",$code)).' outbound_or_work_calls='.json_encode($calls).PHP_EOL;
+                }
+              }
+            }
+            PHP
