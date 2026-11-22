@@ -1,0 +1,99 @@
+name: Vesta urgent timeout incident diagnostics
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/vesta-emergency-timeout-diagnostics-20261122.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Probe external DNS and public HTTPS
+        run: |
+          set +e
+          echo '=== TIME UTC ==='
+          date -u
+          for d in vesta-cosmetics.ir www.vesta-cosmetics.ir cutellashop.ir; do
+            echo "HOST=$d"
+            for r in 1.1.1.1 8.8.8.8; do
+              echo "RESOLVER=$r"
+              dig @"$r" +time=3 +tries=1 +short "$d" A
+              dig @"$r" +time=3 +tries=1 +short "$d" AAAA
+            done
+            for family in -4 -6; do
+              for path in / /wp-login.php /wp-json/; do
+                curl --noproxy '*' "$family" -sS -L -m 20 --connect-timeout 8 -o /dev/null -w "PUBLIC_HTTPS host=$d family=$family path=$path code=%{http_code} dns=%{time_namelookup} connect=%{time_connect} tls=%{time_appconnect} ttfb=%{time_starttransfer} total=%{time_total} remote_ip=%{remote_ip}\n" "https://$d$path"
+              done
+            done
+          done
+          echo '=== NS ==='
+          dig +short NS vesta-cosmetics.ir
+      - name: Diagnose live origin routing and web/host logs without exposing visitor data
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.HOST }}
+          username: root
+          password: ${{ secrets.PASS }}
+          command_timeout: 7m
+          script: |
+            set +e
+            echo '=== ORIGIN TIME LOAD ==='
+            date -u
+            uptime
+            free -m | head -4
+            df -h / | tail -1
+            echo '=== ORIGIN HOST NETWORK ==='
+            ip -br addr | head -15
+            ip route get 1.1.1.1
+            ss -lnt | grep -E '(:80 |:443 |:22 )' | head -20
+            echo '=== FIREWALL DEFAULTS AND FAIL2BAN ==='
+            iptables -S INPUT | head -35
+            nft list ruleset 2>/dev/null | grep -E 'hook input|policy|dport (443|80)|drop|reject' | head -30
+            fail2ban-client status 2>/dev/null | head -10
+            echo '=== ORIGIN HTTPS ==='
+            for path in / /wp-login.php /wp-json/ /wp-admin/; do
+              for i in 1 2 3; do
+                curl --noproxy '*' -k -sS -o /dev/null -m 16 --connect-timeout 5 --resolve 'vesta-cosmetics.ir:443:127.0.0.1' -w "ORIGIN path=$path attempt=$i status=%{http_code} ttfb=%{time_starttransfer} total=%{time_total}\n" "https://vesta-cosmetics.ir$path"
+              done
+            done
+            echo '=== CONTAINER SUMMARY ==='
+            docker ps --format 'CONTAINER {{.Names}} {{.Status}}'
+            docker stats --no-stream --format 'RESOURCE {{.Name}} CPU={{.CPUPerc}} MEM={{.MemUsage}} PIDS={{.PIDs}}' | head -15
+            echo '=== NGINX ACCESS LAST 12 MIN AGGREGATES ==='
+            python3 - <<'PY'
+            import subprocess, re, collections, datetime
+            for name in ['vc-nginx','vc-vesta']:
+                try:
+                    p=subprocess.run(['docker','logs','--since','12m',name],capture_output=True,text=True,timeout=35)
+                    lines=(p.stdout+'\n'+p.stderr).splitlines()
+                    status=collections.Counter()
+                    paths=collections.Counter()
+                    errors=collections.Counter()
+                    countries=collections.Counter()
+                    for line in lines[-25000:]:
+                        m=re.search(r'"(GET|POST|HEAD|PUT) ([^ "]+) HTTP/[^"]+" ([0-9]{3})',line)
+                        if m:
+                            path=m.group(2).split('?')[0]
+                            if len(path)>120: path=path[:120]
+                            paths[path]+=1
+                            status[m.group(3)]+=1
+                        if 'timed out' in line.lower(): errors['timeout']+=1
+                        if 'upstream' in line.lower(): errors['upstream']+=1
+                        if 'client prematurely' in line.lower(): errors['client_aborted']+=1
+                        if 'too many open files' in line.lower(): errors['open_files']+=1
+                        if 'MaxRequestWorkers' in line: errors['apache_limit']+=1
+                    print('LOG_CONTAINER='+name,'TOTAL_LINES='+str(len(lines)))
+                    print('HTTP_STATUS_COUNTS='+str(dict(status)))
+                    print('TOP_REQUEST_PATHS='+str(paths.most_common(12)))
+                    print('ERROR_COUNTS='+str(dict(errors)))
+                except Exception as e:
+                    print('LOG_INSPECTION_ERROR='+name+':'+type(e).__name__)
+            PY
+            echo '=== HOST CONNECTION SUMMARY ==='
+            ss -Htn state established '( sport = :443 )' | wc -l
+            ss -Htn state syn-recv '( sport = :443 )' | wc -l
+            echo '=== OPTIONAL LIMIT METRICS ==='
+            docker exec vc-vesta sh -c 'apachectl -M 2>/dev/null | grep mpm; grep -Ri "MaxRequestWorkers\|ServerLimit" /etc/apache2/mods-enabled /etc/apache2/conf-enabled 2>/dev/null | head -8'
