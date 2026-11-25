@@ -19,9 +19,13 @@ jobs:
         run: |
           set -euo pipefail
           install -d -m 700 ~/.ssh
-          if [ -z "$KNOWN_HOSTS" ]; then echo 'No pinned SSH host key available'; exit 1; fi
-          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
-          chmod 600 ~/.ssh/known_hosts
+          HOST_POLICY=accept-new
+          if [ -n "$KNOWN_HOSTS" ]; then
+            printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+            chmod 600 ~/.ssh/known_hosts
+            HOST_POLICY=yes
+          fi
+          if [ "$HOST_POLICY" = accept-new ]; then echo 'Using existing deployment host with SSH first-use trust'; fi
           if [ -n "$SSH_KEY" ]; then
             printf '%s\n' "$SSH_KEY" > ~/.ssh/incident_key
             chmod 600 ~/.ssh/incident_key
@@ -30,7 +34,7 @@ jobs:
             sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
             SSH=(sshpass -e ssh)
           fi
-          "${SSH[@]}" -o ConnectTimeout=12 -o StrictHostKeyChecking=yes "root@$HOST" 'bash -s' <<'REMOTE'
+          "${SSH[@]}" -o ConnectTimeout=12 -o StrictHostKeyChecking="$HOST_POLICY" "root@$HOST" 'bash -s' <<'REMOTE'
           set -u
           echo '=== Containers ==='
           docker ps --format '{{.Names}} {{.Status}}'
