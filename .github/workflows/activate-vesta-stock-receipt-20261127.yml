@@ -1,0 +1,105 @@
+name: Activate Vesta stock receipts after isolated WooCommerce canary
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/activate-vesta-stock-receipt-20261127.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-stock-receipt-deploy
+  cancel-in-progress: false
+jobs:
+  activate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check signed production search acceptance
+        run: |
+          set -Eeuo pipefail
+          curl -fsSL https://api.github.com/repos/hsdarestani/ordersvesta/actions/runs/46009227374 | python3 -c 'import json,sys; r=json.load(sys.stdin); assert r["conclusion"]=="success" and r["status"]=="completed"'
+      - name: Test isolated stock receipt and enable if legacy quantity sync is disabled
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          exec 9>/run/lock/vesta-stock-receipt-deploy.lock
+          flock -w 60 9
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=512M <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';
+          $_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          global $wpdb;
+          if(!function_exists('vsr_receive') || !function_exists('vbb_v2_authorize'))exit(41);
+          $settings=get_option('bazara_visitor_settings',[]);
+          if(!is_array($settings)||!array_key_exists('chkQuantity',$settings)||!in_array($settings['chkQuantity'],[0,'0',false],true))exit(42);
+          if(get_option('vsr_stock_receipt_enabled','no')==='yes'){echo "STOCK_RECEIPT_ALREADY_ENABLED=yes\n";exit;}
+          foreach([$wpdb->posts,$wpdb->postmeta,$wpdb->options,$wpdb->prefix.'wc_product_meta_lookup'] as $table){
+            $engine=$wpdb->get_var($wpdb->prepare("SELECT ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s",$table));
+            if(strtolower((string)$engine)!=='innodb')exit(43);
+          }
+          // The canary uses synthetic private products only, in a single rolled-back
+          // transaction. Suppress third-party callbacks in this CLI process only;
+          // no normal request or production plugin setting is changed.
+          $block_http=function(){return new WP_Error('vsr_canary_no_network','Canary outbound HTTP disabled');};
+          add_filter('pre_http_request',$block_http,PHP_INT_MAX);
+          foreach(['save_post','save_post_product','save_post_product_variation','wp_after_insert_post',
+                   'transition_post_status','woocommerce_new_product','woocommerce_update_product',
+                   'woocommerce_new_product_variation','woocommerce_update_product_variation',
+                   'woocommerce_product_set_stock','woocommerce_variation_set_stock',
+                   'woocommerce_product_set_stock_status','woocommerce_variation_set_stock_status',
+                   'woocommerce_product_object_updated_props','woocommerce_variation_object_updated_props',
+                   'woocommerce_low_stock','woocommerce_no_stock'] as $hook)remove_all_actions($hook);
+          $allow=function(){return 'yes';};
+          add_filter('pre_option_vsr_stock_receipt_enabled',$allow);
+          $suffix=bin2hex(random_bytes(8));
+          $keys=[];$ids=[];$passed=false;
+          if($wpdb->query('START TRANSACTION')===false)exit(44);
+          try {
+            $p=new WC_Product_Simple();
+            $p->set_name('VSR isolated QA '.$suffix);
+            $p->set_status('private');$p->set_sku('VSR-QA-'.$suffix);
+            $p->set_regular_price('1');$p->set_manage_stock(true);
+            $p->set_stock_quantity(0);$p->set_stock_status('outofstock');
+            $id=$p->save();$ids[]=$id;
+            if(!$id)throw new RuntimeException('fixture creation failed');
+            $d=vsr_describe(vsr_product($id));
+            if($d['quantity']!==0||!$d['receivable'])throw new RuntimeException('fixture identity failed');
+            $key=bin2hex(random_bytes(16));$keys[]=$key;
+            $payload=['id'=>$id,'identity'=>$d['identity'],'expected'=>0,'amount'=>5,'actor'=>'999999999','request_key'=>$key];
+            $first=vsr_receive($payload);
+            $again=vsr_receive($payload);
+            $read=vsr_status($key);
+            if(($first['status']??'')!=='applied'||$first['quantity']!==5||$again!==$first||$read!==$first)throw new RuntimeException('receipt/idempotency failed');
+            $fresh=wc_get_product($id);
+            if((int)$fresh->get_stock_quantity()!==5||$fresh->get_stock_status()!=='instock')throw new RuntimeException('stock reread failed');
+            $bad=$payload;$bad['request_key']=bin2hex(random_bytes(16));$keys[]=$bad['request_key'];
+            $rejected=false;try{vsr_receive($bad);}catch(Throwable $e){$rejected=true;}
+            if(!$rejected)throw new RuntimeException('stale receipt not rejected');
+            $passed=true;
+          }catch(Throwable $e){echo 'CANARY_FAILED='.$e->getMessage().PHP_EOL;}
+          finally{
+            $wpdb->query('ROLLBACK');
+            foreach($ids as $id){clean_post_cache($id);wp_cache_delete($id,'post_meta');}
+            foreach($keys as $key)wp_cache_delete(vsr_key($key),'options');
+            wp_cache_delete('notoptions','options');
+            remove_filter('pre_option_vsr_stock_receipt_enabled',$allow);
+          }
+          foreach($ids as $id)if($wpdb->get_var($wpdb->prepare("SELECT ID FROM {$wpdb->posts} WHERE ID=%d",$id)))exit(45);
+          foreach($keys as $key)if($wpdb->get_var($wpdb->prepare("SELECT option_id FROM {$wpdb->options} WHERE option_name=%s",vsr_key($key))))exit(46);
+          if(!$passed)exit(47);
+          echo "ISOLATED_SIMPLE_RECEIPT_IDEMPOTENCY_STALE_REJECTION_PASS=yes\n";
+          echo "CANARY_ROLLBACK_VERIFIED=yes\n";
+          update_option('vsr_stock_receipt_enabled','yes',false);
+          if(get_option('vsr_stock_receipt_enabled','no')!=='yes')exit(48);
+          echo "STOCK_RECEIPT_ENABLED=yes\n";
+          echo "NO_REAL_PRODUCT_STOCK_MUTATED=yes\n";
+          PHP
+          REMOTE
