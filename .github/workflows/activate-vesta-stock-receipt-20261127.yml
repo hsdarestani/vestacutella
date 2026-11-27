@@ -41,12 +41,10 @@ jobs:
           $settings=get_option('bazara_visitor_settings',[]);
           if(!is_array($settings)||!array_key_exists('chkQuantity',$settings)||!in_array($settings['chkQuantity'],[0,'0',false],true))exit(42);
           if(get_option('vsr_stock_receipt_enabled','no')==='yes'){echo "STOCK_RECEIPT_ALREADY_ENABLED=yes\n";exit;}
-          foreach([$wpdb->posts,$wpdb->postmeta,$wpdb->options,$wpdb->prefix.'wc_product_meta_lookup'] as $table){
-            $engine=$wpdb->get_var($wpdb->prepare("SELECT ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=%s",$table));
-            if(strtolower((string)$engine)!=='innodb')exit(43);
-          }
-          // The canary uses synthetic private products only, in a single rolled-back
-          // transaction. Suppress third-party callbacks in this CLI process only;
+          // Some legacy WordPress tables are not transactional or information_schema is restricted.
+          // Use uniquely named private fixtures and explicit, verified cleanup instead.
+          // The canary uses synthetic private products only with verified cleanup.
+          // Suppress third-party callbacks in this CLI process only;
           // no normal request or production plugin setting is changed.
           $block_http=function(){return new WP_Error('vsr_canary_no_network','Canary outbound HTTP disabled');};
           add_filter('pre_http_request',$block_http,PHP_INT_MAX);
@@ -61,7 +59,8 @@ jobs:
           add_filter('pre_option_vsr_stock_receipt_enabled',$allow);
           $suffix=bin2hex(random_bytes(8));
           $keys=[];$ids=[];$passed=false;
-          if($wpdb->query('START TRANSACTION')===false)exit(44);
+          foreach(['before_delete_post','delete_post','deleted_post','woocommerce_before_delete_product','woocommerce_delete_product','woocommerce_trash_product'] as $hook)remove_all_actions($hook);
+          $transaction=$wpdb->query('START TRANSACTION')!==false;
           try {
             $p=new WC_Product_Simple();
             $p->set_name('VSR isolated QA '.$suffix);
@@ -86,17 +85,23 @@ jobs:
             $passed=true;
           }catch(Throwable $e){echo 'CANARY_FAILED='.$e->getMessage().PHP_EOL;}
           finally{
-            $wpdb->query('ROLLBACK');
-            foreach($ids as $id){clean_post_cache($id);wp_cache_delete($id,'post_meta');}
-            foreach($keys as $key)wp_cache_delete(vsr_key($key),'options');
+            if($transaction)$wpdb->query('ROLLBACK');
+            foreach($ids as $id){
+              clean_post_cache($id);wp_cache_delete($id,'post_meta');
+              $fixture=wc_get_product($id);
+              if($fixture && $fixture->get_sku()==='VSR-QA-'.$suffix && $fixture->get_status()==='private')$fixture->delete(true);
+              // Clean up lookup rows even if the posts table rolled back independently.
+              $wpdb->delete($wpdb->prefix.'wc_product_meta_lookup',['product_id'=>$id]);
+            }
+            foreach($keys as $key){wp_cache_delete(vsr_key($key),'options');delete_option(vsr_key($key));}
             wp_cache_delete('notoptions','options');
             remove_filter('pre_option_vsr_stock_receipt_enabled',$allow);
           }
-          foreach($ids as $id)if($wpdb->get_var($wpdb->prepare("SELECT ID FROM {$wpdb->posts} WHERE ID=%d",$id)))exit(45);
+          foreach($ids as $id)if($wpdb->get_var($wpdb->prepare("SELECT ID FROM {$wpdb->posts} WHERE ID=%d",$id)) || $wpdb->get_var($wpdb->prepare("SELECT post_id FROM {$wpdb->postmeta} WHERE post_id=%d LIMIT 1",$id)))exit(45);
           foreach($keys as $key)if($wpdb->get_var($wpdb->prepare("SELECT option_id FROM {$wpdb->options} WHERE option_name=%s",vsr_key($key))))exit(46);
           if(!$passed)exit(47);
           echo "ISOLATED_SIMPLE_RECEIPT_IDEMPOTENCY_STALE_REJECTION_PASS=yes\n";
-          echo "CANARY_ROLLBACK_VERIFIED=yes\n";
+          echo "CANARY_CLEANUP_VERIFIED=yes\n";
           update_option('vsr_stock_receipt_enabled','yes',false);
           if(get_option('vsr_stock_receipt_enabled','no')!=='yes')exit(48);
           echo "STOCK_RECEIPT_ENABLED=yes\n";
