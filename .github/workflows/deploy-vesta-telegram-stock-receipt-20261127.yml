@@ -18,7 +18,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           sudo apt-get update -qq && sudo apt-get install -y -qq php-cli sshpass
-          curl -fsSL --retry 2 https://raw.githubusercontent.com/hsdarestani/ordersvesta/f4d5cd46da98fb2f5ca5ab95dae6dc5ee4e978f3/wordpress/mu-plugins/vesta-stock-receipt.php -o /tmp/vesta-stock-receipt.php
+          curl -fsSL --retry 2 https://raw.githubusercontent.com/hsdarestani/ordersvesta/711a1b0af77ab880d85b7384f893a78e9e009a5d/wordpress/mu-plugins/vesta-stock-receipt.php -o /tmp/vesta-stock-receipt.php
           php -l /tmp/vesta-stock-receipt.php
       - name: Install bridge with rollback and inspect stock authority
         env:
@@ -68,7 +68,7 @@ jobs:
             $r=vsr_search(['q'=>$sku,'page'=>1]);
             if(!in_array($item->get_id(),array_column($r['products'],'id'))){$nomatch++;continue;}
             $d=vsr_describe(vsr_product($item->get_id()));
-            if($d['id']!==$item->get_id())exit(42);
+            if($d['id']!==$item->get_id() || !isset($d['currency'],$d['regular_price'],$d['price_version']))exit(42);
             $tested++;
             $photo=vsr_photo($item->get_id());
             if(!empty($photo['image']))$photos++;
