@@ -1,0 +1,56 @@
+name: Diagnose Vesta stock receipt and exact product storefront cache
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/diagnose-vesta-receipt-belt-20261127.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Inspect actual receipt and stock, refresh only its page if consistent
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=512M <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';
+          $_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          global $wpdb;
+          $rows=$wpdb->get_col($wpdb->prepare("SELECT option_value FROM {$wpdb->options} WHERE option_name LIKE %s ORDER BY option_id DESC LIMIT 80",$wpdb->esc_like('vsr_receipt_').'%'));
+          $match=[];
+          foreach($rows as $row){
+            $r=maybe_unserialize($row);
+            if(!is_array($r)||($r['status']??'')!=='applied'||($r['amount']??0)!==6||!str_contains($r['name']??'','ماساژور')||!str_contains($r['name']??'','کمربند'))continue;
+            $match[]=$r;
+          }
+          if(count($match)!==1){echo 'MATCHING_RECEIPTS='.count($match).PHP_EOL;exit(41);}
+          $r=$match[0];$id=(int)$r['product_id'];
+          $p=wc_get_product($id);
+          if(!$p)exit(42);
+          $lookup=$wpdb->get_row($wpdb->prepare("SELECT stock_quantity,stock_status FROM {$wpdb->prefix}wc_product_meta_lookup WHERE product_id=%d",$id),ARRAY_A);
+          $meta=$wpdb->get_results($wpdb->prepare("SELECT meta_key,meta_value FROM {$wpdb->postmeta} WHERE post_id=%d AND meta_key IN ('_stock','_stock_status','_manage_stock')",$id),ARRAY_A);
+          $terms=wp_get_object_terms($id,'product_visibility',['fields'=>'slugs']);
+          $parent=$p->get_parent_id();
+          $page=$parent?:$id;
+          $url=get_permalink($page);
+          $report=['id'=>$id,'parent'=>$parent,'type'=>$p->get_type(),'receipt_before'=>$r['before'],'receipt_amount'=>$r['amount'],'receipt_after'=>$r['quantity'],'current_qty'=>$p->get_stock_quantity(),'status'=>$p->get_stock_status(),'in_stock'=>$p->is_in_stock(),'purchasable'=>$p->is_purchasable(),'manage_stock'=>$p->managing_stock(),'lookup'=>$lookup,'meta'=>$meta,'visibility_terms'=>$terms,'url'=>$url,'rocket_available'=>function_exists('rocket_clean_post')];
+          echo 'STOCK_DIAG='.wp_json_encode($report,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES).PHP_EOL;
+          // No stock changes or repeat receipt. Only purge this exact page if all stock representations agree.
+          if($p->is_in_stock() && $p->get_stock_quantity()>0 && ($lookup['stock_status']??'')==='instock'){
+            if(function_exists('rocket_clean_post')){rocket_clean_post($page);echo 'TARGETED_ROCKET_CACHE_PURGED=yes'.PHP_EOL;}
+          }
+          echo 'PRODUCT_URL='.$url.PHP_EOL;
+          PHP
+          REMOTE
