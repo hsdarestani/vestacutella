@@ -1,0 +1,95 @@
+name: Deploy Vesta Telegram stock receipt bridge safely
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/deploy-vesta-telegram-stock-receipt-20261127.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-stock-receipt-deploy
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Fetch pinned reviewed receipt bridge
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq php-cli sshpass
+          curl -fsSL --retry 2 https://raw.githubusercontent.com/hsdarestani/ordersvesta/c1f1afad04de2048b561b07b3b9c235c81f5ddaf/wordpress/mu-plugins/vesta-stock-receipt.php -o /tmp/vesta-stock-receipt.php
+          php -l /tmp/vesta-stock-receipt.php
+      - name: Install bridge with rollback and inspect stock authority
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sshpass -e scp -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null /tmp/vesta-stock-receipt.php "root@$HOST:/tmp/vesta-stock-receipt-20261127.php"
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          umask 077
+          exec 9>/run/lock/vesta-stock-receipt-deploy.lock
+          flock -w 60 9
+          mu=/srv/vestacutella/runtime/vesta/wp-content/mu-plugins
+          dest="$mu/vesta-stock-receipt.php"
+          backup=/srv/backups/vesta-stock-receipt-$(date -u +%Y%m%dT%H%M%SZ)
+          mkdir -m 0700 -p "$backup"
+          test -d "$mu"
+          existed=no
+          if test -f "$dest"; then cp -p "$dest" "$backup/previous.php"; existed=yes; fi
+          docker exec -i vc-vesta php -l < /tmp/vesta-stock-receipt-20261127.php
+          rollback() {
+            rc=$?
+            trap - ERR
+            if [ "$existed" = yes ]; then cp -p "$backup/previous.php" "$dest"; else rm -f "$dest"; fi
+            echo STOCK_RECEIPT_ROLLED_BACK=yes
+            exit "$rc"
+          }
+          trap rollback ERR
+          cp /tmp/vesta-stock-receipt-20261127.php "$mu/.vesta-stock-receipt.next"
+          chmod 644 "$mu/.vesta-stock-receipt.next"
+          chown --reference="$mu/vesta-mahak-telegram-content.php" "$mu/.vesta-stock-receipt.next"
+          mv "$mu/.vesta-stock-receipt.next" "$dest"
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=512M <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';$_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          if(!function_exists('vsr_search') || !function_exists('vbb_v2_authorize')) exit(41);
+          $p=wc_get_products(['limit'=>20,'status'=>'publish','type'=>'simple']);
+          $tested=0;$photos=0;
+          foreach($p as $item){
+            $sku=$item->get_sku();
+            if(mb_strlen($sku)<2)continue;
+            $r=vsr_search(['q'=>$sku,'page'=>1]);
+            if(!in_array($item->get_id(),array_column($r['products'],'id')))continue;
+            $d=vsr_describe(vsr_product($item->get_id()));
+            if($d['id']!==$item->get_id())exit(42);
+            $tested++;
+            $photo=vsr_photo($item->get_id());
+            if(!empty($photo['image']))$photos++;
+            if($tested>=4 && $photos>0)break;
+          }
+          if(!$tested || !$photos)exit(43);
+          echo "STOCK_SEARCH_READ_TEST_COUNT=$tested PHOTO_COUNT=$photos".PHP_EOL;
+          $settings=get_option('bazara_visitor_settings',[]);
+          $q=$settings['chkQuantity']??null;
+          echo 'BAZARA_QUANTITY_FLAG='.wp_json_encode(is_scalar($q)?$q:null).PHP_EOL;
+          $active=(array)get_option('active_plugins',[]);
+          echo 'ACTIVE_STOCK_RELATED_PLUGINS='.wp_json_encode(array_values(array_filter($active,function($v){return preg_match('/bazara|mahak|hesabfa|inventory|stock|account/i',$v);}))).PHP_EOL;
+          $hooks=[];
+          foreach((_get_cron_array()?:[]) as $events)
+              foreach($events as $hook=>$unused)
+                  if(preg_match('/bazara|mahak|hesabfa|stock|inventory|quantity/i',$hook))$hooks[$hook]=true;
+          echo 'STOCK_RELATED_CRON_HOOKS='.wp_json_encode(array_keys($hooks)).PHP_EOL;
+          echo 'STOCK_RECEIPT_WRITE_GATE='.get_option('vsr_stock_receipt_enabled','no').PHP_EOL;
+          echo 'NO_REAL_PRODUCT_STOCK_MUTATED=yes'.PHP_EOL;
+          PHP
+          code=$(curl --noproxy '*' -ksS --connect-timeout 8 --max-time 20 --resolve "vesta-cosmetics.ir:443:127.0.0.1" -o /dev/null -w '%{http_code}' "https://vesta-cosmetics.ir/")
+          test "$code" = 200
+          trap - ERR
+          echo STOCK_RECEIPT_BRIDGE_DEPLOYED=yes
+          REMOTE
