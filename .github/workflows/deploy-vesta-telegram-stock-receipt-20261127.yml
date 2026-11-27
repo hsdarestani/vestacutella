@@ -59,13 +59,14 @@ jobs:
           $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
           require '/var/www/html/wp-load.php';
           if(!function_exists('vsr_search') || !function_exists('vbb_v2_authorize')) exit(41);
-          $p=wc_get_products(['limit'=>20,'status'=>'publish','type'=>'simple']);
-          $tested=0;$photos=0;
+          $p=wc_get_products(['limit'=>100,'status'=>'publish','type'=>['simple','variable'],'orderby'=>'date','order'=>'DESC']);
+          $tested=0;$photos=0;$sampled=0;$missing=0;$nomatch=0;
           foreach($p as $item){
             $sku=$item->get_sku();
-            if(mb_strlen($sku)<2)continue;
+            if(mb_strlen($sku)<2){$missing++;continue;}
+            $sampled++;
             $r=vsr_search(['q'=>$sku,'page'=>1]);
-            if(!in_array($item->get_id(),array_column($r['products'],'id')))continue;
+            if(!in_array($item->get_id(),array_column($r['products'],'id'))){$nomatch++;continue;}
             $d=vsr_describe(vsr_product($item->get_id()));
             if($d['id']!==$item->get_id())exit(42);
             $tested++;
@@ -73,7 +74,7 @@ jobs:
             if(!empty($photo['image']))$photos++;
             if($tested>=4 && $photos>0)break;
           }
-          if(!$tested || !$photos)exit(43);
+          echo 'STOCK_TEST_DIAGNOSTICS='.wp_json_encode(['sampled'=>$sampled,'no_sku'=>$missing,'not_in_search'=>$nomatch,'found'=>$tested,'photos'=>$photos]).PHP_EOL;
           echo "STOCK_SEARCH_READ_TEST_COUNT=$tested PHOTO_COUNT=$photos".PHP_EOL;
           $settings=get_option('bazara_visitor_settings',[]);
           $q=$settings['chkQuantity']??null;
@@ -87,6 +88,7 @@ jobs:
           echo 'STOCK_RELATED_CRON_HOOKS='.wp_json_encode(array_keys($hooks)).PHP_EOL;
           echo 'STOCK_RECEIPT_WRITE_GATE='.get_option('vsr_stock_receipt_enabled','no').PHP_EOL;
           echo 'NO_REAL_PRODUCT_STOCK_MUTATED=yes'.PHP_EOL;
+          if(!$tested || !$photos)exit(43);
           PHP
           code=$(curl --noproxy '*' -ksS --connect-timeout 8 --max-time 20 --resolve "vesta-cosmetics.ir:443:127.0.0.1" -o /dev/null -w '%{http_code}' "https://vesta-cosmetics.ir/")
           test "$code" = 200
