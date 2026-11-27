@@ -18,7 +18,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           sudo apt-get update -qq && sudo apt-get install -y -qq php-cli sshpass
-          curl -fsSL --retry 2 https://raw.githubusercontent.com/hsdarestani/ordersvesta/c1f1afad04de2048b561b07b3b9c235c81f5ddaf/wordpress/mu-plugins/vesta-stock-receipt.php -o /tmp/vesta-stock-receipt.php
+          curl -fsSL --retry 2 https://raw.githubusercontent.com/hsdarestani/ordersvesta/f4d5cd46da98fb2f5ca5ab95dae6dc5ee4e978f3/wordpress/mu-plugins/vesta-stock-receipt.php -o /tmp/vesta-stock-receipt.php
           php -l /tmp/vesta-stock-receipt.php
       - name: Install bridge with rollback and inspect stock authority
         env:
