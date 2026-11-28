@@ -1,0 +1,147 @@
+name: Verify new Vesta discount on previously undiscounted product
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/verify-vesta-new-sale-price-20261128.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: vesta-stock-receipt-deploy
+  cancel-in-progress: false
+jobs:
+  activate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check bridge deployment acceptance
+        run: |
+          set -Eeuo pipefail
+          curl -fsSL https://api.github.com/repos/hsdarestani/vestacutella/actions/runs/46123084353 | python3 -c 'import json,sys; r=json.load(sys.stdin); assert r["conclusion"]=="success" and r["status"]=="completed"'
+      - name: Verify isolated receipt with existing sale and exact cleanup
+        env:
+          HOST: ${{ secrets.HOST }}
+          SSHPASS: ${{ secrets.PASS }}
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+          sshpass -e ssh -o ConnectTimeout=12 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "root@$HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          exec 9>/run/lock/vesta-stock-receipt-deploy.lock
+          flock -w 60 9
+          docker exec -i vc-vesta php -d display_errors=0 -d memory_limit=512M <<'PHP'
+          <?php
+          error_reporting(E_ERROR|E_PARSE);
+          $_SERVER['HTTP_HOST']='vesta-cosmetics.ir';
+          $_SERVER['SERVER_NAME']='vesta-cosmetics.ir';
+          $_SERVER['HTTPS']='on';$_SERVER['SERVER_PORT']='443';$_SERVER['REQUEST_URI']='/';
+          require '/var/www/html/wp-load.php';
+          global $wpdb;
+          if(!function_exists('vsr_receive') || !function_exists('vbb_v2_authorize'))exit(41);
+          $settings=get_option('bazara_visitor_settings',[]);
+          if(!is_array($settings)||!array_key_exists('chkQuantity',$settings)||!in_array($settings['chkQuantity'],[0,'0',false],true))exit(42);
+          if(get_option('vsr_stock_receipt_enabled','no')!=='yes'||!function_exists('vsr_guarded_stock'))exit(49);
+          echo 'PRICE_SYNC_SETTINGS='.wp_json_encode(array_intersect_key($settings,array_flip(['chkPrice','chkQuantity','chkProductsRolePrice']))).PHP_EOL;
+          echo 'WOO_PRICE_CURRENCY='.get_woocommerce_currency().PHP_EOL;
+          // Some legacy WordPress tables are not transactional or information_schema is restricted.
+          // Use uniquely named private fixtures and explicit, verified cleanup instead.
+          // The canary uses synthetic private products only with verified cleanup.
+          // Suppress third-party callbacks in this CLI process only;
+          // no normal request or production plugin setting is changed.
+          $block_http=function(){return new WP_Error('vsr_canary_no_network','Canary outbound HTTP disabled');};
+          add_filter('pre_http_request',$block_http,PHP_INT_MAX);
+          foreach(['save_post','save_post_product','save_post_product_variation','wp_after_insert_post',
+                   'transition_post_status','woocommerce_new_product','woocommerce_update_product',
+                   'woocommerce_new_product_variation','woocommerce_update_product_variation',
+                   'woocommerce_product_set_stock','woocommerce_variation_set_stock',
+                   'woocommerce_product_set_stock_status','woocommerce_variation_set_stock_status',
+                   'woocommerce_product_object_updated_props','woocommerce_variation_object_updated_props',
+                   'woocommerce_low_stock','woocommerce_no_stock'] as $hook)remove_all_actions($hook);
+          $allow=function(){return 'yes';};
+          add_filter('pre_option_vsr_stock_receipt_enabled',$allow);
+          $suffix=bin2hex(random_bytes(8));
+          $keys=[];$ids=[];$passed=false;
+          foreach(['before_delete_post','delete_post','deleted_post','woocommerce_before_delete_product','woocommerce_delete_product','woocommerce_trash_product'] as $hook)remove_all_actions($hook);
+          $transaction=$wpdb->query('START TRANSACTION')!==false;
+          try {
+            $p=new WC_Product_Simple();
+            $p->set_name('VSR isolated QA '.$suffix);
+            $p->set_status('private');$p->set_sku('VSR-QA-'.$suffix);
+            $p->set_regular_price('100000');$p->set_manage_stock(true);
+            $p->set_stock_quantity(0);$p->set_stock_status('outofstock');
+            $id=$p->save();$ids[]=$id;
+            if(!$id)throw new RuntimeException('fixture creation failed');
+            $d=vsr_describe(vsr_product($id));
+            if($d['quantity']!==0||!$d['receivable'])throw new RuntimeException('fixture identity failed');
+            $key=bin2hex(random_bytes(16));$keys[]=$key;
+            $payload=['id'=>$id,'identity'=>$d['identity'],'expected'=>0,'amount'=>5,'actor'=>'999999999','request_key'=>$key,'price_mode'=>'regular','new_price'=>'120000','price_version'=>$d['price_version']];
+            $first=vsr_receive($payload);
+            $again=vsr_receive($payload);
+            $read=vsr_status($key);
+            if(($first['status']??'')!=='applied'||$first['quantity']!==5||$again!==$first||$read!==$first)throw new RuntimeException('receipt/idempotency failed');
+            $fresh=wc_get_product($id);
+            if((int)$fresh->get_stock_quantity()!==5||$fresh->get_stock_status()!=='instock'||(float)$fresh->get_regular_price('edit')!==120000.0||$fresh->get_sale_price('edit')!=='')throw new RuntimeException('stock and price reread failed');
+            $next=vsr_describe($fresh);$sale_key=bin2hex(random_bytes(16));$keys[]=$sale_key;
+            $sale_payload=['id'=>$id,'identity'=>$next['identity'],'expected'=>5,'amount'=>0,'stock_mode'=>'none','actor'=>'999999999','request_key'=>$sale_key,'price_mode'=>'sale','new_price'=>'90000','price_version'=>$next['price_version']];
+            $sale_result=vsr_receive($sale_payload,true);$sale_check=vsr_product($id);
+            if(($sale_result['status']??'')!=='applied'||$sale_result['quantity']!==5||(float)$sale_check->get_sale_price('edit')!==90000.0||(float)$sale_check->get_regular_price('edit')!==120000.0)throw new RuntimeException('sale receipt verification failed');
+            if ((int)$sale_check->get_stock_quantity()!==5 || (float)$sale_check->get_price('edit')!==90000.0 || !$sale_check->is_on_sale()) throw new RuntimeException('New discount not active or stock changed');
+            if(vsr_receive($sale_payload,true)!==$sale_result)throw new RuntimeException('New discount replay failed');
+            $invalid=$sale_payload;$invalid['request_key']=bin2hex(random_bytes(16));$keys[]=$invalid['request_key'];$invalid['price_version']=vsr_price_version($sale_check);$invalid['new_price']='120000';$rejected=false;try{vsr_receive($invalid,true);}catch(Throwable $e){$rejected=true;}
+            if(!$rejected)throw new RuntimeException('Invalid discount accepted');
+            $one=['id'=>$id,'identity'=>$next['identity'],'expected'=>5,'amount'=>1,'actor'=>'999999999','request_key'=>bin2hex(random_bytes(16))];$keys[]=$one['request_key'];if(vsr_receive($one)['quantity']!==6)throw new RuntimeException('Stock increase failed');
+            $bad=$payload;$bad['request_key']=bin2hex(random_bytes(16));$keys[]=$bad['request_key'];
+            $rejected=false;try{vsr_receive($bad);}catch(Throwable $e){$rejected=true;}
+            if(!$rejected)throw new RuntimeException('stale receipt not rejected');
+            $item=vsr_describe(vsr_product($id));
+            $make=function($mode,$amount,$expected,$extra=[])use($id,$item,&$keys){
+              $key=bin2hex(random_bytes(16));$keys[]=$key;
+              return array_merge(['id'=>$id,'identity'=>$item['identity'],'expected'=>$expected,'amount'=>$amount,
+                 'actor'=>'999999999','request_key'=>$key,'stock_mode'=>$mode],$extra);
+            };
+            $decrease=$make('decrease',2,6);
+            $down=vsr_receive($decrease,true);
+            if(($down['status']??'')!=='applied'||$down['quantity']!==4||vsr_receive($decrease,true)!==$down)
+                throw new RuntimeException('decrease or replay failed');
+            if((int)vsr_product($id)->get_stock_quantity()!==4)throw new RuntimeException('decrease readback failed');
+            $bad=$make('decrease',5,4);$rejected=false;
+            try{vsr_receive($bad,true);}catch(Throwable $e){$rejected=true;}
+            if(!$rejected||(int)vsr_product($id)->get_stock_quantity()!==4)throw new RuntimeException('negative guard failed');
+            $stale=$make('set',9,6);$rejected=false;
+            try{vsr_receive($stale,true);}catch(Throwable $e){$rejected=true;}
+            if(!$rejected||(int)vsr_product($id)->get_stock_quantity()!==4)throw new RuntimeException('stale set guard failed');
+            $set=$make('set',0,4);$zero=vsr_receive($set,true);
+            $after=vsr_product($id);
+            if(($zero['status']??'')!=='applied'||$zero['quantity']!==0||(int)$after->get_stock_quantity()!==0||$after->get_stock_status()!=='outofstock')
+                throw new RuntimeException('absolute zero or stock status failed');
+            $only=$make('none',0,0,['price_mode'=>'regular','new_price'=>'140000','price_version'=>vsr_price_version($after)]);
+            $priceonly=vsr_receive($only,true);$after=vsr_product($id);
+            if(($priceonly['status']??'')!=='applied'||vsr_receive($only,true)!==$priceonly||(int)$after->get_stock_quantity()!==0||(float)$after->get_regular_price('edit')!==140000.0||(float)$after->get_sale_price('edit')!==90000.0)
+                throw new RuntimeException('price only modified stock or failed price readback');
+            $increase=$make('increase',3,0);
+            $up=vsr_receive($increase,true);$after=vsr_product($id);
+            if(($up['status']??'')!=='applied'||$up['quantity']!==3||(int)$after->get_stock_quantity()!==3||$after->get_stock_status()!=='instock')throw new RuntimeException('new management increase failed');
+            $passed=true;
+          }catch(Throwable $e){echo 'CANARY_FAILED='.$e->getMessage().PHP_EOL;}
+          finally{
+            if($transaction)$wpdb->query('ROLLBACK');
+            foreach($ids as $id){
+              clean_post_cache($id);wp_cache_delete($id,'post_meta');
+              $fixture=wc_get_product($id);
+              if($fixture && $fixture->get_sku()==='VSR-QA-'.$suffix && $fixture->get_status()==='private')$fixture->delete(true);
+              // Clean up lookup rows even if the posts table rolled back independently.
+              $wpdb->delete($wpdb->prefix.'wc_product_meta_lookup',['product_id'=>$id]);
+            }
+            foreach($keys as $key){wp_cache_delete(vsr_key($key),'options');delete_option(vsr_key($key));}
+            wp_cache_delete('notoptions','options');
+            remove_filter('pre_option_vsr_stock_receipt_enabled',$allow);
+          }
+          foreach($ids as $id)if($wpdb->get_var($wpdb->prepare("SELECT ID FROM {$wpdb->posts} WHERE ID=%d",$id)) || $wpdb->get_var($wpdb->prepare("SELECT post_id FROM {$wpdb->postmeta} WHERE post_id=%d LIMIT 1",$id)))exit(45);
+          foreach($keys as $key)if($wpdb->get_var($wpdb->prepare("SELECT option_id FROM {$wpdb->options} WHERE option_name=%s",vsr_key($key))))exit(46);
+          if(!$passed)exit(47);
+          echo "ISOLATED_STOCK_REGULAR_AND_SALE_PRICE_IDEMPOTENCY_PASS=yes\n";
+          echo "CANARY_CLEANUP_VERIFIED=yes\n";
+          echo "NEW_DISCOUNT_WITHOUT_STOCK_CHANGE_CANARY_PASS=yes\n";
+          echo "NO_REAL_PRODUCT_STOCK_MUTATED=yes\n";
+          PHP
+          REMOTE
